@@ -1,0 +1,188 @@
+"""Now Playing's lyrics pane - loads the current track's sibling .lrc file
+(services/lyrics.py) and, if it's timestamped, highlights and auto-scrolls
+to the current line as playback position updates.
+
+Also owns the per-track "Download lyrics" button in the empty state: unlike
+`JukeboxToggle`/`StarRating` (widget just reports the gesture, the view does
+the DB work), this widget runs the whole download itself end-to-end. That's
+a deliberate departure from that convention, not an oversight - downloading
+only ever writes a local .lrc sidecar file (no DB write, and no other view
+has any reason to care that it happened), so there's nothing for a view to
+do with the outcome that this panel can't already do by just reloading
+itself. See services/lyrics_downloader.py for why this network call exists
+at all despite the rest of the app's local-files-only stance."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional, Union
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QListWidget, QListWidgetItem, QStackedWidget, QVBoxLayout, QWidget
+
+from ...config import TOUCH
+from ...services import lyrics_downloader as lyrics_dl
+from ...services.lyrics import LyricsResult, current_line_index, load_lyrics
+from ..theme import COLORS
+from .common import EmptyState, LyricsDownloadThread
+
+#: restored after a failed/negative download attempt, since that leaves a
+#: status message (_STATUS_MESSAGES below) sitting in the same label
+_DEFAULT_EMPTY_DETAIL = "Drop a matching .lrc file next to this track's audio file to see lyrics here."
+
+_STATUS_MESSAGES = {
+    "no_artist": "This track has no artist tag on file, so lyrics can't be looked up.",
+    "not_found": "No lyrics found on LRCLIB for this track.",
+    "instrumental": "LRCLIB lists this as an instrumental - no lyrics to show.",
+    "error": "Couldn't reach LRCLIB just now - try again in a bit.",
+}
+
+
+class LyricsPanel(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self._empty = EmptyState(
+            "No lyrics found",
+            _DEFAULT_EMPTY_DETAIL,
+            action_text="Download lyrics",
+            on_action=self._on_download_clicked,
+        )
+
+        self._list = QListWidget()
+        self._list.setObjectName("LyricsList")
+        self._list.setFocusPolicy(Qt.NoFocus)
+        self._list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self._list.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self._list.setWordWrap(True)
+        # Qt.AlignCenter on each item centers it within the list's *viewport*,
+        # which is narrower than the widget's own visible box by however much
+        # the vertical scrollbar takes up on the right - so on any lyric long
+        # enough to need scrolling, every centered line reads as shifted
+        # toward the scrollbar instead of centered in the box you actually
+        # see. Mirroring that width as a left margin whenever the scrollbar
+        # is actually showing keeps the viewport - and therefore the
+        # centering - symmetric in the box; on a short, unscrolled lyric
+        # there's no scrollbar and no margin, so nothing shifts unnecessarily
+        self._list.verticalScrollBar().rangeChanged.connect(self._sync_center_margin)
+
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._empty)  # 0
+        self._stack.addWidget(self._list)  # 1
+        layout.addWidget(self._stack)
+
+        self._result: Optional[LyricsResult] = None
+        self._current_index = -1
+        self._audio_path: Optional[str] = None
+        self._track_meta: dict = {}
+        self._download_thread: Optional[LyricsDownloadThread] = None
+
+    def _sync_center_margin(self, _minimum: int, maximum: int) -> None:
+        needs_scrollbar = maximum > 0
+        self._list.setViewportMargins(TOUCH["scrollbar"] if needs_scrollbar else 0, 0, 0, 0)
+
+    def load_for_path(
+        self,
+        audio_path: Union[str, None],
+        *,
+        title: str = "",
+        artist: str = "",
+        album: str = "",
+        duration_ms: int = 0,
+    ) -> None:
+        """`title`/`artist`/`album`/`duration_ms` feed the download button
+        when nothing's found locally - optional and keyword-only so every
+        existing single-argument call (nothing playing, or a caller that
+        doesn't have this metadata handy) still works unchanged."""
+        self._audio_path = audio_path
+        self._track_meta = dict(title=title, artist=artist, album=album, duration_ms=duration_ms)
+        self._result = load_lyrics(audio_path) if audio_path else None
+        self._current_index = -1
+        self._list.clear()
+        if self._result is None or not self._result.lines:
+            if self._empty.detail_label is not None:
+                self._empty.detail_label.setText(_DEFAULT_EMPTY_DETAIL)
+            self._refresh_download_button()
+            self._stack.setCurrentWidget(self._empty)
+            return
+        for line in self._result.lines:
+            item = QListWidgetItem(line.text or "♪")
+            item.setTextAlignment(Qt.AlignCenter)
+            self._list.addItem(item)
+        self._stack.setCurrentWidget(self._list)
+        self._apply_highlight(0 if self._result.synced else -1)
+
+    def update_position(self, position_ms: int) -> None:
+        if self._result is None or not self._result.synced or not self._result.lines:
+            return
+        idx = current_line_index(self._result.lines, position_ms)
+        if idx != self._current_index:
+            self._apply_highlight(idx)
+
+    def _apply_highlight(self, idx: int) -> None:
+        self._current_index = idx
+        past = QColor(COLORS["text_dim"])
+        upcoming = QColor(COLORS["text"])
+        current = QColor(COLORS["accent"])
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            font = item.font()
+            if i == idx:
+                font.setBold(True)
+                item.setFont(font)
+                item.setForeground(current)
+            else:
+                font.setBold(False)
+                item.setFont(font)
+                item.setForeground(past if i < idx else upcoming)
+        if 0 <= idx < self._list.count():
+            self._list.scrollToItem(
+                self._list.item(idx), QListWidget.ScrollHint.PositionAtCenter
+            )
+
+    # -- lyrics download ---------------------------------------------------
+
+    def _refresh_download_button(self) -> None:
+        btn = self._empty.action_button
+        if btn is None:
+            return
+        downloading = self._download_thread is not None
+        btn.setVisible(bool(self._audio_path))
+        btn.setEnabled(bool(self._audio_path) and not downloading)
+        btn.setText("Downloading…" if downloading else "Download lyrics")
+
+    def _on_download_clicked(self) -> None:
+        if not self._audio_path or self._download_thread is not None:
+            return
+        track = lyrics_dl.LyricsTrackInput(
+            audio_path=Path(self._audio_path),
+            title=self._track_meta.get("title") or "",
+            artist=self._track_meta.get("artist") or "",
+            album=self._track_meta.get("album") or "",
+            duration_ms=self._track_meta.get("duration_ms") or 0,
+        )
+        self._download_thread = LyricsDownloadThread([track], parent=self)
+        self._download_thread.finished_with.connect(self._on_download_finished)
+        self._refresh_download_button()
+        self._download_thread.start()
+
+    def _on_download_finished(self, result) -> None:
+        self._download_thread = None
+        outcome = result.outcomes[0] if result.outcomes else None
+        # the user may have moved to a different track while this was
+        # in flight - if so, that track's own load_for_path call has
+        # already set the right state, so there's nothing to reconcile
+        if outcome is None or not self._audio_path or str(outcome.audio_path) != str(
+            Path(self._audio_path)
+        ):
+            return
+        if outcome.status == "downloaded":
+            self.load_for_path(self._audio_path, **self._track_meta)
+            return
+        self._refresh_download_button()
+        message = _STATUS_MESSAGES.get(outcome.status)
+        if message and self._empty.detail_label is not None:
+            self._empty.detail_label.setText(message)
