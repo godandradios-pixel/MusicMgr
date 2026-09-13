@@ -1,0 +1,4 @@
+# Dependencies only needed to run the test suite - not part of the
+# shipped/bundled app (kept out of requirements.txt for that reason).
+-r requirements.txt
+pytest>=7.4
