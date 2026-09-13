@@ -52,6 +52,7 @@ from ...services.spectrum import BUCKET_MS, SpectrumThread, detect_beats
 from ...services.video_player import VideoController
 from .common import PAUSE_GLYPH, CoverArt, TouchButton
 from .visualizer import VISUALIZER_HEIGHT, PulseVisualizer
+from ..theme import COLORS
 
 log = logging.getLogger(__name__)
 
@@ -242,8 +243,16 @@ class PlayerBar(QFrame):
         glyph = {"off": "↻", REPEAT_ALL: "↻", REPEAT_ONE: "↻¹"}[mode]
         self.repeat_btn.setText(glyph)
         self.repeat_btn.setToolTip(f"Repeat {mode}")
+        # 2026-09-13 follow-up (James: "clean up the remaining red/orange
+        # lines and text in the app ... brown pallete" - see ui/theme.py's
+        # #Primary comment for the rest of this sweep): this one was a raw
+        # "#e8563f" literal rather than a COLORS["accent"] lookup, so it
+        # slipped past every earlier retint that searched for the token by
+        # name. jukebox_key_hi, not jukebox_key, since this is small bold
+        # text on the button's own dark background (same reasoning as
+        # ui/widgets/common.py's toggle-icon colors below).
         self.repeat_btn.setStyleSheet(
-            "" if mode == "off" else "color: #e8563f; font-weight: 700;"
+            "" if mode == "off" else f"color: {COLORS['jukebox_key_hi']}; font-weight: 700;"
         )
 
     def _commit_seek(self) -> None:

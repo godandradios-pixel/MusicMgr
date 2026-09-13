@@ -36,6 +36,18 @@ looking like a duplicate song): every audio scan now also calls
 deletes any track left with no playable file and no play/playlist/chart
 history to lose - see that function's docstring. This runs automatically,
 with no confirmation step, by James's own choice.
+
+2026-09-13 follow-up (James: "right now it does all on the folders. I
+would like an option where you can select a folder to scan") - "Scan now"
+still scans every enabled watched folder, unchanged. A new "Scan
+selected" button next to it scans only the one folder highlighted in
+`self.folder_list` (`scan_selected`, reusing the exact same
+`scan_paths()`/`ScanThread` machinery "Scan now" already runs, just with
+a one-item list) - useful for re-scanning a single folder you just added
+files to without waiting on every other watched folder as well. Mirrors
+`remove_folder`'s existing "act on whatever row is selected"
+(`self.folder_list.current_payload()`) shape, rather than inventing a
+second selection mechanism.
 """
 
 from __future__ import annotations
@@ -208,9 +220,11 @@ class SettingsView(BaseView):
         add_btn.clicked.connect(self.add_folder)
         remove_btn = TouchButton("Remove")
         remove_btn.clicked.connect(self.remove_folder)
+        scan_selected_btn = TouchButton("Scan selected")
+        scan_selected_btn.clicked.connect(self.scan_selected)
         scan_btn = TouchButton("Scan now")
         scan_btn.clicked.connect(self.scan_all)
-        for b in (add_btn, remove_btn, scan_btn):
+        for b in (add_btn, remove_btn, scan_selected_btn, scan_btn):
             folder_head.addWidget(b)
         self.body().addLayout(folder_head)
 
@@ -338,6 +352,13 @@ class SettingsView(BaseView):
             )
             return
         self.scan_paths(paths)
+
+    def scan_selected(self) -> None:
+        payload = self.folder_list.current_payload()
+        if not payload:
+            self.ctx.notify("Select a folder in the list first, then Scan selected")
+            return
+        self.scan_paths([payload["path"]])
 
     def scan_paths(self, paths: list[str]) -> None:
         if self._thread is not None and self._thread.isRunning():

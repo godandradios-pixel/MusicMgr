@@ -105,7 +105,13 @@ class SpectrumBars(QWidget):
         n = self.BAR_COUNT
         gap = 3.0
         bar_w = (w - gap * (n - 1)) / n
-        color = QColor(COLORS["accent"] if self._active else COLORS["text_dim"])
+        # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for this
+        # whole sweep) - this class isn't actually used anywhere in the app
+        # today (see ui/widgets/visualizer.py's module docstring: PlayerBar
+        # moved on to PulseVisualizer after this widget's original outing),
+        # but there's no reason to leave a stray red-orange behind in dead
+        # code either.
+        color = QColor(COLORS["jukebox_key_hi"] if self._active else COLORS["text_dim"])
         painter.setBrush(color)
 
         for i, level in enumerate(self._levels):

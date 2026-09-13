@@ -126,7 +126,10 @@ class LyricsPanel(QWidget):
         self._current_index = idx
         past = QColor(COLORS["text_dim"])
         upcoming = QColor(COLORS["text"])
-        current = QColor(COLORS["accent"])
+        # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for this
+        # whole cleanup) - current lyrics line, walnut brown now instead
+        # of red-orange.
+        current = QColor(COLORS["jukebox_key_hi"])
         for i in range(self._list.count()):
             item = self._list.item(i)
             font = item.font()

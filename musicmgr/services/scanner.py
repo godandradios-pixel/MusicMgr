@@ -245,13 +245,27 @@ def _fallback_from_path(path: Path, tags: TrackTags) -> TrackTags:
     strips it from the title - but only when `tags.title == path.stem`,
     i.e. only when the title really did come from the raw filename and
     isn't a genuine tag that merely happens to start with a number.
+
+    2026-09-13 fix (found while writing this module's first tests, not
+    reported): the artist/album-artist half of this fallback never
+    actually fired. `read_tags()` always runs first at both real call
+    sites (`import_file`, `scan_folder`) and already upgrades a blank
+    artist to the literal string "Unknown Artist" before returning it -
+    so by the time this function saw it, `tags.artist` was never really
+    falsy, and `tags.artist or grand.name` silently kept "Unknown Artist"
+    instead of ever substituting the folder name. The guard above already
+    correctly treated "Unknown Artist" as "no real artist"; the
+    assignment below just never matched that guard. Every untagged file
+    has been filed under "Unknown Artist" instead of its parent folder's
+    name until now.
     """
     if tags.artist in ("", "Unknown Artist"):
         parent = path.parent
         grand = parent.parent
         if grand and grand.name and grand.name not in (".", "/"):
-            tags.artist = tags.artist or grand.name
-            tags.album_artist = tags.album_artist or grand.name
+            tags.artist = grand.name
+            if tags.album_artist in ("", "Unknown Artist"):
+                tags.album_artist = grand.name
     m = re.match(r"^\s*(\d{1,3})[\s._-]+", path.stem)
     if m:
         if not tags.track_no:

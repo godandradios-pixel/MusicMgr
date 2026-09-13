@@ -379,7 +379,10 @@ class ChartsView(BaseView):
                 rows.append({
                     "lead": str(entry.rank),
                     "lead_bold": True,
-                    "lead_color": COLORS["accent"] if entry.rank <= 10 else COLORS["text_dim"],
+                    # 2026-09-13 follow-up (see ui/theme.py's #Primary
+                    # comment for this whole cleanup) - top-10 highlight,
+                    # walnut brown now instead of red-orange.
+                    "lead_color": COLORS["jukebox_key_hi"] if entry.rank <= 10 else COLORS["text_dim"],
                     "primary": entry.title,
                     "secondary": " · ".join(
                         x for x in (entry.artist_name, ", ".join(stats)) if x
@@ -398,7 +401,10 @@ class ChartsView(BaseView):
     @staticmethod
     def _movement(rank: int, last_week: Optional[int]) -> tuple[str, str]:
         if not last_week:
-            return "NEW", COLORS["accent"]
+            # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for
+            # this whole cleanup) - "NEW" badge, walnut brown now instead
+            # of red-orange.
+            return "NEW", COLORS["jukebox_key_hi"]
         delta = last_week - rank
         if delta > 0:
             return f"▲ {delta}", COLORS["good"]

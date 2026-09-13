@@ -12,9 +12,22 @@ COLORS = {
     "border": "#2e333d",
     "text": "#f2f4f8",
     "text_dim": "#98a0ad",
-    "accent": "#e8563f",
-    "accent_dim": "#b5402c",
-    "accent_soft": "#3a1f1b",
+    # There used to be "accent"/"accent_dim"/"accent_soft" keys here - the
+    # app's original bright red-orange highlight color and its hover/press
+    # shades, used all over (primary buttons, the nav rail selection bar,
+    # focus rings, scrollbars, sliders, chip/star/toggle highlights...).
+    # 2026-09-07/08 saw a string of narrowly-scoped follow-ups retint a few
+    # specific widgets James pointed at to a walnut-brown family instead
+    # (see jukebox_key/_hi/_pressed below), each one deliberately leaving
+    # the shared `accent` tokens alone so as not to recolor anything he
+    # hadn't asked about (see the many "why this widget and not the
+    # generic rule" comments still scattered through stylesheet() below).
+    # A 2026-09-13 follow-up ("clean up the remaining red/orange lines and
+    # text in the app ... brown pallete") asked for the rest of it - every
+    # site that still read `accent`/`accent_dim`/`accent_soft` now reads
+    # jukebox_key/jukebox_key_hi/jukebox_key_pressed directly instead, so
+    # these three keys have no readers left and were removed rather than
+    # kept around unused.
     "good": "#4fb286",
     # scrollbar handles need more contrast than ordinary chrome: on a touch
     # panel the handle is also the visual cue for how far down a long list you
@@ -79,6 +92,12 @@ COLORS = {
 #: only the checked-state color swapped, applied to just the Jukebox
 #: page's genre chips (ui/views/jukebox.py overrides each chip's object
 #: name from ChipButton's default "Chip" to "ChipWarm").
+#:
+#: Both paragraphs above describe *deliberately incomplete* retints - the
+#: whole point at the time was to leave the shared `accent` tokens (and
+#: every other widget reading them) alone. A 2026-09-13 follow-up asked
+#: for the rest of it; see the COLORS dict's own comment above for where
+#: `accent`/`accent_dim`/`accent_soft` ended up.
 
 
 def stylesheet() -> str:
@@ -223,20 +242,45 @@ QPushButton {{
     font-weight: 500;
 }}
 QPushButton:hover {{ background: {c['surface_hi']}; }}
-QPushButton:pressed {{ background: {c['accent_soft']}; border-color: {c['accent']}; }}
+/* 2026-09-13 follow-up (James: "clean up the remaining red/orange lines
+   and text in the app ... need to be in the brown pallete"): every
+   remaining `accent`/`accent_dim`/`accent_soft` use in this file (and
+   the handful of `COLORS["accent"]` lookups in Python - see nowplaying.py,
+   charts.py, common.py, lyrics_panel.py, cover_grid.py) is retinted below
+   to the same walnut-brown family the 2026-09-07/08 follow-ups already
+   moved TransportMain/PrimaryWarm/ChipWarm/the volume slider/Settings'
+   progress bar/BigNumber/NavButton's checked state to (see the COLORS
+   dict's own comment above for that history) - this is the rest of that
+   same sweep, not a new palette. Unlike those earlier, deliberately
+   narrow retints, this time every remaining site gets it, since that's
+   what James actually asked for. `accent`/`accent_dim`/`accent_soft`
+   themselves are gone from COLORS now that nothing references them.
+   Two roles, two tokens, same choice every prior brown retint already
+   made: `jukebox_key` (dark enough for white button text to read clearly
+   on top - actually *better* contrast than the old red gave, see the
+   button rules below) for a filled background, `jukebox_key_hi` (the
+   brighter tone already used for BigNumber/JukeboxNowPlayingText/
+   NavButton's checked-state border) for a color standing on its own
+   against the app's dark background - a focus ring, a small badge, an
+   icon - where the darker `jukebox_key` reads as "muddy" per those
+   earlier comments. */
+QPushButton:pressed {{ background: {c['jukebox_key_pressed']}; border-color: {c['jukebox_key']}; }}
 QPushButton:disabled {{ color: #5a6270; background: {c['surface']}; }}
 QPushButton#Primary {{
-    background: {c['accent']};
-    border-color: {c['accent']};
+    background: {c['jukebox_key']};
+    border-color: {c['jukebox_key']};
     color: #ffffff;
     font-weight: 600;
 }}
-QPushButton#Primary:hover {{ background: {c['accent_dim']}; }}
-/* the Jukebox page's "+ Add to jukebox" button only (2026-09-07 follow-up -
-   see the COLORS dict's comment above) - everywhere else in the app a
-   TouchButton(primary=True) keeps the ordinary #Primary red-orange above.
-   Same shape/padding/radius as #Primary (inherited from the base
-   QPushButton rule); only the color swaps to the jukebox key palette. */
+QPushButton#Primary:hover {{ background: {c['jukebox_key_pressed']}; }}
+/* Originally the Jukebox page's "+ Add to jukebox" button only (2026-09-07
+   follow-up - see the COLORS dict's comment above), back when every other
+   TouchButton(primary=True) in the app still used the ordinary #Primary
+   red-orange above. The 2026-09-13 follow-up on #Primary itself (see that
+   rule's own comment) means the two are identical now - left as separate
+   rules rather than merged, since collapsing them would mean auditing
+   every #PrimaryWarm call site for a reason it might still need its own
+   name later, for no visual change today. */
 QPushButton#PrimaryWarm {{
     background: {c['jukebox_key']};
     border-color: {c['jukebox_key']};
@@ -290,19 +334,29 @@ QPushButton#Chip {{
     background: {c['surface']};
 }}
 QPushButton#Chip:checked {{
-    background: {c['accent']};
-    border-color: {c['accent']};
+    /* 2026-09-13 follow-up (see #Primary's own comment above) - every
+       other chip row in the app (cover_grid.py's sort chips, Now
+       Playing's "Up next"/"Lyrics", track_panel.py's/video_table.py's
+       sort/group chips) was deliberately left red when #ChipWarm below
+       was created for the Jukebox page's own genre chips (2026-09-07 -
+       see that rule's comment), specifically so this rule alone wouldn't
+       turn all of those brown too. Now that James wants the red gone
+       everywhere, it can just match #ChipWarm below instead of being a
+       separate carve-out. */
+    background: {c['jukebox_key']};
+    border-color: {c['jukebox_key']};
     color: #fff;
 }}
-/* the Jukebox page's own genre chips only (2026-09-07 follow-up - James:
-   "make the pills not red but the brown color") - same pill shape as
-   #Chip (duplicated rather than shared, since object-name selectors don't
-   inherit from one another); only the checked-state color swaps to the
-   jukebox key palette, so every other chip row in the app (cover_grid.py's
-   sort chips, Now Playing's "Up next"/"Lyrics", track_panel.py's/
-   video_table.py's sort/group chips) keeps the ordinary red #Chip:checked
-   look above. See ui/views/jukebox.py, which overrides ChipButton's own
-   "Chip" object name to "ChipWarm" for these genre chips specifically. */
+/* Originally the Jukebox page's own genre chips only (2026-09-07 follow-up
+   - James: "make the pills not red but the brown color") - same pill
+   shape as #Chip (duplicated rather than shared, since object-name
+   selectors don't inherit from one another); only the checked-state color
+   swapped to the jukebox key palette. #Chip:checked above now uses the
+   same color, so this and #Chip are visually identical (same reasoning as
+   #Primary/#PrimaryWarm above) - still separate rules since ChipButton
+   instances tell the two apart by object name (ui/views/jukebox.py
+   overrides it to "ChipWarm" for genre chips specifically) and merging
+   them would mean renaming every call site for no visual change. */
 QPushButton#ChipWarm {{
     border-radius: 18px;
     min-height: 44px;
@@ -463,7 +517,12 @@ QScrollBar::handle:vertical {{
     min-height: {t['scrollbar_min_handle']}px;
 }}
 QScrollBar::handle:vertical:hover {{ background: {c['scroll_handle_hi']}; }}
-QScrollBar::handle:vertical:pressed {{ background: {c['accent']}; }}
+/* 2026-09-13 follow-up (see #Primary's comment above) - jukebox_key_hi,
+   not jukebox_key: this is a small bar with no text sitting on it, being
+   actively dragged, so it needs to read clearly against the app's dark
+   background the way BigNumber/JukeboxNowPlayingText's text does, not
+   blend in the way jukebox_key already reads as "muddy" doing. */
+QScrollBar::handle:vertical:pressed {{ background: {c['jukebox_key_hi']}; }}
 
 QScrollBar:horizontal {{
     background: {c['surface']};
@@ -478,7 +537,7 @@ QScrollBar::handle:horizontal {{
     min-width: {t['scrollbar_min_handle']}px;
 }}
 QScrollBar::handle:horizontal:hover {{ background: {c['scroll_handle_hi']}; }}
-QScrollBar::handle:horizontal:pressed {{ background: {c['accent']}; }}
+QScrollBar::handle:horizontal:pressed {{ background: {c['jukebox_key_hi']}; }}  /* see the vertical rule's comment above */
 
 /* no arrow buttons - they are far too small to hit and just steal track space */
 QScrollBar::add-line, QScrollBar::sub-line {{
@@ -490,20 +549,26 @@ QScrollBar::add-line, QScrollBar::sub-line {{
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 
 /* ---------------- inputs ---------------- */
+/* 2026-09-13 follow-up (see #Primary's comment above): selection-
+   background-color pairs with the default (near-white) text color, same
+   as a filled button, so it takes jukebox_key like #Primary's background
+   does; the focus border is a thin ring on the already-dark surface_alt
+   background, no text of its own, so it takes jukebox_key_hi like the
+   scrollbar's pressed handle above. */
 QLineEdit, QComboBox, QSpinBox, QDateEdit {{
     background: {c['surface_alt']};
     border: 1px solid {c['border']};
     border-radius: 10px;
     padding: 0 16px;
     min-height: {t['button_height'] - 12}px;
-    selection-background-color: {c['accent']};
+    selection-background-color: {c['jukebox_key']};
 }}
-QLineEdit:focus, QComboBox:focus {{ border-color: {c['accent']}; }}
+QLineEdit:focus, QComboBox:focus {{ border-color: {c['jukebox_key_hi']}; }}
 QComboBox::drop-down {{ width: 40px; border: none; }}
 QComboBox QAbstractItemView {{
     background: {c['surface_alt']};
     border: 1px solid {c['border']};
-    selection-background-color: {c['accent']};
+    selection-background-color: {c['jukebox_key']};
 }}
 
 QTextEdit, QPlainTextEdit {{
@@ -520,7 +585,11 @@ QSlider::groove:horizontal {{
     border-radius: 4px;
 }}
 QSlider::sub-page:horizontal {{
-    background: {c['accent']};
+    /* 2026-09-13 follow-up (see #Primary's comment above) - the generic
+       seek/scrub bar fill, used everywhere this app has a slider except
+       the volume slider just below, which already got this same color in
+       2026-09-08. */
+    background: {c['jukebox_key']};
     border-radius: 4px;
 }}
 QSlider::handle:horizontal {{
@@ -530,14 +599,16 @@ QSlider::handle:horizontal {{
     margin: -9px 0;
     border-radius: 12px;
 }}
-/* the player bar's volume slider only (2026-09-08 follow-up - James: "make
-   that volume control bar brown to fit pallete") - object-name scoped
-   (see player_bar.py: self.volume.setObjectName("VolumeSlider")) rather
-   than retinting QSlider::sub-page generally, since that generic rule is
-   shared with the seek/scrub bar here and video_panel.py's own seek bar,
-   neither of which James asked to change. Same jukebox_key brown
-   ProgressWarm/ChipWarm already use, groove/handle left as the shared
-   QSlider rules above set them. */
+/* Originally the player bar's volume slider only (2026-09-08 follow-up -
+   James: "make that volume control bar brown to fit pallete") - object-
+   name scoped (see player_bar.py: self.volume.setObjectName(
+   "VolumeSlider")) rather than retinting QSlider::sub-page generally,
+   since that generic rule was still red-orange at the time and shared
+   with the seek/scrub bar here and video_panel.py's own seek bar,
+   neither of which James had asked to change yet. The 2026-09-13
+   follow-up above brought the generic rule to this same color, so this
+   override is now redundant (kept for the same reason #Primary/
+   #PrimaryWarm above stayed separate rather than merged). */
 QSlider#VolumeSlider::sub-page:horizontal {{
     background: {c['jukebox_key']};
     border-radius: 4px;
@@ -600,12 +671,19 @@ QProgressBar {{
     text-align: center;
     color: transparent;
 }}
-QProgressBar::chunk {{ background: {c['accent']}; border-radius: 6px; }}
-/* Settings page's scan/move progress bar only - QProgressBar is also used
-   on Charts and the release panel's lyrics download, which keep the
-   ordinary accent fill above; only Settings' bar gets its objectName set
-   to ProgressWarm (see ui/views/settings.py), matching the same brown
-   pallet as #BigNumber/#PrimaryWarm on this page. */
+/* 2026-09-13 follow-up (James: "the progress bar when you are downloading
+   lyrics also needs to be brown" - see #Primary's comment above for the
+   rest of this sweep): this generic rule is what Charts' own progress bar
+   and the release panel's lyrics-download bar were both still drawing
+   from - #ProgressWarm below (Settings' scan/move bar) already got this
+   same color in an earlier, narrower follow-up, back when this rule was
+   still red-orange and Charts/the lyrics download hadn't been asked
+   about yet. */
+QProgressBar::chunk {{ background: {c['jukebox_key']}; border-radius: 6px; }}
+/* Originally Settings page's scan/move progress bar only, to keep it out
+   of the still-red generic rule above (see that rule's own comment) -
+   the two are identical now that the generic rule caught up, kept
+   separate for the same reason as #Primary/#PrimaryWarm above. */
 QProgressBar#ProgressWarm::chunk {{ background: {c['jukebox_key']}; border-radius: 6px; }}
 QTabBar::tab {{
     background: {c['surface']};

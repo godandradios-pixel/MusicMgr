@@ -196,8 +196,19 @@ _IDLE_SPATIAL = 2 * math.pi / BAR_COUNT
 #: mix" note). Bass/mid reuse this app's own accent/"good" tokens rather
 #: than inventing unrelated hues; low-mid/high-mid/treble fill in the rest
 #: of a warm-to-cool run so the blend has somewhere to travel between them.
+#:
+#: 2026-09-13 follow-up (James: "the pulse while playing should be in the
+#: brown pallete" - see ui/theme.py's #Primary comment for the rest of
+#: this cleanup): only the bass anchor moves - it's the one actually
+#: sourced from this app's own accent token (now jukebox_key_hi, the
+#: brighter walnut tone already used everywhere else a color needs to
+#: read clearly on its own against a dark background, e.g. BigNumber and
+#: the scrollbar's pressed handle above). Low-mid/high-mid/treble are
+#: their own distinct hues, not this app's brand color - they're what
+#: makes this a *spectrum* (bass-to-treble, warm-to-cool) rather than one
+#: color pulsing at different sizes, so they're untouched by this pass.
 _BAND_COLORS = [
-    QColor(COLORS["accent"]),  # 60Hz (bass) - warm red-orange
+    QColor(COLORS["jukebox_key_hi"]),  # 60Hz (bass) - warm walnut brown
     QColor("#f2994a"),  # 250Hz (low-mid) - orange
     QColor(COLORS["good"]),  # 1000Hz (mid) - teal-green
     QColor("#3b82f6"),  # 3500Hz (high-mid) - blue

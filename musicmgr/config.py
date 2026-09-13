@@ -103,15 +103,23 @@ TOUCH = {
     #: shrink every other button in the app. James, 2026-09-07: "make the
     #: sidebar space between items smaller" - was implicitly button_height
     #: (64) before this key existed.
+    #: There used to be a "nav_width" key here (James, 2026-09-07: "make
+    #: the width of the sidebar to be smaller since the short word menu
+    #: items are not that long" - went 220 -> 176 -> back up to 200 the
+    #: same day once the brand icon grew and needed the extra room
+    #: alongside the wordmark). A 2026-09-13 follow-up (James: this app
+    #: runs on a small touchscreen jukebox panel, so "let's make the rail
+    #: a bit smaller ... where I think space may be saved") removed the
+    #: fixed constant entirely rather than hand-picking yet another
+    #: number - by the time it was raised again, the brand icon had long
+    #: since moved to its own stacked row (see ui/app.py's
+    #: `_build_brand_row` docstring), so the icon-needs-room constraint
+    #: that produced 200 didn't even apply anymore. `MainWindow.
+    #: _nav_rail_width` in ui/app.py now measures the real nav buttons'
+    #: own `sizeHint()` instead, so the rail always hugs whatever labels
+    #: are actually on it rather than a guess that goes stale the next
+    #: time one changes.
     "nav_item_height": 48,
-    #: James, 2026-09-07: "make the width of the sidebar to be smaller since
-    #: the short word menu items are not that long" - was 220; the longest
-    #: label ("Title Details") measures ~101px at this font, so 176 left
-    #: comfortable room. Bumped back up to 200 the same day once the brand
-    #: icon grew from 28px to 56px ("make it a lot bigger") - at 176 the
-    #: bigger icon pushed "MusicMgr" past the header row's edge and clipped
-    #: it. Still a real reduction from the original 220.
-    "nav_width": 200,
     "art_size": 168,
     "font_base": 15,
     "font_title": 22,

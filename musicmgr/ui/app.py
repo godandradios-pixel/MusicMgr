@@ -215,10 +215,15 @@ class MainWindow(QMainWindow):
             row_layout.addWidget(brand_text)
         return row
 
+    #: extra room added on top of the widest real nav button's own
+    #: `sizeHint()` in `_nav_rail_width` below - just enough that the
+    #: longest label isn't pressed right up against the button's own
+    #: edge, without padding the rail out to an arbitrary fixed width.
+    _NAV_WIDTH_BUFFER = 16
+
     def _build_nav(self) -> QWidget:
         rail = QFrame()
         rail.setObjectName("NavRail")
-        rail.setFixedWidth(config.TOUCH["nav_width"])
         layout = QVBoxLayout(rail)
         layout.setContentsMargins(0, 0, 0, 12)
         layout.setSpacing(2)
@@ -228,6 +233,11 @@ class MainWindow(QMainWindow):
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
         self._nav_buttons: dict[str, QPushButton] = {}
+        # every button that actually sits on the rail - fed to
+        # _nav_rail_width below once they've all been built, so the rail
+        # sizes itself off whichever one turns out widest rather than
+        # guessing "Title Details" is always going to be it.
+        rail_buttons: list[QPushButton] = []
         for key, label in NAV_ITEMS:
             btn = QPushButton(label)
             btn.setObjectName("NavButton")
@@ -236,6 +246,7 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _=False, k=key: self.navigate(k))
             self._nav_group.addButton(btn)
             self._nav_buttons[key] = btn
+            rail_buttons.append(btn)
             layout.addWidget(btn)
 
         layout.addStretch(1)
@@ -243,6 +254,7 @@ class MainWindow(QMainWindow):
         self.fullscreen_btn.setObjectName("NavButton")
         self.fullscreen_btn.setCursor(Qt.PointingHandCursor)
         self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
+        rail_buttons.append(self.fullscreen_btn)
         layout.addWidget(self.fullscreen_btn)
 
         quit_btn = QPushButton("Exit")
@@ -250,8 +262,38 @@ class MainWindow(QMainWindow):
         quit_btn.setCursor(Qt.PointingHandCursor)
         quit_btn.setToolTip("Close MusicMgr (Ctrl+Q)")
         quit_btn.clicked.connect(self.quit_app)
+        rail_buttons.append(quit_btn)
         layout.addWidget(quit_btn)
+
+        rail.setFixedWidth(self._nav_rail_width(rail_buttons))
         return rail
+
+    def _nav_rail_width(self, buttons: list[QPushButton]) -> int:
+        """2026-09-13 follow-up (James: this app runs on a small
+        touchscreen jukebox panel, so "let's make the rail a bit smaller
+        ... where I think space may be saved"): `config.TOUCH["nav_width"]`
+        used to be a hand-picked constant, sized by eye against whatever
+        the nav labels happened to look like at the time (see that key's
+        own removal comment in config.py for its 220 -> 176 -> 200
+        history - the last jump only because the brand icon, back when it
+        sat *beside* the wordmark, needed the extra room; a constraint
+        that no longer even applies now that `_build_brand_row` stacks
+        the icon above the text instead).
+
+        Rather than pick yet another fixed number by eye - and risk it
+        going stale again the next time a label or `TOUCH["font_base"]`
+        changes - this measures every real nav button's own `sizeHint()`.
+        That already reflects the live `#NavButton`/`#NavQuit` QSS (the
+        same 18px each-side padding, `nav_item_height`, and `font_base`
+        every other touch control on the rail uses) because `main()`
+        below calls `app.setStyleSheet(...)` before `MainWindow` - and
+        therefore these buttons - ever gets constructed. Whichever button
+        turns out widest wins, plus `_NAV_WIDTH_BUFFER`, so the rail is
+        always exactly as wide as it needs to be for whatever's actually
+        on it, on whatever machine it's actually running on - no
+        Windows-vs-whatever-built-it font substitution to second-guess."""
+        widest = max(btn.sizeHint().width() for btn in buttons)
+        return widest + self._NAV_WIDTH_BUFFER
 
     def _install_shortcuts(self) -> None:
         pairs = [

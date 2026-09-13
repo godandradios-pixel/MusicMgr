@@ -187,38 +187,53 @@ def verify(
     problems: list[str] = []
     if not db_path.exists():
         return [f"database missing at {db_path}"]
-    actual = snapshot_counts(db_path)
-    for table, count in expected.items():
-        if actual.get(table) != count:
-            problems.append(
-                f"{table}: expected {count} rows, found {actual.get(table)}"
-            )
-    conn = sqlite3.connect(str(db_path))
     try:
-        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        if integrity != "ok":
-            problems.append(f"integrity_check said: {integrity}")
-        missing_art = 0
-        for (cover,) in conn.execute(
-            "SELECT cover_path FROM releases WHERE cover_path IS NOT NULL"
-        ):
-            if not Path(cover).exists():
-                missing_art += 1
-        if missing_art:
-            problems.append(f"{missing_art} cover image(s) not found at their new path")
-        if artist_img_dir is not None:
-            missing_portraits = 0
-            for (image,) in conn.execute(
-                "SELECT image_path FROM artists WHERE image_path IS NOT NULL"
-            ):
-                if not Path(image).exists():
-                    missing_portraits += 1
-            if missing_portraits:
+        actual = snapshot_counts(db_path)
+        for table, count in expected.items():
+            if actual.get(table) != count:
                 problems.append(
-                    f"{missing_portraits} artist portrait(s) not found at their new path"
+                    f"{table}: expected {count} rows, found {actual.get(table)}"
                 )
-    finally:
-        conn.close()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                problems.append(f"integrity_check said: {integrity}")
+            missing_art = 0
+            for (cover,) in conn.execute(
+                "SELECT cover_path FROM releases WHERE cover_path IS NOT NULL"
+            ):
+                if not Path(cover).exists():
+                    missing_art += 1
+            if missing_art:
+                problems.append(f"{missing_art} cover image(s) not found at their new path")
+            if artist_img_dir is not None:
+                missing_portraits = 0
+                for (image,) in conn.execute(
+                    "SELECT image_path FROM artists WHERE image_path IS NOT NULL"
+                ):
+                    if not Path(image).exists():
+                        missing_portraits += 1
+                if missing_portraits:
+                    problems.append(
+                        f"{missing_portraits} artist portrait(s) not found at their new path"
+                    )
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        # 2026-09-13 fix: a database corrupted badly enough (e.g. "database
+        # disk image is malformed") can fail before PRAGMA integrity_check
+        # ever runs - snapshot_counts()'s own row-count queries above raise
+        # first. That used to propagate straight out of verify() as an
+        # unhandled sqlite3.DatabaseError, breaking this function's
+        # documented "returns a list of problems, never raises" contract
+        # (and, one level up, migrate()/repair()'s "reports a clean failed
+        # MigrationResult rather than raising" - see the matching notes
+        # there). Reporting it as just another problem string means
+        # integrity_check's job as "the backstop for a torn read" still
+        # gets done even when the corruption is too severe for
+        # integrity_check itself to be the thing that notices it.
+        problems.append(f"database unreadable: {exc}")
     return problems
 
 
@@ -402,7 +417,18 @@ def repair(data_dir: Path) -> MigrationResult:
         result.problems = verify(
             db_path, art_dir, snapshot_counts(db_path), artist_img_dir
         )
-    except sqlite3.OperationalError as exc:
+    except sqlite3.DatabaseError as exc:
+        # 2026-09-13 fix: this used to catch only sqlite3.OperationalError
+        # ("database is locked"/"busy") - but OperationalError is a
+        # *subclass* of DatabaseError, not the whole family. A genuinely
+        # corrupted library.db (e.g. "database disk image is malformed")
+        # raises plain DatabaseError, which slipped straight past this
+        # narrower catch and crashed repair()/migrate() outright - exactly
+        # what the module docstring promises never happens ("catches
+        # OperationalError/OSError and reports them as an ordinary failed
+        # MigrationResult rather than raising"). Catching the parent class
+        # closes that gap while still covering every OperationalError case
+        # this already handled.
         result.reason = "db_busy"
         result.error = str(exc)
         return result
@@ -515,7 +541,11 @@ def migrate(
 
         report("Verifying…")
         problems = verify(dst_db, dst_art, expected, dst_artist_img)
-    except sqlite3.OperationalError as exc:
+    except sqlite3.DatabaseError as exc:
+        # 2026-09-13 fix - see the matching note in repair(): OperationalError
+        # is a subclass of DatabaseError, not the whole family, so a
+        # corrupted source database used to crash migrate() outright
+        # instead of coming back as a clean, reportable MigrationResult.
         result.reason = "db_busy"
         result.error = str(exc)
         return result

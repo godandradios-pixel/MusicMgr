@@ -191,7 +191,10 @@ class CoverDelegate(QStyledItemDelegate):
         painter.restore()
 
         if selected:
-            painter.setPen(QColor(COLORS["accent"]))
+            # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for
+            # this whole cleanup) - selection outline, walnut brown now
+            # instead of red-orange.
+            painter.setPen(QColor(COLORS["jukebox_key_hi"]))
             painter.setBrush(Qt.NoBrush)
             painter.drawPath(clip)
 
