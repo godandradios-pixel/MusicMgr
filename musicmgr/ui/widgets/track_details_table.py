@@ -3,9 +3,10 @@
 Replaces the old three-pane Genre browser (genre -> releases -> tracks),
 which filed tracks under a release-level tag nobody actually browses music
 by. One row per track instead, with the columns James asked for: Genre,
-Album Artist, Album, Track #, Title, Time, Year, a tap-to-set Rating out of
-5 stars, and a tap-to-toggle Jukebox indicator (2026-09-05; Album added
-2026-09-06; Jukebox column added 2026-09-07 follow-up, see below).
+Album Artist, Album, Track #, Title, Time, Year, and a tap-to-set Rating
+out of 5 stars (2026-09-05; Album added 2026-09-06). A Jukebox column
+lived here too from 2026-09-07 until 2026-09-13, when it was removed
+again - see "The Jukebox column" below for that whole arc.
 
 Built on `QAbstractTableModel`/`QTableView` rather than the `QTreeWidget`
 "own the sort" pattern `VideoTable`/`ChartTable` use (see video_table.py's
@@ -47,27 +48,45 @@ The Rating column is interactive: `RatingDelegate` paints five stars per row
 and a tap sets the rating to however many stars sit at or left of it -
 tapping the star that already matches the current rating clears it back to
 unrated, so there's always a way to remove a rating without a separate
-control.
+control. The stars themselves shrank on a 2026-09-13 follow-up (see below)
+- same interaction, smaller footprint.
 
-The Jukebox column (2026-09-07 follow-up) is a second, independent
-interactive column: `JukeboxDelegate` paints one glyph - a filled circle
-when the track is loaded onto the jukebox board, an outline when it isn't -
-and a tap anywhere in the cell flips it. Until this follow-up, a track's
-star rating and its jukebox membership were the same thing: reaching 5
-stars auto-loaded it onto the board, dropping below 5 auto-removed it.
-James: "I don't like using my 5 stars to get a track on the Jukebox
-cards. Can we create another column to denote what track is included as
-a card... to select, maybe to the right of the 5 star ratings we can add
-a little Jukebox label or picture that can be clicked to get on the
-jukebox cards." The two are now fully independent controls side by side.
-Unlike `RatingDelegate`, which can compute the new rating from tap
-position alone and apply it immediately, the Jukebox toggle can't be
+The Jukebox column's whole arc: added 2026-09-07 (James: "I don't like
+using my 5 stars to get a track on the Jukebox cards. Can we create
+another column to denote what track is included as a card... to select,
+maybe to the right of the 5 star ratings we can add a little Jukebox
+label or picture that can be clicked to get on the jukebox cards.") as a
+second, independent interactive column - `JukeboxDelegate` painted one
+glyph, a filled circle when the track was loaded onto the jukebox board
+and an outline when it wasn't, flipped by a tap anywhere in the cell.
+Before that, a track's star rating and its jukebox membership were the
+same thing (5 stars auto-loaded it, dropping below 5 auto-removed it);
+this column split them into fully independent controls side by side.
+Unlike `RatingDelegate`, which computes the new rating from tap position
+alone and applies it immediately, the Jukebox toggle couldn't be
 optimistic the same way - flipping a track *onto* the board can fail (no
-resolvable album artist to file a slot under, see
-`services/library.py:toggle_jukebox_membership`), so the delegate's tap
-only asks the model to emit `jukeboxToggleRequested`; the model's own
-`on_jukebox` field is updated only once `LibraryView` calls back with the
-confirmed result via `set_on_jukebox()`.
+resolvable album artist to file a slot under), and, since a 2026-09-13
+follow-up earlier the same day this column was removed, turning it on
+opened `ui/views/jukebox.py`'s `JukeboxPickerDialog` for a genre choice
+rather than landing immediately either - so the delegate's tap only asked
+the model to emit `jukeboxToggleRequested`, with `on_jukebox` updated only
+once `LibraryView` called back with the confirmed result.
+
+Removed the same day, a follow-up later still - James: "remove the
+jukebox option on the Title details table to give me more space for the
+title of the song." `COL_JUKEBOX`, `JukeboxDelegate`,
+`jukeboxToggleRequested`, `request_jukebox_toggle`, `set_on_jukebox`, and
+`ROLE_ON_JUKEBOX` are all gone from this file, along with
+`LibraryView`'s handler side of the same feature
+(`_on_jukebox_toggle_requested`/`_open_jukebox_picker_for`/that view's own
+`_search_addable_tracks`, all now-unreachable without a column to tap).
+`TrackDetailRow.on_jukebox` itself stays - `services.library.
+list_track_details` still computes it, and `_row_matches` still lets a
+search for the word "jukebox" find those tracks - only the dedicated
+column and its tap-to-toggle affordance are gone. Adding a track to the
+jukebox board is still possible from Now Playing's own toggle or the
+Jukebox page's own "+ Add to jukebox" picker; Title Details just isn't a
+third entry point for it any more.
 
 A search match can also be a video (2026-09-06, see `LibraryView.
 _load_details` and the module docstring in `views/library.py`) - woven in as
@@ -104,6 +123,7 @@ from PySide6.QtCore import QAbstractTableModel, QEvent, QModelIndex, QRect, Qt, 
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QHeaderView,
     QScroller,
     QStyle,
@@ -116,7 +136,7 @@ from PySide6.QtWidgets import (
 from ...config import TOUCH
 from ...services.player import QueueItem
 from ..theme import COLORS
-from .common import JUKEBOX_OFF, JUKEBOX_ON, STAR_COUNT, STAR_EMPTY, STAR_FULL
+from .common import STAR_COUNT, STAR_EMPTY, STAR_FULL
 from .cover_grid import MIN_TILES_FOR_SORTING
 
 COL_GENRE = 0
@@ -127,34 +147,31 @@ COL_TITLE = 4
 COL_TIME = 5
 COL_YEAR = 6
 COL_RATING = 7
-COL_JUKEBOX = 8
 
 HEADERS = (
     "Genre", "Album Artist", "Album", "Track #", "Title", "Time", "Year", "Rating",
-    "Jukebox",
 )
 
 #: the only columns with an alphabetical order worth jumping within - Track
-#: #/Time/Year/Rating/Jukebox are numeric or boolean, so the shared A-Z bar
-#: hides itself while one of those is the active sort (see `jump_letters()`)
+#: #/Time/Year/Rating are numeric, so the shared A-Z bar hides itself while
+#: one of those is the active sort (see `jump_letters()`)
 ALPHA_SORT_COLS = (COL_GENRE, COL_ALBUM_ARTIST, COL_ALBUM, COL_TITLE)
 
-#: STAR_COUNT/STAR_FULL/STAR_EMPTY and JUKEBOX_ON/JUKEBOX_OFF now live in
-#: widgets/common.py, shared with Now Playing's standalone StarRating/
-#: JukeboxToggle widgets (2026-09-06; Jukebox glyphs followed the same move
-#: 2026-09-07 once Now Playing needed its own tappable jukebox indicator too
-#: - see JukeboxToggle's docstring) - re-exported here (via the import
-#: above) so any other existing callers of `track_details_table.STAR_COUNT`/
-#: `.JUKEBOX_ON` etc. keep working unchanged.
+#: STAR_COUNT/STAR_FULL/STAR_EMPTY live in widgets/common.py, shared with Now
+#: Playing's standalone StarRating widget (2026-09-06) - re-exported here
+#: (via the import above) so any other existing callers of
+#: `track_details_table.STAR_COUNT` etc. keep working unchanged.
+#:
+#: JUKEBOX_ON/JUKEBOX_OFF used to be re-exported the same way for
+#: `JukeboxDelegate`'s glyphs - removed along with that whole column and
+#: delegate on 2026-09-13 (see the module docstring's "Removed the same
+#: day" paragraph); common.py's own JukeboxToggle widget (Now Playing)
+#: still imports them directly from there, unaffected.
 
 #: index().data() role RatingDelegate reads to know how many stars to fill -
 #: DisplayRole is left returning None for this column since the delegate,
 #: not QStyledItemDelegate's default text painting, owns how it looks
 ROLE_RATING = Qt.UserRole + 1
-
-#: index().data() role JukeboxDelegate reads to know which glyph to paint -
-#: same reasoning as ROLE_RATING above
-ROLE_ON_JUKEBOX = Qt.UserRole + 2
 
 
 @dataclass
@@ -189,9 +206,12 @@ class TrackDetailRow:
     is_video: bool = False
     video_id: Optional[int] = None
     #: True if this track is currently loaded onto the jukebox board -
-    #: independent of `rating` since the 2026-09-07 follow-up (see
-    #: `JukeboxDelegate` and the module docstring). Always False for a video
-    #: row, same as `rating` - there's nothing to toggle on one.
+    #: independent of `rating` since the 2026-09-07 follow-up (see the
+    #: module docstring). No column shows this any more (see the module
+    #: docstring's 2026-09-13 "Removed the same day" paragraph) but the
+    #: field itself stays: `_row_matches` still lets a search for the word
+    #: "jukebox" find these tracks. Always False for a video row, same as
+    #: `rating` - there's nothing to toggle on one.
     on_jukebox: bool = False
 
     @property
@@ -238,10 +258,6 @@ class TrackDetailsModel(QAbstractTableModel):
     `QTableView.setSortingEnabled(True)` whenever a header is tapped."""
 
     ratingChanged = Signal(int, int)  # track_id, new rating (0 = cleared)
-    #: a Jukebox-column tap - see `request_jukebox_toggle` and the module
-    #: docstring for why this doesn't mutate the model itself the way
-    #: set_rating() does
-    jukeboxToggleRequested = Signal(int)  # track_id
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -271,12 +287,10 @@ class TrackDetailsModel(QAbstractTableModel):
             return self._display(row, col)
         if role == ROLE_RATING and col == COL_RATING:
             return row.rating or 0
-        if role == ROLE_ON_JUKEBOX and col == COL_JUKEBOX:
-            return row.on_jukebox
         if role == Qt.TextAlignmentRole:
             if col in (COL_TRACK_NO, COL_TIME, COL_YEAR):
                 return Qt.AlignRight | Qt.AlignVCenter
-            if col in (COL_RATING, COL_JUKEBOX):
+            if col == COL_RATING:
                 return Qt.AlignCenter
             return Qt.AlignLeft | Qt.AlignVCenter
         return None
@@ -298,7 +312,7 @@ class TrackDetailsModel(QAbstractTableModel):
             return format_duration(row.duration_ms)
         if col == COL_YEAR:
             return str(row.year) if row.year else ""
-        return None  # Rating/Jukebox - painted by their own delegates, not drawn as text
+        return None  # Rating - painted by its own delegate, not drawn as text
 
     # -- data ------------------------------------------------------------------
 
@@ -319,31 +333,6 @@ class TrackDetailsModel(QAbstractTableModel):
         index = self.index(row, COL_RATING)
         self.dataChanged.emit(index, index, [ROLE_RATING])
         self.ratingChanged.emit(detail.track_id, rating)
-
-    def request_jukebox_toggle(self, row: int) -> None:
-        """A Jukebox-column tap. Unlike `set_rating`, this doesn't touch
-        `on_jukebox` itself - whether a toggle-on succeeds depends on
-        server-side state (does this track have a resolvable album artist?)
-        that the model can't predict from the tap alone, so it just asks
-        `LibraryView` to make the change and waits for `set_on_jukebox` to
-        report back what actually happened."""
-        detail = self.row_at(row)
-        if detail is None or detail.is_video:
-            return
-        self.jukeboxToggleRequested.emit(detail.track_id)
-
-    def set_on_jukebox(self, track_id: int, on: bool) -> None:
-        """Applies the confirmed result of a jukebox toggle - looked up by
-        `track_id` rather than row index, since sorting or filtering can
-        reorder rows between the tap and this callback landing."""
-        for row, detail in enumerate(self._rows):
-            if detail.track_id == track_id:
-                if detail.on_jukebox == on:
-                    return
-                detail.on_jukebox = on
-                index = self.index(row, COL_JUKEBOX)
-                self.dataChanged.emit(index, index, [ROLE_ON_JUKEBOX])
-                return
 
     def count(self) -> int:
         return len(self._rows)
@@ -383,8 +372,6 @@ class TrackDetailsModel(QAbstractTableModel):
             return (row.year if row.year is not None else -1, row.sort_key)
         if col == COL_RATING:
             return (row.rating if row.rating is not None else -1, row.sort_key)
-        if col == COL_JUKEBOX:
-            return (1 if row.on_jukebox else 0, row.sort_key)
         return row.sort_key  # Title, and the fallback
 
     def _apply_sort(self) -> None:
@@ -393,12 +380,32 @@ class TrackDetailsModel(QAbstractTableModel):
 
 class RatingDelegate(QStyledItemDelegate):
     """Paints and edits the Rating column only; every other column falls
-    through to the default text rendering."""
+    through to the default text rendering.
+
+    2026-09-13 follow-up (James: "see if you can make the 5 star rating
+    take up less column space," the same message that asked for the
+    Jukebox column's removal - see the module docstring) - `star_size`/
+    `gap` shrank from 22px/6px to 16px/4px, and `column_width()` below
+    (read by the view when it sets `COL_RATING`'s fixed width, rather than
+    a hand-copied number that could quietly drift out of sync with these
+    two) shrank to match: was a hardcoded `6 * 22 + 40 = 172`, now
+    computed from the actual star geometry plus the same 20px of padding
+    the old number implied. `editorEvent`'s hit-testing already forgives
+    an imprecise tap - full row height, and each star's tap "band" already
+    pads a few pixels past its own glyph - so the smaller glyphs stay
+    perfectly tappable; they just draw and lay out smaller."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.star_size = 22
-        self.gap = 6
+        self.star_size = 16
+        self.gap = 4
+
+    def column_width(self) -> int:
+        """The fixed `COL_RATING` width this delegate actually needs -
+        read by the view instead of a hardcoded number, so a future change
+        to `star_size`/`gap` can't silently leave the column too narrow (or
+        wider than necessary) again."""
+        return STAR_COUNT * self.star_size + (STAR_COUNT - 1) * self.gap + 20
 
     def _star_rects(self, rect: QRect) -> list[QRect]:
         total_w = STAR_COUNT * self.star_size + (STAR_COUNT - 1) * self.gap
@@ -428,7 +435,10 @@ class RatingDelegate(QStyledItemDelegate):
         painter.setFont(font)
         for position, rect in enumerate(self._star_rects(option.rect), start=1):
             filled = position <= rating
-            painter.setPen(QColor(COLORS["accent"] if filled else COLORS["text_dim"]))
+            # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for
+            # this whole cleanup) - filled stars, walnut brown now instead
+            # of red-orange (matches ui/widgets/common.py's StarRating).
+            painter.setPen(QColor(COLORS["jukebox_key_hi"] if filled else COLORS["text_dim"]))
             painter.drawText(rect, Qt.AlignCenter, STAR_FULL if filled else STAR_EMPTY)
         painter.restore()
 
@@ -462,55 +472,12 @@ class RatingDelegate(QStyledItemDelegate):
         return False
 
 
-class JukeboxDelegate(QStyledItemDelegate):
-    """Paints and edits the Jukebox column only - a single filled/outline
-    circle rather than `RatingDelegate`'s five star positions, since this
-    column is a plain on/off toggle rather than a 1-5 scale. Mirrors
-    `RatingDelegate`'s paint/editorEvent structure otherwise."""
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.glyph_size = 22
-
-    def paint(self, painter: QPainter, option, index: QModelIndex) -> None:
-        if index.column() != COL_JUKEBOX:
-            super().paint(painter, option, index)
-            return
-        row = index.model().row_at(index.row())
-        if row is not None and row.is_video:
-            # a video isn't a track and has nothing to load onto the board
-            return
-        painter.save()
-        painter.setRenderHint(QPainter.Antialiasing)
-        if option.state & QStyle.State_Selected:
-            painter.fillRect(option.rect, QColor(COLORS["surface_hi"]))
-        on = bool(index.data(ROLE_ON_JUKEBOX))
-        font = painter.font()
-        font.setPixelSize(self.glyph_size)
-        painter.setFont(font)
-        painter.setPen(QColor(COLORS["accent"] if on else COLORS["text_dim"]))
-        painter.drawText(option.rect, Qt.AlignCenter, JUKEBOX_ON if on else JUKEBOX_OFF)
-        painter.restore()
-
-    def editorEvent(self, event, model, option, index: QModelIndex) -> bool:
-        if index.column() != COL_JUKEBOX:
-            return super().editorEvent(event, model, option, index)
-        row = model.row_at(index.row())
-        if row is not None and row.is_video:
-            return False
-        if event.type() == QEvent.MouseButtonRelease:
-            point = event.position().toPoint()
-            if not option.rect.contains(point):
-                return False
-            model.request_jukebox_toggle(index.row())
-            return True
-        return False
-
-
 class TrackDetailsTable(QWidget):
     """The Title Details table: a `QTableView` over `TrackDetailsModel` with
-    a star-rating delegate on its Rating column and a toggle delegate on its
-    Jukebox column (2026-09-07 follow-up).
+    a star-rating delegate on its Rating column. It carried a second toggle
+    delegate on a Jukebox column from 2026-09-07 to 2026-09-13 - see the
+    module docstring's "Removed the same day" paragraph for that whole arc;
+    `JukeboxDelegate` no longer exists in this file.
 
     `set_rows()` loads the full (unfiltered) row set; `set_filter_text()`
     narrows it live by title, genre, album artist or album - the same
@@ -528,13 +495,43 @@ class TrackDetailsTable(QWidget):
     acts" split `ratingChanged`/`videoActivated` already use. A video row
     keeps its existing single-tap-to-play behaviour (`_on_clicked`) rather
     than also reacting to a double click.
+
+    2026-09-13 follow-up (James: "on the track details, I want a checkbox
+    where it filters only on videos") - a "Videos only" `QCheckBox`
+    (`self.videos_only_checkbox`), backed by purely local state
+    (`self._videos_only` - no `LibraryView` involvement needed since
+    nothing here writes to the database). Every video row was already
+    loaded into `self._all_rows` alongside every track (see the module
+    docstring and `TrackDetailRow.is_video`) but, with the checkbox off,
+    stayed hidden unless the search box happened to match one -
+    `_apply_filter` now ANDs the checkbox with whatever's typed in the
+    search box rather than replacing it: checked with no search text
+    shows every video; checked with search text narrows to videos
+    matching it; unchecked is exactly the pre-existing behavior in both
+    cases.
+
+    Same-day fix: the checkbox's native indicator rendered as a bare
+    caret with no visible box in either state on James's machine -
+    nothing that read as "checkbox" at a glance. Given an explicit
+    stylesheet instead: an always-visible bordered square that fills
+    solid with the app's accent color when checked, rather than relying
+    on the platform to draw a checkmark glyph inside it.
+
+    Same day, second and third follow-ups (James: "move the Videos only
+    checkbox up on the Search this View..., to the right of the Space and
+    backspace buttons" - "don't take up an entire row for just that
+    Videos only" - then "move checkbox and Videos only completely to the
+    right, justified right"): this class still builds and owns the
+    checkbox (construction, its stylesheet, wiring `toggled` into
+    `_on_videos_only_toggled`/`_apply_filter`), but no longer places it in
+    `root`'s own layout - `LibraryView._build_details()` reparents the
+    one widget into its shared search header instead, flush against that
+    header's right edge, and shows/hides it there depending on which
+    presentation is active. See that method's own docstring for the
+    header-side half of this.
     """
 
     ratingChanged = Signal(int, int)  # track_id, new rating
-    #: a Jukebox-column tap (2026-09-07 follow-up), passed straight through
-    #: from the model - LibraryView calls back with set_jukebox_state() once
-    #: it knows whether the toggle succeeded
-    jukeboxToggleRequested = Signal(int)  # track_id
     #: a video row tapped as a search match (2026-09-06) - see
     #: TrackDetailRow.is_video and _on_clicked
     videoActivated = Signal(int)  # video_id
@@ -547,14 +544,66 @@ class TrackDetailsTable(QWidget):
         super().__init__(parent)
         self._all_rows: list[TrackDetailRow] = []
         self._filter_text = ""
+        #: 2026-09-13 follow-up - see the class docstring's newest entry.
+        self._videos_only = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
 
+        # 2026-09-13, second and third follow-ups (James: "move the Videos
+        # only checkbox up on the Search this View..., to the right of the
+        # Space and backspace buttons" - "don't take up an entire row for
+        # just that Videos only" - then "move checkbox and Videos only
+        # completely to the right, justified right") - constructed here
+        # (this class still owns the checkbox itself: its styling and the
+        # toggle wiring into `_apply_filter` below), but *not* added to
+        # `root` any more. `LibraryView._build_details()` reparents this
+        # one widget into its own shared search header instead, flush
+        # against that header's right edge, and shows/hides it alongside
+        # the rest of the header depending on whether Title Details is the
+        # active presentation.
+        self.videos_only_checkbox = QCheckBox("Videos only")
+        self.videos_only_checkbox.setToolTip(
+            "Show only music videos, hiding every audio track - the same "
+            "video rows normally surfaced here only as a search match"
+        )
+        # 2026-09-13 fix: James reported the plain, unstyled QCheckBox's
+        # native indicator was barely readable as a checkbox at all - on
+        # his machine, checked looked like a bare "˅" caret floating next
+        # to the label with no visible box around it either way, nothing
+        # like the bordered square this app's other real checkboxes get
+        # for free from the platform elsewhere. Drawn explicitly instead
+        # of trusting native rendering: an always-visible bordered square
+        # (`surface_alt`, matching this table's own alternating-row tint)
+        # that fills solid with the app's jukebox_key_hi accent - already
+        # used for every other toggle-ish affordance in this file, e.g.
+        # the star rating / jukebox delegates just above - when checked.
+        # No reliance on the platform drawing a checkmark glyph inside it
+        # at all; the fill *is* the checked state.
+        self.videos_only_checkbox.setStyleSheet(
+            f"""
+            QCheckBox {{ color: {COLORS['text']}; spacing: 8px; }}
+            QCheckBox::indicator {{
+                width: 22px;
+                height: 22px;
+                border: 2px solid {COLORS['text_dim']};
+                border-radius: 4px;
+                background: {COLORS['surface_alt']};
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {COLORS['jukebox_key_hi']};
+            }}
+            QCheckBox::indicator:checked {{
+                background: {COLORS['jukebox_key_hi']};
+                border-color: {COLORS['jukebox_key_hi']};
+            }}
+            """
+        )
+        self.videos_only_checkbox.toggled.connect(self._on_videos_only_toggled)
+
         self.model = TrackDetailsModel(self)
         self.model.ratingChanged.connect(self.ratingChanged)
-        self.model.jukeboxToggleRequested.connect(self.jukeboxToggleRequested)
         self.model.modelReset.connect(self.updated)
 
         self.view = QTableView()
@@ -595,17 +644,18 @@ class TrackDetailsTable(QWidget):
         header.setStretchLastSection(False)
         for col in (COL_GENRE, COL_ALBUM_ARTIST, COL_ALBUM, COL_TITLE):
             header.setSectionResizeMode(col, QHeaderView.Stretch)
-        for col in (COL_TRACK_NO, COL_TIME, COL_YEAR, COL_RATING, COL_JUKEBOX):
+        for col in (COL_TRACK_NO, COL_TIME, COL_YEAR, COL_RATING):
             header.setSectionResizeMode(col, QHeaderView.Fixed)
         self.view.setColumnWidth(COL_TRACK_NO, 90)
         self.view.setColumnWidth(COL_TIME, 90)
         self.view.setColumnWidth(COL_YEAR, 90)
-        self.view.setColumnWidth(COL_RATING, 6 * 22 + 40)
-        self.view.setColumnWidth(COL_JUKEBOX, 90)
         self.rating_delegate = RatingDelegate(self.view)
+        # narrower than the old hardcoded 172px (2026-09-13 follow-up - see
+        # RatingDelegate's own docstring) - freed width flows into the four
+        # Stretch columns above, Title included, same as the Jukebox
+        # column's removal just below does
+        self.view.setColumnWidth(COL_RATING, self.rating_delegate.column_width())
         self.view.setItemDelegateForColumn(COL_RATING, self.rating_delegate)
-        self.jukebox_delegate = JukeboxDelegate(self.view)
-        self.view.setItemDelegateForColumn(COL_JUKEBOX, self.jukebox_delegate)
         QScroller.grabGesture(self.view.viewport(), QScroller.LeftMouseButtonGesture)
         root.addWidget(self.view, 1)
 
@@ -627,15 +677,15 @@ class TrackDetailsTable(QWidget):
         self.view.sortByColumn(COL_TITLE, Qt.AscendingOrder)
 
     def _on_clicked(self, index: QModelIndex) -> None:
-        if index.column() in (COL_RATING, COL_JUKEBOX):
-            return  # handled by RatingDelegate/JukeboxDelegate's own editorEvent
+        if index.column() == COL_RATING:
+            return  # handled by RatingDelegate's own editorEvent
         row = self.model.row_at(index.row())
         if row is not None and row.is_video and row.video_id is not None:
             self.videoActivated.emit(row.video_id)
 
     def _on_double_clicked(self, index: QModelIndex) -> None:
-        if index.column() in (COL_RATING, COL_JUKEBOX):
-            return  # double-tapping a star/toggle acts on it twice, not a play request
+        if index.column() == COL_RATING:
+            return  # double-tapping a star acts on it twice, not a play request
         row = self.model.row_at(index.row())
         if row is None or row.is_video:
             # a video row already plays on the first click above - nothing
@@ -689,24 +739,31 @@ class TrackDetailsTable(QWidget):
             or (row.on_jukebox and needle in "jukebox")
         )
 
+    def _on_videos_only_toggled(self, checked: bool) -> None:
+        self._videos_only = checked
+        self._apply_filter()
+
     def _apply_filter(self) -> None:
         needle = self._filter_text
+        candidates = self._all_rows
+        if self._videos_only:
+            # 2026-09-13 follow-up (see class docstring) - narrows the pool
+            # before the text filter below runs, so a search term with the
+            # checkbox on matches only within videos, not the whole library
+            candidates = [r for r in candidates if r.is_video]
         if not needle:
-            # video rows only ever appear as search matches - see
-            # TrackDetailRow.is_video and the module docstring
-            rows = [r for r in self._all_rows if not r.is_video]
+            if self._videos_only:
+                rows = candidates
+            else:
+                # video rows only ever appear as search matches - see
+                # TrackDetailRow.is_video and the module docstring
+                rows = [r for r in candidates if not r.is_video]
         else:
-            rows = [r for r in self._all_rows if self._row_matches(r, needle)]
+            rows = [r for r in candidates if self._row_matches(r, needle)]
         self.model.set_rows(rows)
 
     def count(self) -> int:
         return self.model.count()
-
-    def set_jukebox_state(self, track_id: int, on: bool) -> None:
-        """`LibraryView` calls this once it knows the confirmed result of a
-        jukebox toggle it requested via `jukeboxToggleRequested` - see the
-        class docstring."""
-        self.model.set_on_jukebox(track_id, on)
 
     # -- shared A-Z jump bar --------------------------------------------------
 

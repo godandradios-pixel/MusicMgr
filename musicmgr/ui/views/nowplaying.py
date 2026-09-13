@@ -26,11 +26,15 @@ rebuilds it correctly on arrival.
 
 2026-09-07 follow-up (James: "I also want to be able to click to add a
 jukebox entry from the track detail page"): a `JukeboxToggle` sits right
-next to the rating stars now, mirroring Title Details' own Jukebox column
-(`track_details_table.py`'s `JukeboxDelegate`) so the track that's
-actually playing can be loaded onto or pulled off the board without
-leaving this page - see `_on_jukebox_toggled` and `JukeboxToggle`'s own
-docstring in widgets/common.py."""
+next to the rating stars now (mirroring Title Details' own Jukebox column,
+which existed from 2026-09-07 to 2026-09-13 - see track_details_table.py's
+module docstring for that column's whole arc, including its removal) so
+the track that's actually playing can be loaded onto or pulled off the
+board without leaving this page - see `_on_jukebox_toggled` and
+`JukeboxToggle`'s own docstring in widgets/common.py. This toggle is
+unaffected by that column's removal; Now Playing is now one of only two
+remaining places to add a track to the jukebox board (the other being the
+Jukebox page's own "+ Add to jukebox" picker)."""
 
 from __future__ import annotations
 
@@ -39,6 +43,7 @@ from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QStackedWidget,
@@ -65,6 +70,7 @@ from ..widgets.common import (
 )
 from ..widgets.lyrics_panel import LyricsPanel
 from .base import BaseView
+from .jukebox import JukeboxPickerDialog
 
 
 class NowPlayingView(BaseView):
@@ -359,22 +365,70 @@ class NowPlayingView(BaseView):
             lib.set_track_rating(session, self._current_track_id, rating)
 
     def _on_jukebox_toggled(self) -> None:
-        """`self.jukebox_toggle` tapped - persists exactly like Title
-        Details' own Jukebox column does (services/library.py's
-        `toggle_jukebox_membership`, the same function `LibraryView.
-        _on_jukebox_toggle_requested` calls), so a track toggled from here
-        or there always agrees. Unlike `_on_rating_changed`, this can't be
-        fire-and-forget: the toggle can fail to add a track with no
-        resolvable album artist, so the confirmed result is read back and
-        only then applied to the glyph."""
+        """`self.jukebox_toggle` tapped - mirrors Title Details' own
+        Jukebox column (`LibraryView._on_jukebox_toggle_requested`) so a
+        track toggled from here or there always agrees. Unlike
+        `_on_rating_changed`, this can't be fire-and-forget.
+
+        2026-09-13 follow-up (see `LibraryView._on_jukebox_toggle_requested`'s
+        own docstring for the full story): turning OFF is still an
+        immediate flip, but turning ON now opens the standard
+        `JukeboxPickerDialog` pre-filled and pre-checked for the current
+        track, instead of silently filing it under the default genre via
+        `services/library.py:toggle_jukebox_membership`."""
         if self._current_track_id is None:
             return
+        track_id = self._current_track_id
         with self.ctx.session() as session:
-            result = lib.toggle_jukebox_membership(session, self._current_track_id)
-        if result is None:
+            track = session.get(Track, track_id)
+            if track is None:
+                return
+            if jukebox_svc.find_code_for_track(session, track_id) is not None:
+                jukebox_svc.remove_track(session, track_id)
+                self.jukebox_toggle.set_on(False)
+                return
+            artist_id = lib.album_artist_id_for_track(session, track)
+            title = track.title
+            release = track.release
+            artist_name = (
+                release.album_artist.name
+                if artist_id is not None and release is not None and release.album_artist is not None
+                else ""
+            )
+        if artist_id is None:
             self.ctx.notify("This track has no album artist to file a jukebox slot under")
             return
-        self.jukebox_toggle.set_on(result)
+        dialog = JukeboxPickerDialog(
+            self,
+            self._search_addable_tracks,
+            genres=jukebox_svc.JUKEBOX_GENRES,
+            default_genre=jukebox_svc.DEFAULT_JUKEBOX_GENRE,
+            initial_artist_query=artist_name,
+            initial_track_query=title,
+        )
+        dialog.check_track(track_id, artist_id)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        picks = dialog.selected_picks()
+        genre = dialog.selected_genre() or jukebox_svc.DEFAULT_JUKEBOX_GENRE
+        if not picks:
+            return
+        with self.ctx.session() as session:
+            for pick_track_id, pick_artist_id in picks:
+                jukebox_svc.place_track(session, pick_artist_id, pick_track_id, genre=genre)
+        # only the currently-playing track has a glyph on this page to
+        # update - an extra pick made from this same dialog (MAX_PICKS
+        # allows a second song) has no on-screen representation here the
+        # way it would in Title Details' own table
+        if any(pt == track_id for pt, _ in picks):
+            self.jukebox_toggle.set_on(True)
+
+    def _search_addable_tracks(self, artist_query: str, track_query: str) -> list[dict]:
+        """`JukeboxPickerDialog`'s `search_tracks` callback - see
+        `ui/views/jukebox.py:JukeboxView._search_addable_tracks`, the same
+        pattern for the same dialog's other call sites."""
+        with self.ctx.session() as session:
+            return jukebox_svc.search_addable_tracks(session, artist_query, track_query)
 
     def _on_position(self, ms: int) -> None:
         self.lyrics_panel.update_position(ms)
@@ -402,12 +456,15 @@ class NowPlayingView(BaseView):
             playing = idx == current_index
             rows.append({
                 "lead": "♪" if playing else str(idx + 1),
-                "lead_color": COLORS["accent"] if playing else COLORS["text_dim"],
+                # 2026-09-13 follow-up (see ui/theme.py's #Primary comment
+                # for this whole cleanup) - the currently-playing row's
+                # highlight, walnut brown now instead of red-orange.
+                "lead_color": COLORS["jukebox_key_hi"] if playing else COLORS["text_dim"],
                 "primary": item.title,
                 "secondary": item.artist,
                 "trail": format_duration(item.duration_ms),
                 "bold": playing,
-                "color": COLORS["accent"] if playing else COLORS["text"],
+                "color": COLORS["jukebox_key_hi"] if playing else COLORS["text"],
                 "index": idx,
             })
         self.queue_list.set_rows(rows)

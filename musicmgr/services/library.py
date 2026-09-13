@@ -493,11 +493,14 @@ def library_stats(session: Session) -> dict:
 
 def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
     """One row per track for the Title Details table (Genre / Album Artist /
-    Album / Track # / Title / Time / Year / Rating / Jukebox - see
+    Album / Track # / Title / Time / Year / Rating - see
     ui/widgets/track_details_table.py), replacing the old three-pane Genre
     browser (2026-09-05; Album column added 2026-09-06; playback fields
-    added 2026-09-06 follow-up; Jukebox column added 2026-09-07 follow-up,
-    see below).
+    added 2026-09-06 follow-up). A Jukebox column also lived there from
+    2026-09-07 until it was removed again 2026-09-13 (see that file's
+    module docstring) - `on_jukebox` is still computed and returned below
+    regardless, since `_row_matches` there still lets a search for the word
+    "jukebox" find these tracks even with no dedicated column to show it.
 
     `on_jukebox` is looked up as one batched `jukebox_svc.board_track_ids`
     query up front rather than a per-row membership check - the same "one
@@ -608,10 +611,12 @@ def set_track_rating(session: Session, track_id: int, rating: Optional[int]) -> 
     automatically loaded onto the jukebox, and one that dropped back below 5
     was pulled back off. James: "I don't like using my 5 stars to get a
     track on the Jukebox cards" - rating and jukebox membership are now
-    fully independent; this function only ever touches `track.rating`, and
-    jukebox membership is handled separately by
-    `toggle_jukebox_membership`, wired to Title Details' own Jukebox column
-    (see ui/widgets/track_details_table.py)."""
+    fully independent; this function only ever touches `track.rating`.
+    Jukebox membership itself was handled by Title Details' own Jukebox
+    column (removed 2026-09-13, see track_details_table.py's module
+    docstring) and is still handled by Now Playing's toggle - see
+    `ui/views/nowplaying.py:NowPlayingView._on_jukebox_toggled` - and the
+    Jukebox page's own "+ Add to jukebox" picker."""
     track = session.get(Track, track_id)
     if track is None:
         return False
@@ -620,30 +625,21 @@ def set_track_rating(session: Session, track_id: int, rating: Optional[int]) -> 
     return True
 
 
-def toggle_jukebox_membership(session: Session, track_id: int) -> Optional[bool]:
-    """Flips one track's jukebox membership on or off - Title Details'
-    own Jukebox column (James, 2026-09-07: "to select, maybe to the right
-    of the 5 star ratings we can add a little Jukebox label or picture that
-    can be clicked to get on the jukebox cards"), independent of the
-    track's star rating (see `set_track_rating`).
-
-    Returns True if the track is now on the board, False if it was on the
-    board and has just been taken off, or None if it wasn't on the board
-    and couldn't be added because it has no resolvable album artist (see
-    `album_artist_id_for_track`) - there's no artist to file a jukebox slot
-    under. The caller (ui/views/library.py) only needs to show a message
-    for that last case; the other two are a plain on/off flip."""
-    track = session.get(Track, track_id)
-    if track is None:
-        return None
-    if jukebox_svc.find_code_for_track(session, track_id) is not None:
-        jukebox_svc.remove_track(session, track_id)
-        return False
-    artist_id = album_artist_id_for_track(session, track)
-    if artist_id is None:
-        return None
-    jukebox_svc.place_track(session, artist_id, track.id)
-    return True
+#: 2026-09-13 removal note: `toggle_jukebox_membership(session, track_id)`
+#: used to live here - a plain flip that turned a track's membership on
+#: (always under `jukebox_svc.DEFAULT_JUKEBOX_GENRE`, no genre choice) or
+#: off, called by both Title Details' Jukebox column and Now Playing's
+#: toggle. James: "I want a better UI for the Jukebox 'picker'... The
+#: problem with the tracks is there is no way to select which genre the
+#: track should be on" - both callers now handle "turning on" themselves,
+#: opening `ui/views/jukebox.py`'s `JukeboxPickerDialog` (pre-filled and
+#: pre-checked for the tapped track) so a genre can actually be chosen,
+#: rather than funneling through one shared function that had no room for
+#: that choice. "Turning off" and the "no resolvable album artist" check
+#: are simple enough (`jukebox_svc.find_code_for_track`/`remove_track`,
+#: `album_artist_id_for_track` below) that both callers now just do those
+#: two steps directly rather than through a middleman function only one of
+#: whose two branches they could still share.
 
 
 def format_duration(ms: Optional[int]) -> str:

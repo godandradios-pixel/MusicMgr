@@ -68,13 +68,14 @@ STAR_COUNT = 5
 STAR_FULL = "★"
 STAR_EMPTY = "☆"
 
-#: shared with track_details_table.py's JukeboxDelegate (Title Details' own
-#: Jukebox column) and this module's own JukeboxToggle below, same reasoning
-#: as STAR_COUNT/STAR_FULL/STAR_EMPTY above - a filled vs. outline circle,
-#: continuing this codebase's plain-monochrome-Unicode icon convention rather
-#: than emoji, and echoing `services/jukebox.py`'s own "physical record
-#: behind the glass" metaphor - a filled record is on the board, an empty
-#: ring is off it (2026-09-07 follow-up).
+#: used by this module's own JukeboxToggle below (Now Playing's jukebox
+#: indicator) - a filled vs. outline circle, continuing this codebase's
+#: plain-monochrome-Unicode icon convention rather than emoji, and echoing
+#: `services/jukebox.py`'s own "physical record behind the glass" metaphor
+#: - a filled record is on the board, an empty ring is off it (2026-09-07
+#: follow-up). Also used by track_details_table.py's `JukeboxDelegate`
+#: (Title Details' own Jukebox column) from 2026-09-07 until that column's
+#: 2026-09-13 removal - see that file's module docstring.
 JUKEBOX_ON = "●"  # ●  BLACK CIRCLE
 JUKEBOX_OFF = "○"  # ○  WHITE CIRCLE
 
@@ -385,23 +386,29 @@ class StarRating(QWidget):
         return self._rating
 
     def _refresh(self) -> None:
+        # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for this
+        # whole cleanup) - filled stars, walnut brown now instead of
+        # red-orange.
         for position, lbl in enumerate(self._labels, start=1):
             filled = position <= self._rating
             lbl.setText(STAR_FULL if filled else STAR_EMPTY)
             lbl.setStyleSheet(
-                f"color: {COLORS['accent'] if filled else COLORS['text_dim']};"
+                f"color: {COLORS['jukebox_key_hi'] if filled else COLORS['text_dim']};"
             )
 
 
 class JukeboxToggle(QWidget):
     """A tappable jukebox on/off indicator, the same "clickable label" idiom
     `StarRating` uses just above but for a single toggle glyph rather than a
-    1-5 scale - Now Playing's counterpart to Title Details' own Jukebox
-    column (`track_details_table.py`'s `JukeboxDelegate`). James, 2026-09-07
-    follow-up: "I also want to be able to click to add a jukebox entry from
-    the track detail page" - the same on/off toggle Title Details already
-    got, just reached from wherever a track is actually playing instead of
-    from the table.
+    1-5 scale. James, 2026-09-07 follow-up: "I also want to be able to
+    click to add a jukebox entry from the track detail page" - originally
+    Now Playing's counterpart to Title Details' own Jukebox column
+    (`track_details_table.py`'s `JukeboxDelegate`), reached from wherever a
+    track is actually playing instead of from the table. That column was
+    removed 2026-09-13 (see track_details_table.py's module docstring);
+    this toggle is unaffected and is now, along with the Jukebox page's own
+    "+ Add to jukebox" picker, one of only two remaining ways to add a
+    track to the jukebox board.
 
     Unlike `StarRating`, which can compute and display its new value the
     moment a star is tapped, this can't flip its own glyph on tap - turning
@@ -448,7 +455,10 @@ class JukeboxToggle(QWidget):
 
     def _refresh(self) -> None:
         self._glyph.setText(JUKEBOX_ON if self._on else JUKEBOX_OFF)
-        color = COLORS["accent"] if self._on else COLORS["text_dim"]
+        # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for this
+        # whole cleanup) - "on" state, walnut brown now instead of
+        # red-orange (and a better fit for a jukebox-themed toggle besides).
+        color = COLORS["jukebox_key_hi"] if self._on else COLORS["text_dim"]
         self._glyph.setStyleSheet(f"color: {color};")
         self._label.setStyleSheet(f"color: {color};")
 

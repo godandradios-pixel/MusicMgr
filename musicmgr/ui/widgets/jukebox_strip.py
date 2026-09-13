@@ -151,6 +151,37 @@ renamed from `_on_move_requested`) decides what that means. This widget
 doesn't display a card's genre at all - `set_slot()` picks up the new
 `"genre"` key in the `slot_to_dict` payload without needing to read it;
 only the view/dialog layer cares.
+
+2026-09-13 follow-up - James, looking at a one-song card's greyed "OPEN"
+banner: "when I have a jukebox card with one song, I would like to click
+on the card and have the picker allow me to select a 2nd song." An empty
+side's banner used to be `setEnabled(False)`, which - on top of the
+greyed paint style this class already gave it - also made it a dead
+click target: a disabled `QAbstractButton` never fires `clicked` at all.
+The banner is now left enabled for both states; `_ChevronBanner.paintEvent`
+switches its look on `bool(self._code)` (empty sides are always painted
+with an empty `_code`, filled ones never are) instead of `isEnabled()`,
+so the visual is identical to before but no longer gates whether a tap
+does anything. `JukeboxStripWidget._on_key_clicked` now emits the new
+`fillRequested(this_slot_number)` signal for a tap on the still-open
+side instead of silently no-op'ing; `JukeboxView._on_fill_requested`
+opens the same `JukeboxPickerDialog` the page's own "+ Add to jukebox"
+button uses, pre-filled with this card's own artist and genre and capped
+at one pick (`max_picks=1`, a new constructor parameter - there's only
+one open side to fill), rather than a second, purpose-built dialog.
+
+Same day, a fourth follow-up (James: "let me right click on a jukebox
+card and allow me to edit the songs on the card") - this covers a side
+that's already filled too, not just an open one, which is why it's a new
+right-click menu action ("Edit songs…", added to `_build_context_menu`
+right after "Organize card…") rather than another tap target on the
+banners themselves: a filled banner's tap is already spoken for
+(`sideActivated`, which sends that side to Now Playing). The new
+`editRequested(this_slot_number)` signal reports only the slot, the same
+as `fillRequested` - `JukeboxView._on_edit_requested` opens a
+`JukeboxEditSongsDialog` (in `ui/views/jukebox.py`) showing both sides at
+once with Change/Clear controls, and applies whatever changed via the new
+`services.jukebox.set_slot_side`.
 """
 
 from __future__ import annotations
@@ -211,14 +242,18 @@ class _ChevronBanner(QAbstractButton):
     QPushButton, and why the whole banner (not a separate key) is the tap
     target.
 
-    States, all driven purely by `isEnabled()`/`isDown()`/`_now_playing`
-    rather than separate widgets: a filled, not-playing side is cream with
-    a brown outline and brown code box (the reference's resting look, red
+    States, all driven purely by `_code`/`isDown()`/`_now_playing` rather
+    than separate widgets: a filled, not-playing side is cream with a
+    brown outline and brown code box (the reference's resting look, red
     before the 2026-09-07 sixth follow-up retinted `COLORS["jukebox_key"]`
     et al. - see the module docstring); the currently-playing side fills
     solid brown with white text (there's no round key light to flash
     instead); an empty side (no second favorite paired onto this slot yet)
-    is greyed out and disabled, reading "OPEN" instead of a code.
+    is greyed out, reading "OPEN" instead of a code - but, since a
+    2026-09-13 follow-up (see the module docstring), no longer actually
+    disabled: tapping it is now a real gesture (`JukeboxStripWidget`'s new
+    `fillRequested` signal), so the grey "OPEN" look is purely paint, not
+    `isEnabled()` - see `paintEvent`'s `filled = bool(self._code)`.
 
     2026-09-07 follow-up - James, looking at a card: "The song titles
     should NOT be in all caps. They can be mixed case and hopefully
@@ -277,8 +312,11 @@ class _ChevronBanner(QAbstractButton):
         path.lineTo(rect.left(), rect.bottom())
         path.closeSubpath()
 
-        enabled = self.isEnabled()
-        if not enabled:
+        # 2026-09-13 follow-up (see the class docstring): an empty side is
+        # still clickable now (see `fillRequested`), so the grey "OPEN"
+        # look is decided by `_code` being blank, not `isEnabled()`.
+        filled = bool(self._code)
+        if not filled:
             fill = QColor(COLORS["surface_hi"])
             border = QColor(COLORS["border"])
             code_fill = QColor(COLORS["surface"])
@@ -296,7 +334,10 @@ class _ChevronBanner(QAbstractButton):
             code_fill = QColor(COLORS["jukebox_key"])
             code_text_color = QColor("#ffffff")
             title_color = QColor(COLORS["jukebox_ink"])
-        if enabled and self.isDown():
+        if self.isDown():
+            # both states are real tap targets now (2026-09-13 follow-up) -
+            # an "OPEN" banner darkens under a press exactly like a filled
+            # one always has
             fill = fill.darker(112)
 
         painter.setPen(QPen(border, 2))
@@ -344,6 +385,11 @@ class JukeboxStripWidget(QFrame):
 
     #: side ("A"/"B"), track_id - emitted when a filled side's banner is tapped
     sideActivated = Signal(str, int)
+    #: this_slot_number - emitted when an *empty* ("OPEN") side's banner is
+    #: tapped (2026-09-13 follow-up - see the module docstring). Only the
+    #: slot is reported, not which side - `services.jukebox.place_track`
+    #: is what actually decides which side a newly-picked song lands on.
+    fillRequested = Signal(int)
     #: this_slot_number - emitted when "Organize card…" is chosen from the
     #: card's right-click menu; see the module docstring's 2026-09-07
     #: notes. Kept as `moveRequested` even after the menu label and the
@@ -354,11 +400,33 @@ class JukeboxStripWidget(QFrame):
     #: from the same right-click menu; see the module docstring's
     #: 2026-09-07 "delete this card" follow-up
     removeRequested = Signal(int)
+    #: this_slot_number - emitted when "Edit songs…" is chosen from the
+    #: same right-click menu (2026-09-13 follow-up - James: "let me right
+    #: click on a jukebox card and allow me to edit the songs on the
+    #: card"). Unlike `fillRequested`, this covers *either* side, filled or
+    #: not - `JukeboxView._on_edit_requested` opens a dialog that shows
+    #: both of this slot's current songs and lets either be replaced or
+    #: cleared, writing changes through `services.jukebox.set_slot_side`.
+    editRequested = Signal(int)
 
     #: fixed width of the artist-name badge, whatever the artist's name is -
     #: see the module docstring's third 2026-09-07 follow-up for why this
-    #: can't just size to its text the way a plain QLabel would by default
-    _ARTIST_LABEL_WIDTH = 150
+    #: can't just size to its text the way a plain QLabel would by default.
+    #:
+    #: 2026-09-13 fix: James sent a screenshot of "Steve Miller Band" eliding
+    #: to "STEVE MILLER BA…" - an ordinary-length name, not the deliberately
+    #: extreme "Bob Seger & The Silver Bullet Band" case the 150px width was
+    #: originally sized around. Widened to 198, which is exactly the largest
+    #: value that costs nothing: the artist row's own width demand
+    #: (label width + the two divider lines' spacing) only starts to exceed
+    #: - and therefore drive - the column width past what _ChevronBanner's
+    #: sizeHint (210) already reserves once this label passes 198px, so the
+    #: whole card's fixed size (still set once via setFixedSize(sizeHint())
+    #: below) is completely unaffected. This comfortably fits the vast
+    #: majority of real artist billings ("The Rolling Stones," "Bruce
+    #: Springsteen," "Earth, Wind & Fire") without truncation; genuinely
+    #: long ones still elide, same as before.
+    _ARTIST_LABEL_WIDTH = 198
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -464,12 +532,13 @@ class JukeboxStripWidget(QFrame):
         if data is None:
             widgets["track_id"] = None
             banner.set_content("", "OPEN")
-            banner.setEnabled(False)
-            banner.setToolTip("")
+            # 2026-09-13 follow-up (see the module docstring): no longer
+            # setEnabled(False) - this side is now a real tap target
+            # (fillRequested), not a dead greyed-out placeholder.
+            banner.setToolTip("Tap to add a second song")
         else:
             widgets["track_id"] = data["track_id"]
             banner.set_content(code, data["title"])
-            banner.setEnabled(True)
             duration = format_duration(data.get("duration_ms"))
             banner.setToolTip(f"{artist_name} · {duration}" if artist_name else duration)
 
@@ -502,6 +571,13 @@ class JukeboxStripWidget(QFrame):
         widgets = self._rows[side]
         track_id = widgets["track_id"]
         if track_id is None:
+            # an empty ("OPEN") side, now a real tap target (2026-09-13
+            # follow-up - see the module docstring) rather than dead: an
+            # unused page-filler strip (never set_slot()'d, both sides
+            # empty) has no slot number to report, so this stays a no-op
+            # for that case only.
+            if self._slot_number is not None:
+                self.fillRequested.emit(self._slot_number)
             return
         self.sideActivated.emit(side, track_id)
 
@@ -520,10 +596,17 @@ class JukeboxStripWidget(QFrame):
         from before "Remove from jukebox…" existed) since it's no longer
         just the move action. The move action's own label reads "Organize
         card…" (not "Move to a different slot…") since 2026-09-07's genre
-        chips follow-up folded a genre control into the same dialog."""
+        chips follow-up folded a genre control into the same dialog.
+
+        "Edit songs…" (2026-09-13 follow-up) sits right after "Organize
+        card…" and before the separator: both are "adjust this card in
+        place" actions, while "Remove from jukebox…" below the separator
+        is the one destructive action on the menu."""
         menu = QMenu(self)
         move_action = menu.addAction("Organize card…")
         move_action.triggered.connect(self._on_move_clicked)
+        edit_action = menu.addAction("Edit songs…")
+        edit_action.triggered.connect(self._on_edit_clicked)
         menu.addSeparator()
         remove_action = menu.addAction("Remove from jukebox…")
         remove_action.triggered.connect(self._on_remove_clicked)
@@ -532,6 +615,10 @@ class JukeboxStripWidget(QFrame):
     def _on_move_clicked(self) -> None:
         if self._slot_number is not None:
             self.moveRequested.emit(self._slot_number)
+
+    def _on_edit_clicked(self) -> None:
+        if self._slot_number is not None:
+            self.editRequested.emit(self._slot_number)
 
     def _on_remove_clicked(self) -> None:
         if self._slot_number is not None:

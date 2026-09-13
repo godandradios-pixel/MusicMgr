@@ -7,10 +7,12 @@ a favorites capability. Any record with 5 star rating gets added to a title
 strip." (The automatic 5-star route described here was removed in a
 2026-09-07 follow-up - see services/jukebox.py's module docstring for why -
 so this founding quote is kept as-is for history, not as current
-behavior.) See services/jukebox.py for how slots get filled today (only
-through this view's "+ Add to jukebox" dialog, or Title Details' own
-Jukebox toggle column) and ui/widgets/jukebox_strip.py for how one title
-strip is drawn and played.
+behavior.) See services/jukebox.py's module docstring for the full list of
+how slots get filled today (this view's own "+ Add to jukebox" button,
+Title Details' Jukebox column, and Now Playing's Jukebox toggle - all
+three share this view's `JukeboxPickerDialog` as of a 2026-09-13
+follow-up) and ui/widgets/jukebox_strip.py for how one title strip is
+drawn and played.
 
 Tapping a side's key plays it immediately, the same way a real jukebox
 button does (James, when asked whether a tap should just queue the song
@@ -83,7 +85,9 @@ and the grid, exclusive like every other chip row in this app
 Picking a chip is purely a display filter - `refresh()` passes
 `genre=self._genre` through to `slot_count`/`page_count`/`list_slot_rows`
 - and resets to page 0, since a page number from one genre's board has no
-particular meaning on another's. `JukeboxAddDialog` grew a genre combo
+particular meaning on another's. `JukeboxAddDialog` (renamed
+`JukeboxPickerDialog` in a 2026-09-13 follow-up - see that class's own
+docstring) grew a genre combo
 (preselected to whichever chip is active) so a freshly-added card is filed
 under the right board from the start; the right-click dialog, renamed
 `JukeboxOrganizeDialog` (from `JukeboxMoveDialog`) and reached through the
@@ -105,7 +109,8 @@ color." `services.jukebox.JUKEBOX_GENRES` grew from five entries to seven
 and its tuple order changed to match - the chip row here builds one
 `ChipButton` per entry in that same order, so reordering the tuple is the
 entire fix for the on-screen left-to-right order, and every genre combo
-box (`JukeboxAddDialog`, `JukeboxOrganizeDialog`) picks up the new order
+box (`JukeboxAddDialog`/`JukeboxPickerDialog`, `JukeboxOrganizeDialog`)
+picks up the new order
 and members for free, being built the same way. Each chip's object name
 is overridden from `ChipButton`'s own default ("Chip") to "ChipWarm"
 right after construction, so `ui/theme.py`'s new `#ChipWarm:checked` rule
@@ -119,6 +124,109 @@ to ten, appended after Pop rather than interleaved into the existing
 order (unlike the sixth follow-up above, this one didn't ask for a
 reorder). Nothing else here changed - same ChipButton-per-entry loop,
 same ChipWarm styling, same genre combo boxes built off the same tuple.
+
+2026-09-13 follow-up - James: "the cards don't need to be a forced 3 cols
+by 4 rows. It should adjust as the window in the app adjusts." Column
+count used to be the fixed `GRID_COLUMNS = 3` constant, with only the row
+count (`_rows_that_fit`) responding to the window's actual size - an
+asymmetry left over from the fourth same-day 2026-09-07 follow-up above,
+which only ever asked "does this need to be a fixed 3x3," not "does this
+need to be a fixed *3-wide*." `GRID_COLUMNS` is gone, replaced by
+`MIN_COLUMNS`/`MAX_COLUMNS` and a `_cols_that_fit()` that mirrors
+`_rows_that_fit()` exactly - same "measure grid_host, divide by one fixed
+strip size plus spacing, walk down from the max" logic, just against
+`grid_host.width()` and the strips' width instead of height. The strip
+pool is now built MAX_ROWS x MAX_COLUMNS up front (bigger than before,
+but still trivial - see the third same-day 2026-09-07 follow-up for why
+pre-building beats constructing strips on demand), and `_arrange_grid()`
+re-places however many of them the current page needs at their new
+(row, col) whenever either dimension changes - `QGridLayout` has to be
+told every cell explicitly, so a widget's spot from the last arrangement
+doesn't just carry over the way its fixed size already does. Card size
+itself still never changes, same as every resizing-related follow-up
+above - only how many fit, in either direction now instead of just one.
+
+2026-09-13, later same-day follow-up (James: "close the gap of the space
+from the left sidebar menu options and the cards. too much empty space"):
+`BaseView`'s shared 20px left content margin (see ui/views/base.py) reads
+as a much wider band than that once the nav rail's own fixed width is
+added on top of it, and on this page - unlike, say, Library's own list
+view - there's no other visual element (a search box, a filter row)
+between the rail and the first column to make that band read as
+intentional spacing rather than empty space. `JukeboxView.__init__`
+narrows just its own `self._root` left margin to 6px right after calling
+`super().__init__`, rather than changing `BaseView`'s default and
+affecting every other page that didn't ask for this.
+
+Same day, next follow-up (James, after narrowing `_root`'s margin above
+still left "too much space" at the smallest window size): the remaining
+gap wasn't `_root` at all - `self.grid`, the `QGridLayout` the cards sit
+in, carries its own separate ~9px default contents margin on every side,
+independent of whatever margin its parent layout already applies. Zeroed
+in `__init__` alongside the other `self.grid.set*` calls, next to
+`_GridHost` (see that class's own docstring for the *other* Qt
+"minimum size" gotcha this same grid ran into).
+
+Same day, third follow-up (James: "still too much space" - this time
+confirmed after a full app restart, ruling out a stale running process
+as the cause): with both of the above already zeroed, the only thing
+left between the rail and the cards was `JukeboxStripWidget`'s own 4px
+outer frame margin (see ui/widgets/jukebox_strip.py) - real, but small.
+James still wanted it tighter, so `_root`'s left margin went from 6px
+to 0 in `JukeboxView.__init__`; that 4px card-frame inset is what's left
+today, and it's shared by every card on every side (it's also most of
+the visible gap *between* columns, on top of the grid's own 16px
+horizontal spacing), not something to strip out just for the leftmost
+column without changing how every card looks against its neighbors.
+
+2026-09-13, a later follow-up (James: "I want a better UI for the
+Jukebox 'picker'... I want a standard UI. [a] picker box that allows you
+to select a genre and search by track and/or artist"): `JukeboxAddDialog`
+was reworked into `JukeboxPickerDialog` (see that class's own docstring)
+- a single dialog, used both from this view's own "+ Add to jukebox"
+button and, new as of this follow-up, from a track-level Jukebox toggle
+turning ON (Title Details' column, Now Playing's toggle - see those two
+views' `_on_jukebox_toggle_requested`/`_on_jukebox_toggled`). Until now
+those two toggles had no genre picker of their own at all and silently
+filed every track under the default "Rock" page
+(`services/jukebox.py:DEFAULT_JUKEBOX_GENRE`) - James confirmed the
+toggle should open this same full picker dialog, pre-selected to
+whichever track was actually tapped, rather than a smaller
+genre-only popup of its own.
+
+Same day, a follow-up to the follow-up (James, looking at the picker's
+one combined "Search by track or artist" box: "I want the picker with
+two seperate search boxes. One for artist and one for track. I'll
+usually select an artist first, and then want to search within that
+artist for a song"): `JukeboxPickerDialog`'s single `search_box` became
+two - `artist_search` and `track_search` - ANDed together rather than
+either matching on its own the way the one combined box did, so typing
+an artist narrows the board and typing a track further narrows *within*
+whatever the artist box already matched. See the class's own docstring
+and `services/jukebox.py:search_addable_tracks` for how the two combine.
+
+Same day, a third follow-up (James, looking at a one-song card's greyed
+"OPEN" second banner: "when I have a jukebox card with one song, I would
+like to click on the card and have the picker allow me to select a 2nd
+song"): that banner is a real tap target now - see
+`ui/widgets/jukebox_strip.py`'s own module docstring for the widget-side
+half of this - and `_on_fill_requested` below opens the very same
+`JukeboxPickerDialog`, pre-filled with the card's own artist and genre
+and capped at one pick, rather than a second, purpose-built dialog just
+for this one entry point.
+
+Same day, a fourth follow-up (James: "let me right click on a jukebox
+card and allow me to edit the songs on the card"): a new "Edit songs…"
+entry on the card's right-click menu (see `ui/widgets/jukebox_strip.py`'s
+own module docstring for the widget-side half) opens the new
+`JukeboxEditSongsDialog` below, which shows both of the slot's sides -
+filled or not - with Change…/Clear controls per side. "Change…" reuses
+`JukeboxPickerDialog` yet again as a nested dialog (`show_genre=False`,
+`max_picks=1`); the outer dialog only tracks a plan until it's accepted,
+and `_on_edit_requested` applies it in one pass via the new
+`services/jukebox.py:set_slot_side` - the first place any of the three
+jukebox entry points can *replace* an already-filled side, not just fill
+an open one.
 """
 
 from __future__ import annotations
@@ -136,6 +244,8 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -146,27 +256,29 @@ from PySide6.QtWidgets import (
 from ...config import TOUCH
 from ...db.models import Track
 from ...services import jukebox as jkb_svc
-from ...services import library as lib_svc
 from ..context import AppContext
 from ..widgets.common import ChipButton, EmptyState, TouchButton, dim_label
 from ..widgets.jukebox_strip import JukeboxStripWidget
 from .base import BaseView
 
-#: 3 columns, with either 3 or 4 rows depending on how much vertical space
-#: is actually available - a full page readable at arm's length on a touch
-#: panel without its own scrolling (James, 2026-09-06: "make the jukebox 3
-#: columns instead of 2"). Row count is decided at runtime by
-#: `JukeboxView._rows_that_fit` (James, 2026-09-07 follow-up: "Does this
-#: need to be a fixed 3x3? I want the cards to stay the same size but
-#: would like it to expand to 3x4 if the page is high enough") - MIN_ROWS
-#: is what the board always shows even when there's no room for a fourth
-#: row, MAX_ROWS is the most it will ever show. services/jukebox.py's
-#: SLOTS_PER_PAGE (9) stays put as that module's own documented default
-#: for any other caller; this view always passes its own dynamically
-#: computed per_page instead of relying on it.
-GRID_COLUMNS = 3
+#: 3-6 columns and 3-4 rows, both decided at runtime from how much space
+#: `grid_host` actually has - a full page readable at arm's length on a
+#: touch panel without its own scrolling (James, 2026-09-06: "make the
+#: jukebox 3 columns instead of 2"; 2026-09-07 follow-up: "Does this need
+#: to be a fixed 3x3? ... would like it to expand to 3x4 if the page is
+#: high enough"; 2026-09-13 follow-up: "the cards don't need to be a
+#: forced 3 cols by 4 rows. It should adjust as the window in the app
+#: adjusts"). `JukeboxView._rows_that_fit`/`_cols_that_fit` do the actual
+#: measuring - MIN_ROWS/MIN_COLUMNS is what the board always shows even
+#: when there's no room for more, MAX_ROWS/MAX_COLUMNS is the most it will
+#: ever show (and how big a strip-widget pool gets built up front - see
+#: `__init__`). services/jukebox.py's SLOTS_PER_PAGE (9) stays put as that
+#: module's own documented default for any other caller; this view always
+#: passes its own dynamically computed per_page instead of relying on it.
 MIN_ROWS = 3
 MAX_ROWS = 4
+MIN_COLUMNS = 3
+MAX_COLUMNS = 6
 
 #: a physical 45 only has two sides - the picker refuses a third pick rather
 #: than silently bumping one back off, so the person always sees exactly
@@ -174,69 +286,126 @@ MAX_ROWS = 4
 MAX_PICKS = 2
 
 
-class JukeboxAddDialog(QDialog):
-    """"Select an artist and add 2 songs per title strip" - James's own
-    words for the manual half of populating the board. Picking an artist
-    loads every track on their own releases (`list_tracks_for_album_artist`
-    - the same source the artist page's own tracklist uses); checking a
-    track adds it to the pick list, capped at two since that's all one
-    physical 45 can hold. `services/jukebox.py:place_track` decides where
-    each picked song actually lands (an open side on one of this artist's
-    existing slots, or a fresh one) - this dialog only collects the picks.
+class JukeboxPickerDialog(QDialog):
+    """The standard "Add to jukebox" picker (2026-09-13 follow-up) - James:
+    "I want a better UI for the Jukebox 'picker'... The problem with the
+    tracks is there is no way to select which genre the track should be
+    on. I want a standard UI. [a] picker box that allows you to select a
+    genre and search by track and/or artist." One dialog, used from both
+    of the app's two places that add a track to the board:
 
-    2026-09-07 follow-up - James reported "I can't seem to be able to
-    select 2 songs and hit OK." Each row used to be a plain `QListWidgetItem`
-    with `Qt.ItemIsUserCheckable` and selection disabled - Qt only toggles
-    that kind of checkbox when the click lands on its small native
-    indicator glyph (a few pixels), not from clicking the row's text, and
-    with selection off there was no other feedback that a click had landed
-    anywhere. Tapping the song title itself (the obvious, large target) did
-    nothing. Fixed by giving every row a real `QCheckBox` as its item
-    widget (`setItemWidget`) sized to the app's own `TOUCH["row_height"]` -
-    a `QCheckBox` toggles from a click anywhere across its own label and
-    indicator, matching this app's "sized for fingers rather than mouse
-    pointers" touch-first design instead of fighting it.
+    - The Jukebox page's own "+ Add to jukebox" button
+      (`JukeboxView._open_add_dialog`).
+    - A track-level Jukebox toggle turning ON - Title Details' own column
+      (`ui/views/library.py`'s `_on_jukebox_toggle_requested`) and Now
+      Playing's toggle (`ui/views/nowplaying.py`'s `_on_jukebox_toggled`).
+      Neither of those had a genre picker of its own before this - a
+      track added that way silently landed on the default "Rock" page
+      every time (see `services/library.py:toggle_jukebox_membership`,
+      which no longer calls `place_track` itself for the "turning on"
+      case - see those two views for the replacement flow). Opened from
+      here, `initial_artist_query`/`initial_track_query`/`check_track`
+      pre-fill and pre-check the actual track that was tapped, so the
+      person just picks a genre and taps OK rather than re-finding the
+      song they already clicked on.
 
-    2026-09-07 follow-up - James's genre chips (see the module docstring's
-    fifth same-day follow-up) added a `genre_combo` here too, preselected
-    to whichever chip is active on the board when "+ Add to jukebox" is
-    tapped, so a freshly-picked song files onto the right genre page from
-    the start rather than always landing on the default board.
+    Replaces the previous "Add to jukebox" dialog's artist-first flow
+    (pick one artist from a dropdown, then check that artist's tracks one
+    artist at a time via `list_tracks_for_album_artist`) with two live
+    search boxes, `artist_search` and `track_search`, ANDed together
+    (`search_tracks`, backed by `services/jukebox.py:search_addable_tracks`)
+    - James confirmed replacing the dropdown outright rather than keeping
+    it alongside search, and a same-day follow-up split what started as
+    one combined "track or artist" box into these two separate ones:
+    "I'll usually select an artist first, and then want to search within
+    that artist for a song" - typing into `artist_search` narrows the
+    board down to that artist, and `track_search` narrows further within
+    whatever `artist_search` currently matches, rather than either field
+    needing to name the same track/artist pair on its own the way the one
+    combined box did. `genre_combo` and the checkbox-list mechanics
+    (capped at `max_picks` - the module `MAX_PICKS` by default, overridden
+    to 1 by `JukeboxView._on_fill_requested` when only one card side is
+    actually open - a real `QCheckBox` per row so a tap anywhere on the
+    label toggles it, see the 2026-09-07 fix this inherits unchanged) are
+    otherwise the same as before.
 
-    2026-09-07, later same-day follow-up - James, after the list below was
-    re-sorted to group by album ("the selection of songs needs to be
-    sorted alphabetically by title and grouped by album"): "can you show
-    the album in the list of songs? I can't tell how they are grouped in
-    the list." `tracks_for_artist` now hands back (id, title, album)
-    triples instead of (id, title) pairs, and each row's checkbox label is
-    "Title — Album" so the grouping the sort already does is actually
-    visible, not just an invisible reordering.
+    Picks persist across searches: `self._picks` (a `{track_id:
+    artist_id}` dict) is the source of truth for what's selected, not
+    whatever happens to be checked in the currently-visible results list
+    - typing into either search box re-renders the list from scratch
+    (`_render_results`), so a track picked under one search stays picked
+    (and, if it reappears under a later search, shows checked again) even
+    while it's scrolled out of view. Search can span multiple artists in
+    one go now (unlike the old artist-first flow), so picks are tracked
+    as `(track_id, artist_id)` pairs rather than one shared artist id plus
+    a bare list of track ids - `selected_picks()` replaces the old
+    `selected_artist_id()`/`selected_track_ids()` pair for exactly that
+    reason.
+
+    2026-09-13, fourth follow-up - reused as the nested "pick a
+    replacement" step inside `JukeboxEditSongsDialog`'s "Change…" button
+    (James: "let me right click on a jukebox card and allow me to edit the
+    songs on the card"). Two small additions support that reuse without
+    touching either existing call site's behavior: `show_genre=False`
+    hides `genre_combo` and its label entirely, since editing a slot's
+    songs never touches its genre; and `selected_rows()` returns each
+    pick's title alongside its ids (`self._pick_titles`, populated in
+    `_render_results`/`_on_checkbox_toggled`/`check_track` right alongside
+    `self._picks`) because the edit dialog needs the picked title to show
+    in its own side-by-side summary, which plain `selected_picks()`
+    doesn't carry.
     """
 
     def __init__(
         self,
         parent,
-        artists: list[tuple[int, str]],
-        tracks_for_artist: Callable[[int], list[tuple[int, str, str]]],
+        search_tracks: Callable[[str, str], list[dict]],
         genres: Sequence[str] = (),
         default_genre: Optional[str] = None,
+        initial_artist_query: str = "",
+        initial_track_query: str = "",
+        max_picks: int = MAX_PICKS,
+        title: str = "Add to jukebox",
+        show_genre: bool = True,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add to jukebox")
-        self.setMinimumSize(460, 520)
-        self._tracks_for_artist = tracks_for_artist
-        self._artist_id: Optional[int] = None
+        self.setWindowTitle(title)
+        self.setMinimumSize(460, 560)
+        #: `(artist_query, track_query) -> results` - see the class
+        #: docstring for how the two boxes below combine (ANDed, not
+        #: either/or the way the single box this replaced worked).
+        self._search_tracks = search_tracks
+        #: overridable per call site (2026-09-13 follow-up) - defaults to
+        #: the module `MAX_PICKS` (a fresh card's two open sides), but
+        #: `JukeboxView._on_fill_requested` passes 1 when there's only one
+        #: open side left to fill on an existing card.
+        self._max_picks = max_picks
+        #: {track_id: artist_id} - see class docstring; insertion order is
+        #: preserved (plain dict, py3.7+) though nothing currently relies
+        #: on that ordering.
+        self._picks: dict[int, int] = {}
+        #: {track_id: title} - kept alongside `self._picks` (2026-09-13,
+        #: fourth follow-up) purely for `selected_rows()`; unused by either
+        #: of the original two call sites, which only ever read
+        #: `selected_picks()`.
+        self._pick_titles: dict[int, str] = {}
 
         layout = QVBoxLayout(self)
 
-        layout.addWidget(dim_label("Artist"))
-        self.artist_combo = QComboBox()
-        for artist_id, name in artists:
-            self.artist_combo.addItem(name, artist_id)
-        self.artist_combo.currentIndexChanged.connect(self._on_artist_changed)
-        layout.addWidget(self.artist_combo)
+        layout.addWidget(dim_label("Search by artist"))
+        self.artist_search = QLineEdit()
+        self.artist_search.setPlaceholderText("Artist name…")
+        self.artist_search.textChanged.connect(self._on_search_changed)
+        layout.addWidget(self.artist_search)
 
-        layout.addWidget(dim_label("Genre page"))
+        layout.addWidget(dim_label("Search by track"))
+        self.track_search = QLineEdit()
+        self.track_search.setPlaceholderText("Track name…")
+        self.track_search.textChanged.connect(self._on_search_changed)
+        layout.addWidget(self.track_search)
+
+        self.genre_label = dim_label("Genre page")
+        layout.addWidget(self.genre_label)
         self.genre_combo = QComboBox()
         for genre in genres:
             self.genre_combo.addItem(genre, genre)
@@ -245,8 +414,15 @@ class JukeboxAddDialog(QDialog):
             if idx >= 0:
                 self.genre_combo.setCurrentIndex(idx)
         layout.addWidget(self.genre_combo)
+        if not show_genre:
+            # 2026-09-13, fourth follow-up (see class docstring): editing a
+            # slot's songs never touches its genre, so the nested picker
+            # inside `JukeboxEditSongsDialog` hides this control entirely
+            # rather than showing a genre choice that's simply ignored.
+            self.genre_label.hide()
+            self.genre_combo.hide()
 
-        layout.addWidget(dim_label(f"Songs (pick up to {MAX_PICKS})"))
+        layout.addWidget(dim_label(f"Songs (pick up to {self._max_picks})"))
         self.track_list = QListWidget()
         self.track_list.setSelectionMode(QAbstractItemView.NoSelection)
         layout.addWidget(self.track_list, 1)
@@ -261,65 +437,242 @@ class JukeboxAddDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        if artists:
-            self._on_artist_changed(0)
+        self._update_hint()
+        if initial_artist_query or initial_track_query:
+            # blocked while both boxes are filled in, then searched once at
+            # the end - filling them one at a time without blocking would
+            # fire an extra, immediately-superseded search on the first
+            # setText() alone (e.g. artist-only, before the track query
+            # that narrows it is in place)
+            self.artist_search.blockSignals(True)
+            self.track_search.blockSignals(True)
+            self.artist_search.setText(initial_artist_query)
+            self.track_search.setText(initial_track_query)
+            self.artist_search.blockSignals(False)
+            self.track_search.blockSignals(False)
+            self._on_search_changed()
 
-    def _on_artist_changed(self, index: int) -> None:
-        self._artist_id = self.artist_combo.itemData(index)
+    def _on_search_changed(self, _text: str = "") -> None:
+        artist_query = self.artist_search.text().strip()
+        track_query = self.track_search.text().strip()
+        results = (
+            self._search_tracks(artist_query, track_query)
+            if (artist_query or track_query)
+            else []
+        )
+        self._render_results(results)
+
+    def _render_results(self, results: list[dict]) -> None:
         self.track_list.clear()
-        for track_id, title, album in self._tracks_for_artist(self._artist_id):
+        for row in results:
+            track_id = row["track_id"]
             item = QListWidgetItem()
             item.setData(Qt.UserRole, track_id)
             # tall enough that the checkbox's own click area (its label +
             # indicator, not the bare row) is a real touch target - see the
-            # class docstring's 2026-09-07 follow-up
+            # 2026-09-07 fix note in the class docstring
             item.setSizeHint(QSize(0, TOUCH["row_height"]))
-            # "Title — Album" (2026-09-07, later same-day follow-up) - makes
-            # the list's own album grouping visible instead of the same
-            # bare titles it showed before that grouping existed
-            label = f"{title} — {album}" if album else title
+            label = f"{row['title']} — {row['artist_name']}"
+            if row.get("album"):
+                label += f" ({row['album']})"
             checkbox = QCheckBox(label)
+            checkbox.setProperty("track_id", track_id)
+            checkbox.setProperty("artist_id", row["artist_id"])
+            checkbox.setProperty("title", row["title"])
+            # reflects a pick made under an earlier search term - see the
+            # class docstring's "picks persist across searches" note
+            checkbox.setChecked(track_id in self._picks)
             checkbox.toggled.connect(self._on_checkbox_toggled)
             self.track_list.addItem(item)
             self.track_list.setItemWidget(item, checkbox)
         self._update_hint()
 
     def _on_checkbox_toggled(self, checked: bool) -> None:
-        if checked and len(self._checked_items()) > MAX_PICKS:
-            # last one over the limit - put it back rather than silently
-            # bumping an earlier pick, so the person's own two choices stick
-            box = self.sender()
-            box.blockSignals(True)
-            box.setChecked(False)
-            box.blockSignals(False)
-            return
+        box = self.sender()
+        track_id = box.property("track_id")
+        artist_id = box.property("artist_id")
+        title = box.property("title")
+        if checked:
+            if len(self._picks) >= self._max_picks and track_id not in self._picks:
+                # last one over the limit - put it back rather than silently
+                # bumping an earlier pick, so the person's own two choices
+                # stick (2026-09-07 fix, carried over unchanged)
+                box.blockSignals(True)
+                box.setChecked(False)
+                box.blockSignals(False)
+                return
+            self._picks[track_id] = artist_id
+            self._pick_titles[track_id] = title or ""
+        else:
+            self._picks.pop(track_id, None)
+            self._pick_titles.pop(track_id, None)
         self._update_hint()
 
-    def _row_checkbox(self, row: int) -> Optional[QCheckBox]:
-        item = self.track_list.item(row)
-        return self.track_list.itemWidget(item) if item is not None else None
-
-    def _checked_items(self) -> list[QListWidgetItem]:
-        items = []
+    def _sync_checkbox_for(self, track_id: int) -> None:
+        """Checks `track_id`'s row if it's currently in the visible results
+        list - used by `check_track` below, which updates `self._picks`
+        (the real source of truth) regardless of whether that row happens
+        to be on screen right now."""
         for row in range(self.track_list.count()):
-            checkbox = self._row_checkbox(row)
-            if checkbox is not None and checkbox.isChecked():
-                items.append(self.track_list.item(row))
-        return items
+            item = self.track_list.item(row)
+            if item.data(Qt.UserRole) == track_id:
+                checkbox = self.track_list.itemWidget(item)
+                if checkbox is not None and not checkbox.isChecked():
+                    checkbox.setChecked(True)
+                return
+
+    def check_track(self, track_id: int, artist_id: int, title: str = "") -> None:
+        """Pre-selects one track - used when this dialog is opened from a
+        track-level Jukebox toggle (see the class docstring) so the track
+        that was actually tapped starts out already picked, rather than
+        the person having to find and re-check it themselves after typing
+        a search for it. Call after construction (typically right after
+        `initial_artist_query`/`initial_track_query` have already narrowed
+        the results down to that exact track, so its row is visible to
+        show as checked). `title` is optional (2026-09-13, fourth
+        follow-up) - only `selected_rows()` callers need it; the two
+        original call sites don't pass it and don't need to."""
+        self._picks[track_id] = artist_id
+        if title:
+            self._pick_titles[track_id] = title
+        self._sync_checkbox_for(track_id)
+        self._update_hint()
 
     def _update_hint(self) -> None:
-        count = len(self._checked_items())
-        self.hint.setText(f"{count} of {MAX_PICKS} selected")
+        count = len(self._picks)
+        self.hint.setText(f"{count} of {self._max_picks} selected")
         self.ok_button.setEnabled(count > 0)
 
-    def selected_artist_id(self) -> Optional[int]:
-        return self._artist_id
-
-    def selected_track_ids(self) -> list[int]:
-        return [item.data(Qt.UserRole) for item in self._checked_items()]
+    def selected_picks(self) -> list[tuple[int, int]]:
+        """Every current pick as `(track_id, artist_id)` pairs - one
+        `place_track` call per pair is what both call sites do with this
+        (see `JukeboxView._open_add_dialog`)."""
+        return list(self._picks.items())
 
     def selected_genre(self) -> Optional[str]:
         return self.genre_combo.currentData()
+
+    def selected_rows(self) -> list[dict]:
+        """Every current pick as `{"track_id", "artist_id", "title"}`
+        dicts (2026-09-13, fourth follow-up) - like `selected_picks()` but
+        carrying the title too, for `JukeboxEditSongsDialog`'s own summary
+        of what was just picked. `selected_picks()` is left as-is for the
+        two original call sites, neither of which needs a title."""
+        return [
+            {"track_id": tid, "artist_id": aid, "title": self._pick_titles.get(tid, "")}
+            for tid, aid in self._picks.items()
+        ]
+
+
+class JukeboxEditSongsDialog(QDialog):
+    """"Edit songs…" (2026-09-13 follow-up) - James: "let me right click on
+    a jukebox card and allow me to edit the songs on the card." Shows this
+    slot's two sides, each with its current song title (or "— empty —")
+    and a Change…/Clear pair of buttons. "Change…" opens a nested
+    `JukeboxPickerDialog` (search by artist/track, capped at one pick,
+    `show_genre=False` since this never touches the slot's genre) scoped
+    by default to the slot's own artist, exactly like the picker
+    `JukeboxView._on_fill_requested` already opens for an *open* side -
+    this dialog is what extends that same picking flow to an already
+    filled side, and to both sides at once rather than just whichever one
+    happens to be open.
+
+    Only tracks a plan (`self._plan`) while open - `{"A": (track_id_or_
+    None, title), ...}`, one entry per side actually touched or cleared;
+    a side left alone entirely doesn't appear in `plan()`'s result at all,
+    so `JukeboxView._on_edit_requested` knows to leave it exactly as-is
+    rather than re-writing it to its own current value. All actual writes
+    happen there, via `services.jukebox.set_slot_side`, once, after this
+    dialog is accepted - the same "widget/dialog only reports the intent,
+    the view owns the database" split every other card action already
+    follows (`sideActivated`, `moveRequested`, `removeRequested`,
+    `fillRequested`)."""
+
+    #: sentinel meaning "this side hasn't been touched" - distinct from a
+    #: real planned value of `(None, "")` (an explicit Clear).
+    _UNCHANGED = object()
+
+    def __init__(self, parent, row: dict, search_tracks: Callable[[str, str], list[dict]]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Edit songs — Slot {row['slot_number']}")
+        self._row = row
+        self._search_tracks = search_tracks
+        self._plan: dict[str, object] = {"A": self._UNCHANGED, "B": self._UNCHANGED}
+        self._labels: dict[str, QLabel] = {}
+        self._clear_buttons: dict[str, TouchButton] = {}
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(dim_label(row.get("artist_name", "")))
+
+        for side in ("A", "B"):
+            row_widget = QWidget()
+            h = QHBoxLayout(row_widget)
+            h.setContentsMargins(0, 0, 0, 0)
+            label = QLabel()
+            self._labels[side] = label
+            h.addWidget(label, 1)
+            change_btn = TouchButton("Change…")
+            change_btn.clicked.connect(lambda _=False, s=side: self._on_change_clicked(s))
+            h.addWidget(change_btn)
+            clear_btn = TouchButton("Clear")
+            clear_btn.clicked.connect(lambda _=False, s=side: self._on_clear_clicked(s))
+            self._clear_buttons[side] = clear_btn
+            h.addWidget(clear_btn)
+            layout.addWidget(row_widget)
+            self._refresh_label(side)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _current(self, side: str) -> tuple[Optional[int], str]:
+        """`(track_id_or_None, title)` for `side` - whatever's planned so
+        far if this side has already been touched this session, otherwise
+        the slot's actual current value from `row` (as `get_slot_row`
+        shaped it: `row["side_a"]`/`row["side_b"]`, each `None` or a dict
+        with a `"title"` key)."""
+        plan_value = self._plan[side]
+        if plan_value is not self._UNCHANGED:
+            return plan_value
+        data = self._row.get("side_a" if side == "A" else "side_b")
+        if data is None:
+            return None, ""
+        return data["track_id"], data["title"]
+
+    def _refresh_label(self, side: str) -> None:
+        track_id, title = self._current(side)
+        self._labels[side].setText(f"Side {side}: {title}" if title else f"Side {side}: — empty —")
+        self._clear_buttons[side].setEnabled(track_id is not None)
+
+    def _on_change_clicked(self, side: str) -> None:
+        dialog = JukeboxPickerDialog(
+            self,
+            self._search_tracks,
+            initial_artist_query=self._row.get("artist_name", ""),
+            max_picks=1,
+            title=f"Choose a song for side {side}",
+            show_genre=False,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        rows = dialog.selected_rows()
+        if not rows:
+            return
+        picked = rows[0]
+        self._plan[side] = (picked["track_id"], picked["title"])
+        self._refresh_label(side)
+
+    def _on_clear_clicked(self, side: str) -> None:
+        self._plan[side] = (None, "")
+        self._refresh_label(side)
+
+    def plan(self) -> dict[str, tuple[Optional[int], str]]:
+        """`{"A": (track_id_or_None, title), ...}` - only sides actually
+        touched (changed or cleared) this session; see the class
+        docstring for why an untouched side is left out entirely rather
+        than included at its current value."""
+        return {side: value for side, value in self._plan.items() if value is not self._UNCHANGED}
 
 
 class JukeboxOrganizeDialog(QDialog):
@@ -412,16 +765,68 @@ class JukeboxOrganizeDialog(QDialog):
         return self.genre_combo.currentData()
 
 
+class _GridHost(QWidget):
+    """The plain container `JukeboxView.grid` lives in - overrides
+    `minimumSizeHint()` to always report zero rather than the default Qt
+    behavior of asking its layout, which would otherwise report however
+    much space the *currently placed* fixed-size strips need.
+
+    2026-09-13 fix (James: "the cards don't need to be a forced 3 cols by
+    4 rows. It should adjust as the window in the app adjusts" - see the
+    module docstring): with `self.grid.setSizeConstraint(QLayout.
+    SetNoConstraint)` alone, growing to a wide arrangement (say
+    MAX_COLUMNS=6 on a maximized window) still locked the *whole
+    application window* at that width and it could never be narrowed
+    again - SetNoConstraint only stops the grid layout from forcing this
+    widget's own `minimumSize()` up, but `minimumSizeHint()` (a different,
+    unaffected method that a *parent* layout consults - here, `BaseView`'s
+    own `self._root`) still delegates straight to the grid layout's
+    computed minimum regardless of that flag, so the oversized hint
+    propagated up through this view and pinned the whole window's minimum
+    width right along with it. A plain QWidget has no such override
+    available from outside, hence this tiny subclass - the actual "how
+    many strips fit" decision already lives entirely in `_rows_that_fit`/
+    `_cols_that_fit`, which is what should decide the size, not whatever
+    was left over from the last arrangement."""
+
+    def minimumSizeHint(self) -> QSize:  # noqa: D102 - Qt override
+        return QSize(0, 0)
+
+
 class JukeboxView(BaseView):
     title_text = "Jukebox"
 
     def __init__(self, ctx: AppContext, parent=None) -> None:
         super().__init__(ctx, parent)
+        # 2026-09-13 follow-up (James: "close the gap of the space from the
+        # left sidebar menu options and the cards. too much empty space"):
+        # `BaseView.__init__` sets a 20px left margin on `self._root` that
+        # every view shares (library, playlists, charts, settings, etc.),
+        # so it isn't something to change globally just because this one
+        # page's grid makes the gap more noticeable. Narrowed here, after
+        # `super().__init__` already built `self._root`, rather than
+        # touching `BaseView`'s own default.
+        #
+        # First narrowed to 6px, paired with zeroing `self.grid`'s own
+        # separate default margin below - James confirmed after a real
+        # app restart that the two together got the gap down to just this
+        # view's `JukeboxStripWidget` cards' own 4px outer frame (see
+        # ui/widgets/jukebox_strip.py's `outer.setContentsMargins`), but
+        # still asked for it tighter still. Taken all the way to 0 here -
+        # that remaining 4px card frame inset is the only thing left
+        # between the rail and the cards now, and it's shared by every
+        # side of every card (including the row spacing between columns),
+        # not something worth special-casing away just for the leftmost
+        # one.
+        _left, top, right, bottom = self._root.getContentsMargins()
+        self._root.setContentsMargins(0, top, right, bottom)
         self._page = 0
-        # settled by the first refresh()/resize measurement - MIN_ROWS is
-        # just the starting guess so `resizeEvent`'s "did this actually
-        # change" check has something to compare against before that.
+        # settled by the first refresh()/resize measurement - MIN_ROWS/
+        # MIN_COLUMNS are just the starting guess so `resizeEvent`'s "did
+        # this actually change" check has something to compare against
+        # before that.
         self._current_rows = MIN_ROWS
+        self._current_cols = MIN_COLUMNS
         # which genre chip is active - see the module docstring's fifth
         # same-day 2026-09-07 follow-up. Starts on DEFAULT_JUKEBOX_GENRE
         # ("Rock") rather than the first chip in the row, so a track filed
@@ -506,18 +911,57 @@ class JukeboxView(BaseView):
         )
         self.body().addWidget(self.empty_state)
 
-        self.grid_host = QWidget()
+        # _GridHost (see its own docstring) plus SetNoConstraint together
+        # stop this container's size from ever being dictated by however
+        # many strips happen to be placed in it right now - see _GridHost's
+        # docstring for why both are needed. Without them, growing past the
+        # old fixed 3 columns (2026-09-13 follow-up - see the module
+        # docstring) would permanently widen the whole application window
+        # the first time a wide screen fit more of them, with no way back.
+        self.grid_host = _GridHost()
         self.grid = QGridLayout(self.grid_host)
-        self.grid.setSpacing(16)
+        # vertical spacing tightened from 16 to 8 (2026-09-13 follow-up -
+        # see the module docstring's note on _rows_that_fit) - James
+        # reported the 4th row never showing even fully maximized; logging
+        # the real numbers showed _rows_that_fit was measuring correctly
+        # all along; a 4th row needs 4 strips + 3 gaps of vertical room,
+        # and on his display that came out just 5px short of what
+        # maximized actually offers (14px short of what his smallest
+        # window offered) - nothing to do with resize timing after all.
+        # Horizontal spacing (between columns) stays 16 - only the row gap
+        # was the tight dimension.
+        self.grid.setHorizontalSpacing(16)
+        self.grid.setVerticalSpacing(8)
+        self.grid.setSizeConstraint(QLayout.SetNoConstraint)
+        # 2026-09-13, later same-day follow-up (James, after the left-margin
+        # narrowing below still left "too much space between the menu
+        # options and the first row of cards" at the smallest window size):
+        # `QGridLayout` carries its own default ~9px contents margin on
+        # every side, on top of whatever margin `self._root` (this view's
+        # outer `QVBoxLayout`, set in `__init__` below) already has - that
+        # hidden second margin, not `_root`'s, turned out to be most of
+        # what was left of the gap once `_root`'s own left margin had
+        # already been narrowed. Zeroed here since the outer margin already
+        # controls how far the grid sits from the rail; nothing else in
+        # this layout depends on the grid having its own interior margin.
+        self.grid.setContentsMargins(0, 0, 0, 0)
         self.body().addWidget(self.grid_host, 1)
 
+        # built MAX_ROWS x MAX_COLUMNS up front regardless of what actually
+        # fits right now (2026-09-13 follow-up widened this from MAX_ROWS x
+        # 3 - see the module docstring) - a strip is cheap and this avoids
+        # ever constructing one on demand mid-resize (see the third
+        # same-day 2026-09-07 follow-up for why that matters). None of them
+        # are placed into `self.grid` yet - `_arrange_grid()` does that
+        # once the actual column count for the current size is known.
         self.strips: list[JukeboxStripWidget] = []
-        for i in range(MAX_ROWS * GRID_COLUMNS):
+        for _ in range(MAX_ROWS * MAX_COLUMNS):
             strip = JukeboxStripWidget()
             strip.sideActivated.connect(self._on_side_activated)
+            strip.fillRequested.connect(self._on_fill_requested)
+            strip.editRequested.connect(self._on_edit_requested)
             strip.moveRequested.connect(self._on_organize_requested)
             strip.removeRequested.connect(self._on_remove_requested)
-            self.grid.addWidget(strip, i // GRID_COLUMNS, i % GRID_COLUMNS)
             self.strips.append(strip)
 
         self.ctx.player.trackChanged.connect(self._on_track_changed)
@@ -544,6 +988,39 @@ class JukeboxView(BaseView):
                 return rows
         return MIN_ROWS
 
+    def _cols_that_fit(self) -> int:
+        """`_rows_that_fit`'s exact same measure-and-walk-down logic against
+        `grid_host.width()` instead of height (2026-09-13 follow-up - see
+        the module docstring). Never returns below MIN_COLUMNS, for the
+        same reason `_rows_that_fit` never returns below MIN_ROWS."""
+        strip_width = self.strips[0].sizeHint().width()
+        spacing = self.grid.horizontalSpacing()
+        available = self.grid_host.width()
+        for cols in range(MAX_COLUMNS, MIN_COLUMNS, -1):
+            needed = cols * strip_width + (cols - 1) * spacing
+            if available >= needed:
+                return cols
+        return MIN_COLUMNS
+
+    def _arrange_grid(self) -> None:
+        """Places however many strips the current page size
+        (`_current_rows` x `_current_cols`) needs into `self.grid` at their
+        (row, col) for that column count, in reading order. `QGridLayout`
+        has to be told every cell explicitly - unlike a strip's fixed size,
+        which is set once and never revisited, a strip's *position* is only
+        ever correct for the column count it was placed under, so this has
+        to run again every time either dimension changes, not just once in
+        `__init__` (2026-09-13 follow-up - see the module docstring).
+        Removing every strip first (rather than tracking what moved) is the
+        same "clear and rebuild" idiom other widgets in this app use for
+        their own layout changes (e.g. `VideoTable._rebuild`); with only a
+        few dozen strips in the pool this is not worth optimizing further."""
+        for strip in self.strips:
+            self.grid.removeWidget(strip)
+        per_page = self._current_cols * self._current_rows
+        for i, strip in enumerate(self.strips[:per_page]):
+            self.grid.addWidget(strip, i // self._current_cols, i % self._current_cols)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         # Qt may not have finished re-laying-out grid_host to its new size
@@ -554,13 +1031,31 @@ class JukeboxView(BaseView):
         # geometry. Same "recompute, only act if it changed" idiom
         # ui/widgets/album_tracks.py's TrackListWidget.resizeEvent already
         # uses for width instead of height.
-        QTimer.singleShot(0, self._apply_rows_for_current_size)
+        #
+        # 2026-09-13 follow-up - James reported the board settling one row
+        # short after maximizing. First suspected as this exact kind of
+        # measure-too-early race and "fixed" with a second, later-delayed
+        # recheck below - temporary diagnostic logging then showed that
+        # guess was wrong: _rows_that_fit was measuring correctly the whole
+        # time, and the window genuinely didn't have the ~576px of height a
+        # 4th row needs (it had 571, maximized) - a spacing issue, fixed in
+        # __init__ by tightening the grid's vertical spacing instead (see
+        # its own note there). The second recheck stays anyway - it's a
+        # no-op whenever the first one already got it right, so it costs
+        # nothing, and some future, much bigger jump could yet need it.
+        QTimer.singleShot(0, self._apply_grid_for_current_size)
+        QTimer.singleShot(200, self._apply_grid_for_current_size)
 
-    def _apply_rows_for_current_size(self) -> None:
+    def _apply_grid_for_current_size(self) -> None:
+        """Renamed from `_apply_rows_for_current_size` (2026-09-13 follow-up
+        - see the module docstring) now that both dimensions respond to a
+        resize, not just rows."""
         rows = self._rows_that_fit()
-        if rows == self._current_rows:
+        cols = self._cols_that_fit()
+        if rows == self._current_rows and cols == self._current_cols:
             return
         self._current_rows = rows
+        self._current_cols = cols
         self.refresh()
 
     def _on_genre_chip_clicked(self, button) -> None:
@@ -573,7 +1068,9 @@ class JukeboxView(BaseView):
 
     def refresh(self) -> None:
         self._current_rows = self._rows_that_fit()
-        per_page = GRID_COLUMNS * self._current_rows
+        self._current_cols = self._cols_that_fit()
+        self._arrange_grid()
+        per_page = self._current_cols * self._current_rows
         with self.ctx.session() as session:
             total = jkb_svc.slot_count(session, genre=self._genre)
             total_pages = jkb_svc.page_count(session, per_page=per_page, genre=self._genre)
@@ -628,6 +1125,77 @@ class JukeboxView(BaseView):
             tracks = [track] if track is not None else []
             if tracks:
                 self.ctx.play_tracks(tracks, source="jukebox")
+
+    def _on_fill_requested(self, slot_number: int) -> None:
+        """A tap on a one-song card's empty "OPEN" banner (2026-09-13
+        follow-up - James: "when I have a jukebox card with one song, I
+        would like to click on the card and have the picker allow me to
+        select a 2nd song"). Looks the slot up fresh
+        (`jkb_svc.get_slot_row`) rather than trusting whatever the strip
+        widget last rendered, since the board could have changed between
+        that render and the tap (another add, a removal, a re-file to a
+        different genre); a slot that's vanished in the meantime is a
+        silent no-op - the very next `refresh()` (triggered elsewhere, by
+        whatever actually changed the board) will already show its
+        current, correct state.
+
+        Opens the same `JukeboxPickerDialog` the page's own "+ Add to
+        jukebox" button uses, pre-filled with this card's own artist and
+        genre - a search starting from "this card" rather than blank -
+        and capped at one pick (`max_picks=1`): unlike a fresh "+ Add to
+        jukebox" placement, there's exactly one open side here to fill,
+        not two, and a second pick would have nowhere on *this* card to
+        land (`services/jukebox.py:place_track` would just start a new
+        card for it, defeating the point of tapping this one)."""
+        with self.ctx.session() as session:
+            row = jkb_svc.get_slot_row(session, slot_number)
+        if row is None:
+            return
+        dialog = JukeboxPickerDialog(
+            self,
+            self._search_addable_tracks,
+            genres=jkb_svc.JUKEBOX_GENRES,
+            default_genre=row["genre"],
+            initial_artist_query=row.get("artist_name", ""),
+            max_picks=1,
+            title="Add a second song",
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        picks = dialog.selected_picks()
+        genre = dialog.selected_genre() or row["genre"]
+        if not picks:
+            return
+        with self.ctx.session() as session:
+            for track_id, artist_id in picks:
+                jkb_svc.place_track(session, artist_id, track_id, genre=genre)
+        self.ctx.notify("Added to the jukebox")
+        self.refresh()
+
+    def _on_edit_requested(self, slot_number: int) -> None:
+        """"Edit songs…" (2026-09-13 follow-up) - James: "let me right
+        click on a jukebox card and allow me to edit the songs on the
+        card." Same fresh-lookup-and-silently-bail pattern as
+        `_on_fill_requested` above if the slot's vanished by the time this
+        fires. `JukeboxEditSongsDialog.plan()` only reports sides that
+        were actually touched, so an empty plan (dialog accepted with no
+        changes made, or cancelled) is a no-op - nothing to write, no
+        `refresh()` needed."""
+        with self.ctx.session() as session:
+            row = jkb_svc.get_slot_row(session, slot_number)
+        if row is None:
+            return
+        dialog = JukeboxEditSongsDialog(self, row, self._search_addable_tracks)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        plan = dialog.plan()
+        if not plan:
+            return
+        with self.ctx.session() as session:
+            for side, (track_id, _title) in plan.items():
+                jkb_svc.set_slot_side(session, slot_number, side, track_id)
+        self.ctx.notify("Jukebox card updated")
+        self.refresh()
 
     def _on_organize_requested(self, slot_number: int) -> None:
         """"Organize card…" (2026-09-07 follow-up; renamed from
@@ -689,57 +1257,35 @@ class JukeboxView(BaseView):
     # -- manual add ---------------------------------------------------------
 
     def _open_add_dialog(self) -> None:
-        with self.ctx.session() as session:
-            artists = [(a.id, a.name) for a in lib_svc.list_artists(session)]
-        if not artists:
-            self.ctx.notify("No artists in your library yet")
-            return
-
-        dialog = JukeboxAddDialog(
+        dialog = JukeboxPickerDialog(
             self,
-            artists,
-            self._load_tracks_for_artist,
+            self._search_addable_tracks,
             genres=jkb_svc.JUKEBOX_GENRES,
             default_genre=self._genre,
         )
         if dialog.exec() != QDialog.Accepted:
             return
-        artist_id = dialog.selected_artist_id()
-        track_ids = dialog.selected_track_ids()
+        picks = dialog.selected_picks()
         genre = dialog.selected_genre() or jkb_svc.DEFAULT_JUKEBOX_GENRE
-        if artist_id is None or not track_ids:
+        if not picks:
             return
         with self.ctx.session() as session:
-            for track_id in track_ids:
+            for track_id, artist_id in picks:
                 jkb_svc.place_track(session, artist_id, track_id, genre=genre)
         self.ctx.notify(
-            f"Added {len(track_ids)} song{'s' if len(track_ids) != 1 else ''} to the jukebox"
+            f"Added {len(picks)} song{'s' if len(picks) != 1 else ''} to the jukebox"
         )
         self.refresh()
 
-    def _load_tracks_for_artist(self, artist_id: int) -> list[tuple[int, str, str]]:
-        """`list_tracks_for_album_artist` itself orders chronologically by
-        release then track position - right for a discography, but the
-        "pick up to 2" checklist below is scanned for a specific song, not
-        browsed like an album's tracklist, so it's re-sorted here to group
-        by album (alphabetically) and then by title within each album
-        (2026-09-07, James: "the selection of songs needs to be sorted
-        alphabetically by title and grouped by album"). Sorting here rather
-        than changing the shared service function keeps every other caller
-        of `list_tracks_for_album_artist` (the artist page's own
-        tracklist) on its original chronological order.
-
-        Returns (id, title, album) triples, not just (id, title) - the
-        album name rides along so `JukeboxAddDialog` can show it next to
-        each song (2026-09-07, later same-day follow-up: "can you show the
-        album in the list of songs? I can't tell how they are grouped in
-        the list") rather than the grouping above being invisible."""
+    def _search_addable_tracks(self, artist_query: str, track_query: str) -> list[dict]:
+        """`JukeboxPickerDialog`'s `search_tracks` callback - one query
+        per keystroke straight to `services/jukebox.py:search_addable_tracks`,
+        matching how Library's own search box queries live too (see
+        `ui/views/library.py:_on_search_changed`), rather than the old
+        artist-first dialog's "load one artist's whole discography up
+        front" approach."""
         with self.ctx.session() as session:
-            tracks = list(lib_svc.list_tracks_for_album_artist(session, artist_id))
-            tracks.sort(
-                key=lambda t: ((t.release.title if t.release else "").lower(), t.title.lower())
-            )
-            return [(t.id, t.title, t.release.title if t.release else "") for t in tracks]
+            return jkb_svc.search_addable_tracks(session, artist_query, track_query)
 
 
 def _side_if_matching(code: Optional[str], slot_number: int) -> Optional[str]:

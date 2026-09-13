@@ -6,16 +6,31 @@ rating gets added to a title strip." One `JukeboxSlot` (db/models.py) is one
 numbered physical "record" behind the glass - a title strip with an A side
 and a B side, both by the same artist, exactly like a real 45.
 
-Two things load a track onto the board, and both funnel through the one
-`place_track` below rather than duplicating its slot-filling logic:
+Three places load a track onto the board, and all three funnel through the
+one `place_track` below rather than duplicating its slot-filling logic -
+since a 2026-09-13 follow-up, all three also share the same
+`ui/views/jukebox.py:JukeboxPickerDialog` for actually choosing what gets
+added and to which genre:
 
-- **From the artist picker**: `ui/views/jukebox.py`'s "Add to jukebox"
-  dialog lets James pick an artist and up to two of their songs (rating
-  irrelevant) and calls it once per chosen song.
-- **From Title Details' own Jukebox column**: a per-track on/off toggle
-  (`services/library.py:toggle_jukebox_membership`) next to that table's
-  Rating column - James can flip a single track on or off the board
-  without going through the artist picker at all.
+- **The Jukebox page's own "+ Add to jukebox" button** opens the picker
+  directly - James searches by track and/or artist (`search_addable_tracks`
+  below), picks up to two songs and a genre, and it calls `place_track`
+  once per chosen song.
+- **Title Details' own Jukebox column** and **Now Playing's Jukebox
+  toggle**: turning either ON opens the same picker dialog, pre-filled and
+  pre-checked for the specific track that was tapped
+  (`ui/views/library.py:LibraryView._on_jukebox_toggle_requested`,
+  `ui/views/nowplaying.py:NowPlayingView._on_jukebox_toggled`) - James can
+  still just pick a genre and tap OK without searching for anything.
+  Turning either OFF is a direct, immediate `remove_track` call with no
+  dialog at all.
+
+Until the 2026-09-13 follow-up above, the two toggles didn't open a
+dialog when turning on at all - they called
+`services/library.py:toggle_jukebox_membership` (since removed), which
+placed the track under `DEFAULT_JUKEBOX_GENRE` unconditionally. James:
+"I want a better UI for the Jukebox 'picker'... The problem with the
+tracks is there is no way to select which genre the track should be on."
 
 Until a 2026-09-07 follow-up, a third route existed too:
 `services/library.py:set_track_rating` used to call `place_track`
@@ -34,6 +49,21 @@ on one physical record instead of on two separate ones, matching a real
 jukebox where you'd load B-sides onto existing 45s before reaching for a
 fresh one. Slot numbers are assigned once, in order, and never reused or
 renumbered even after a slot empties out and is removed.
+
+2026-09-13 fix: that "never reused" promise was only actually true for
+non-highest slots. `_next_slot_number` used to compute
+`max(existing slot_number) + 1` fresh each time, so removing the
+*highest*-numbered card (deleting the newest slot, or clearing a
+single-slot board down to nothing) silently freed its number back up for
+the very next placement - tests written against the documented contract
+caught the gap (see tests/test_jukebox.py). `_next_slot_number` now reads
+and advances a persisted high-water mark in the generic `Setting` table
+(key `_NEXT_SLOT_NUMBER_KEY`) instead of deriving it from whichever rows
+happen to still exist, so a number stays retired for good once handed
+out, matching what this docstring always promised. Existing installs seed
+that counter from the current on-disk max the first time it's read, so
+numbers already in use are never disturbed - only future allocations are
+protected from here on.
 
 2026-09-07 follow-up: James asked for genre chips on the Jukebox page
 ("I would like the jukebox page to have a chip of 5 genres: Classic Rock,
@@ -61,13 +91,18 @@ from typing import Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from ..db.models import JukeboxSlot, Track
+from ..db.models import JukeboxSlot, Release, Setting, Track
+from .matching import normalize
 
 #: how many title strips make up one page of the selector - a small enough
 #: number that a touch panel can show a full page of strips at readable size
 #: without its own scrolling, matching how a real jukebox's mechanical
 #: carousel pages through a fixed number of records at a time. 9 (a full
-#: 3x3 page - see ui/views/jukebox.py:GRID_COLUMNS) since 2026-09-06.
+#: 3x3 page) since 2026-09-06. JukeboxView itself no longer has a fixed
+#: page size (2026-09-13 follow-up - see its own module docstring: page
+#: size now adapts to the actual window, via
+#: `JukeboxView._rows_that_fit`/`_cols_that_fit`), so this is only what any
+#: *other* caller gets by default.
 SLOTS_PER_PAGE = 9
 
 #: the fixed board categories James wants as chips on the Jukebox page
@@ -89,14 +124,27 @@ JUKEBOX_GENRES = (
     "Metal", "R&B", "Hip/Hop",
 )
 
-#: what a newly-placed track is filed under when nothing more specific is
-#: chosen - `services/library.py:toggle_jukebox_membership` (Title Details'
-#: and Now Playing's one-tap jukebox toggle) has no genre picker of its
-#: own, so a track added that way lands here and can be refiled later from
-#: the Jukebox page's own "Organize card…" dialog (see ui/views/jukebox.py).
-#: Must stay in sync with the literal default on `db.models.JukeboxSlot.genre`
-#: - that module can't import this constant without a circular import.
+#: what a newly-placed track is filed under when the picker dialog's own
+#: `genre_combo` doesn't resolve to anything (an empty `genres` sequence,
+#: or - defensively - a `None` from `currentData()`); also
+#: `JukeboxPickerDialog`'s own preselected default genre whenever the
+#: caller doesn't hand it a more specific one to preselect. Until a
+#: 2026-09-13 follow-up, this was also the *unconditional* genre for a
+#: track added via Title Details' or Now Playing's jukebox toggle - see
+#: the module docstring - since neither had a genre picker of its own back
+#: then; both now open the real picker dialog instead, so a track added
+#: through them can land anywhere, same as one added from the Jukebox
+#: page's own button. A track that does land here can always be refiled
+#: later from the Jukebox page's own "Organize card…" dialog (see
+#: ui/views/jukebox.py). Must stay in sync with the literal default on
+#: `db.models.JukeboxSlot.genre` - that module can't import this constant
+#: without a circular import.
 DEFAULT_JUKEBOX_GENRE = "Rock"
+
+#: `Setting.key` holding the next never-before-used slot number - see the
+#: 2026-09-13 fix note in the module docstring. A plain int stored as text,
+#: like every other row in the generic `settings` table.
+_NEXT_SLOT_NUMBER_KEY = "jukebox_next_slot_number"
 
 
 def _find_slot_for_track(session: Session, track_id: int) -> Optional[JukeboxSlot]:
@@ -111,8 +159,25 @@ def _find_slot_for_track(session: Session, track_id: int) -> Optional[JukeboxSlo
 
 
 def _next_slot_number(session: Session) -> int:
-    highest = session.scalar(select(func.max(JukeboxSlot.slot_number))) or 0
-    return highest + 1
+    """The next never-before-used slot number, advancing a persisted
+    high-water mark rather than `max(existing slot_number) + 1` - see the
+    2026-09-13 fix note in the module docstring for why that used to let a
+    number come back into circulation once the highest slot was removed.
+
+    On first use - no counter row yet, e.g. an existing install upgrading
+    into this fix - the counter is seeded from whatever the highest
+    slot_number *currently on the board* is, so numbers already assigned
+    are left exactly where they are; only allocations from here on are
+    protected."""
+    setting = session.get(Setting, _NEXT_SLOT_NUMBER_KEY)
+    if setting is None:
+        highest = session.scalar(select(func.max(JukeboxSlot.slot_number))) or 0
+        setting = Setting(key=_NEXT_SLOT_NUMBER_KEY, value=str(highest + 1))
+        session.add(setting)
+    next_number = int(setting.value)
+    setting.value = str(next_number + 1)
+    session.flush()
+    return next_number
 
 
 def place_track(
@@ -254,6 +319,77 @@ def remove_track(session: Session, track_id: int) -> None:
     session.flush()
 
 
+def set_slot_side(
+    session: Session, slot_number: int, side: str, track_id: Optional[int]
+) -> bool:
+    """"Edit songs…" (2026-09-13 follow-up) - James: "let me right click on
+    a jukebox card and allow me to edit the songs on the card." Overwrites
+    one side of an *existing* slot with a new track (or with None, to clear
+    that side outright) - unlike `place_track`, which only ever fills an
+    open side and never disturbs one that's already loaded.
+
+    Returns False as a no-op if `slot_number` doesn't exist any more (the
+    board changed while the edit dialog was open); True once the change is
+    committed via `session.flush()`, including the no-op-but-successful
+    case where `track_id` already matches what's currently on that side.
+
+    Three things make this trickier than a plain attribute assignment:
+
+    * Reassigning a side to the exact track it already holds is a no-op -
+      short-circuit before touching anything else, since routing it through
+      the dedup logic below would incorrectly clear the very value being
+      "set".
+    * `track_id` might already be loaded somewhere else on the board (a
+      different slot, or - see below - this same slot's *other* side).
+      Every track can only ever occupy one code, so the old location has to
+      be cleared first. When that old location is this same slot's other
+      side, it's cleared directly rather than via `remove_track`: calling
+      `remove_track` first would see both of this slot's sides still
+      holding old values (the side being set here hasn't been overwritten
+      yet), find neither empty, and leave the slot alone - which is fine -
+      but if it were instead a slot where clearing that other side would
+      leave both sides empty, `remove_track` would delete the row itself
+      before this function gets a chance to write the new value back onto
+      the now-deleted ORM object. Clearing the field directly sidesteps
+      that ordering hazard entirely, for both cases at once.
+    * After the new value is written, this side and the other side might
+      both now be empty (`track_id=None` clearing the last remaining
+      song) - same "delete the empty strip" rule `remove_track` already
+      follows.
+
+    Calling this twice in a row - once per side - is how the view
+    implements an A/B "swap": the first call moves side A's track onto
+    itself as a same-slot-other-side dedup of what's about to land on side
+    B, and the second call writes the rest through. See
+    `TestSetSlotSide.test_swap_sides` for the full trace."""
+    slot = session.scalar(
+        select(JukeboxSlot).where(JukeboxSlot.slot_number == slot_number)
+    )
+    if slot is None:
+        return False
+    current = slot.side_a_track_id if side == "A" else slot.side_b_track_id
+    if track_id == current:
+        return True
+    if track_id is not None:
+        existing = _find_slot_for_track(session, track_id)
+        if existing is not None:
+            if existing.slot_number == slot_number:
+                if existing.side_a_track_id == track_id:
+                    existing.side_a_track_id = None
+                else:
+                    existing.side_b_track_id = None
+            else:
+                remove_track(session, track_id)
+    if side == "A":
+        slot.side_a_track_id = track_id
+    else:
+        slot.side_b_track_id = track_id
+    if slot.side_a_track_id is None and slot.side_b_track_id is None:
+        session.delete(slot)
+    session.flush()
+    return True
+
+
 def remove_slot(session: Session, slot_number: int) -> bool:
     """Take a whole title strip off the board - both sides at once,
     whatever's loaded on either one. James, 2026-09-07: "I would like to
@@ -393,3 +529,102 @@ def list_slot_rows(
     """`list_slots` plus `slot_to_dict` in one call - what JukeboxView
     actually wants for a page. `genre` filters same as `list_slots`."""
     return [slot_to_dict(s) for s in list_slots(session, page, per_page, genre=genre)]
+
+
+def get_slot_row(session: Session, slot_number: int) -> Optional[dict]:
+    """One slot's `slot_to_dict` row, by number - not a page (2026-09-13
+    follow-up, `ui/views/jukebox.py`'s `_on_fill_requested`, wired to
+    `ui/widgets/jukebox_strip.py`'s new `fillRequested` signal). Tapping a
+    one-song card's empty "OPEN" banner needs this exact card's own
+    artist and genre fresh from the database - not whatever `refresh()`
+    last rendered into the strip - since the board could have changed
+    between that render and the tap (another add, a removal, a genre
+    re-file). Returns None if the slot number no longer exists, same
+    "board changed underneath the click" case `set_slot_genre`/
+    `swap_slots` already guard against with their own `bool` returns."""
+    slot = session.scalar(
+        select(JukeboxSlot)
+        .options(
+            selectinload(JukeboxSlot.artist),
+            selectinload(JukeboxSlot.side_a_track).selectinload(Track.release),
+            selectinload(JukeboxSlot.side_b_track).selectinload(Track.release),
+        )
+        .where(JukeboxSlot.slot_number == slot_number)
+    )
+    return slot_to_dict(slot) if slot is not None else None
+
+
+def search_addable_tracks(
+    session: Session,
+    artist_query: str = "",
+    track_query: str = "",
+    limit: int = 50,
+) -> list[dict]:
+    """Search-by-artist-and-track for the Jukebox picker dialog
+    (2026-09-13 follow-up, `ui/views/jukebox.py`'s `JukeboxPickerDialog`).
+    James's original ask ("I want a standard UI. [a] picker box that
+    allows you to select a genre and search by track and/or artist")
+    shipped as one combined search box matching on either; a same-day
+    follow-up split it into the two separate `artist_query`/`track_query`
+    parameters here, ANDed together rather than OR'd - James: "I'll
+    usually select an artist first, and then want to search within that
+    artist for a song." Either can be blank on its own (an artist-only or
+    track-only search still narrows the board), but both blank returns
+    nothing rather than the whole library. Matching itself is deliberately
+    kept in sync with `services/library.py:search`'s `tracks` branch
+    (`title_key.like` / `artist_display.ilike`) rather than reinventing
+    the matching rule a second time.
+
+    Every match is resolved up front to the artist a jukebox slot would
+    actually file it under - the same `Release.album_artist_id` rule
+    `services/library.py:album_artist_id_for_track` uses (inlined here
+    rather than imported, since `library.py` already imports this module
+    the other way round). A match with no resolvable album artist - a
+    various-artists compilation track, or a release that predates the
+    Album Artist column and hasn't been backfilled - is dropped rather
+    than shown and then failing to add when picked.
+
+    Returns plain dicts, not ORM rows (the dialog only ever reads these
+    four fields, and the session may close before the dialog does):
+    `track_id`, `title`, `artist_name` (the resolved *album* artist's
+    name, which is what a jukebox card will actually show - not the
+    track's own possibly-different `artist_display`), `artist_id`, and
+    `album` (the release title, to tell apart same-named tracks in the
+    results list). Capped at `limit` *results* - matches with no
+    resolvable artist don't count against it, so more rows than `limit`
+    may be scanned to fill it."""
+    artist_query = artist_query.strip()
+    track_query = track_query.strip()
+    if not artist_query and not track_query:
+        return []
+    stmt = (
+        select(Track)
+        .options(selectinload(Track.release).selectinload(Release.album_artist))
+        .order_by(Track.title)
+        .limit(limit * 3)
+    )
+    if artist_query:
+        stmt = stmt.where(Track.artist_display.ilike(f"%{artist_query}%"))
+    if track_query:
+        stmt = stmt.where(Track.title_key.like(f"%{normalize(track_query)}%"))
+    candidates = session.scalars(stmt).unique()
+
+    results: list[dict] = []
+    for track in candidates:
+        if len(results) >= limit:
+            break
+        release = track.release
+        artist_id = release.album_artist_id if release is not None else None
+        if artist_id is None:
+            continue
+        artist = release.album_artist
+        results.append(
+            {
+                "track_id": track.id,
+                "title": track.title,
+                "artist_name": artist.name if artist is not None else "",
+                "artist_id": artist_id,
+                "album": release.title if release is not None else "",
+            }
+        )
+    return results

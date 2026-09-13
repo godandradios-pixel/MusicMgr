@@ -95,6 +95,7 @@ from typing import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -161,7 +162,13 @@ class LibraryView(BaseView):
         # Artists/Albums/Tracks/Genre used to be a pill row right here; they
         # now live in the sidebar (app.py:_build_nav), nested under Library,
         # so this row is just the search controls.
+        #
+        # 2026-09-13 follow-up: stored on self (not just a local variable)
+        # so _build_details() below - called later in this same __init__,
+        # but from a separate method scope - can still reach it to insert
+        # the "Videos only" checkbox (see _build_details).
         header_controls = QHBoxLayout()
+        self.header_controls = header_controls
         header_controls.setSpacing(8)
 
         self.search_box = QLineEdit()
@@ -304,10 +311,44 @@ class LibraryView(BaseView):
     def _build_details(self) -> QWidget:
         self.details_table = TrackDetailsTable()
         self.details_table.ratingChanged.connect(self._on_rating_changed)
-        self.details_table.jukeboxToggleRequested.connect(self._on_jukebox_toggle_requested)
         self.details_table.videoActivated.connect(self._activate_video)
         self.details_table.trackActivated.connect(self._play_from_details)
         self.details_table.updated.connect(self._refresh_jump_bar)
+        # There used to be a `jukeboxToggleRequested` connection here too,
+        # wired to `_on_jukebox_toggle_requested`/`_open_jukebox_picker_for`
+        # (a Jukebox column, added 2026-09-07). Both the signal and those
+        # two handlers are gone as of a 2026-09-13 follow-up (James: "remove
+        # the jukebox option on the Title details table to give me more
+        # space for the title of the song") - see track_details_table.py's
+        # module docstring for the removal's full rationale. Adding a track
+        # to the jukebox board is still possible from Now Playing's own
+        # toggle or the Jukebox page's own "+ Add to jukebox" picker.
+
+        # 2026-09-13, second follow-up - James: "move the Videos only
+        # checkbox up on the Search this View..., to the right of the
+        # Space and backspace buttons" and "don't take up an entire row
+        # for just that Videos only." TrackDetailsTable still owns the
+        # checkbox itself (construction, styling, the toggle wiring into
+        # its own `_apply_filter`) - see its own docstring - this just
+        # reparents that one widget into the shared search header instead
+        # of the table's own layout.
+        #
+        # Third follow-up, same day ("move checkbox and Videos only
+        # completely to the right, justified right"): plain `addWidget`
+        # rather than an `insertWidget` at some index among the search
+        # buttons - `header_controls` already ends with the `addStretch(1)`
+        # from `__init__` by the time this method runs, so appending here
+        # lands the checkbox after that stretch, flush against the header's
+        # right edge, with the flexible space it just ate pushing it there
+        # rather than the search box/buttons cluster on the left.
+        self.header_controls.addWidget(self.details_table.videos_only_checkbox)
+        # Title Details is the only presentation this checkbox means
+        # anything for, so it starts hidden (the header's `_mode` is still
+        # whatever it was before Title Details was first built) and
+        # `_on_mode_changed` below shows/hides it alongside every other
+        # Title-Details-only sync it already does for the A-Z bar.
+        self.details_table.videos_only_checkbox.setVisible(self._mode == BROWSE_DETAILS)
+
         return self._pane("Title Details", self.details_table, name="details_title")
 
     def _pane(self, heading: str, widget: QWidget, name: str) -> QWidget:
@@ -374,6 +415,13 @@ class LibraryView(BaseView):
                 self._load_details()
             else:
                 self._apply_search()
+        # 2026-09-13, second follow-up (see _build_details) - the "Videos
+        # only" checkbox now lives in the shared search header, so it has
+        # to be shown/hidden by hand on a mode switch the same way the A-Z
+        # bar already is below, rather than getting that for free from
+        # QStackedWidget swapping panes the way it did as part of Title
+        # Details' own layout.
+        self.details_table.videos_only_checkbox.setVisible(self._mode == BROWSE_DETAILS)
         self._refresh_jump_bar()
 
     def _on_search_changed(self, text: str) -> None:
@@ -666,19 +714,6 @@ class LibraryView(BaseView):
     def _on_rating_changed(self, track_id: int, rating: int) -> None:
         with self.ctx.session() as session:
             lib.set_track_rating(session, track_id, rating)
-
-    def _on_jukebox_toggle_requested(self, track_id: int) -> None:
-        """A Jukebox-column tap (2026-09-07 follow-up). Unlike
-        `_on_rating_changed`, this can't be a fire-and-forget write - the
-        toggle can fail to add a track with no resolvable album artist (see
-        `services/library.py:toggle_jukebox_membership`), so the confirmed
-        result is read back and only then applied to the table."""
-        with self.ctx.session() as session:
-            result = lib.toggle_jukebox_membership(session, track_id)
-        if result is None:
-            self.ctx.notify("This track has no album artist to file a jukebox slot under")
-            return
-        self.details_table.set_jukebox_state(track_id, result)
 
     def _play_from_details(self, track_id: int) -> None:
         """A double-clicked Title Details row (`TrackDetailsTable.
