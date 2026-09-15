@@ -24,8 +24,9 @@ class AppContext(QObject):
     notified = Signal(str)
     #: request the main window switch to a view by key
     navigateRequested = Signal(str)
-    #: ask the Videos view to open and play a specific video - used by the
-    #: artist page's "Music videos" list, which lives in the Library view
+    #: ask the Videos view to open and play a specific video - used when a
+    #: Library search match (Albums/Artists/Tracks/Title Details) is a
+    #: single video, routed via LibraryView._activate_video
     playVideoRequested = Signal(int)
     #: ask the Videos view to group by Artist and scroll to one artist's
     #: section, rather than playing a specific video - used when a Library
@@ -47,17 +48,6 @@ class AppContext(QObject):
     #: target itself - MainWindow.navigate() is what actually tracks which
     #: section that was (see MainWindow._nowplaying_back_key).
     nowPlayingBackRequested = Signal()
-    #: the video player's "‹ Back" button asking to return to whatever
-    #: section was active before Videos was opened - the exact same pattern
-    #: as nowPlayingBackRequested, for the exact same reason: Videos has no
-    #: sidebar entry of its own any more (see "Now Playing and Videos
-    #: removed from the left sidebar" in architecture.md), so it's never a
-    #: place someone navigates *to* on purpose - only ever a mid-transit
-    #: waypoint on the way to playing a specific video (from a search match
-    #: or an artist page's own video list), and landing back on its table
-    #: after watching would be a dead end, the same gap Now Playing had
-    #: before its own back button existed (2026-09-06).
-    videoBackRequested = Signal()
     #: ask the Library view to open a specific artist's page - used by Now
     #: Playing's tappable artist name, so someone can jump straight from
     #: what's playing to that artist's page without hunting through Library

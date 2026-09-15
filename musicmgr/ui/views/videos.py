@@ -11,9 +11,10 @@ see architecture notes for the full history.
 
 Deliberately just one presentation (no Artists/Genres chips like the Library
 view) - a video is a flat row, not a Master/Release/Track hierarchy to browse
-several ways (see Video's docstring in db/models.py). An artist's own videos
-are also listed on their artist page (ArtistDetailPanel); tapping one there
-routes back through here via ctx.playVideoRequested.
+several ways (see Video's docstring in db/models.py). A Library search match
+(Albums/Artists/Tracks/Title Details) that's a video routes here too, via
+ctx.playVideoRequested/focusVideoArtistRequested - see
+LibraryView._activate_video/_activate_video_group.
 
 Watched folders are managed from Settings ("Watched video folders"), the same
 split Library uses between browsing (here) and folder bookkeeping (Settings).
@@ -69,13 +70,12 @@ class VideosView(BaseView):
 
     def _build_player(self):
         self.player_panel = VideoPlayerPanel(self.ctx)
-        # "‹ Back" leaves Videos entirely rather than dropping onto this
-        # view's own table (2026-09-06) - there's no sidebar entry for
-        # Videos any more, so its table is never somewhere the person
-        # actually meant to land; see ctx.videoBackRequested's docstring and
-        # MainWindow._go_back_from_videos, the same pattern Now Playing's
-        # own "‹ Back" button already uses.
-        self.player_panel.backRequested.connect(self.ctx.videoBackRequested.emit)
+        # "‹ Back" drops onto this view's own table (2026-09-15, once
+        # Videos got a real sidebar entry - see NAV_ITEMS in ui/app.py).
+        # Doesn't stop playback, same as leaving Now Playing doesn't stop
+        # music - the persistent PlayerBar keeps transport for it either way
+        # (see video_panel.py's docstring).
+        self.player_panel.backRequested.connect(lambda: self.panes.setCurrentIndex(PANE_TABLE))
         return self.player_panel
 
     # -- data loading -------------------------------------------------------

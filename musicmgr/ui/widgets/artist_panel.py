@@ -16,24 +16,25 @@ from sqlalchemy import func, select
 
 from ...db.models import Artist, Release, Track
 from ...services import library as lib
-from ...services import videos as vid_svc
 from ...services.library import format_duration
-from .common import Breadcrumb, CoverArt, TouchButton, TouchList, dim_label
-from .cover_grid import ALBUM_SORTS, CoverGrid, GridTile
+from .common import Breadcrumb, CoverArt, TouchButton, dim_label
+from .cover_grid import GridTile
+from .gatefold_coverflow import GatefoldCoverflow
 
 
 class ArtistDetailPanel(QWidget):
-    """One artist: their discography as a grid, plus play-everything actions.
+    """One artist: their discography as a folding cover row, plus
+    play-everything actions.
 
-    Also lists any music videos filed under this artist (Video.artist_id -
-    see services/video_scanner.py) underneath the release grid, when there
-    are any. Tapping one routes to the Videos view via
-    ctx.playVideoRequested rather than playing inline here - a video plays
-    in its own embedded pane there, not inside the Library view.
+    Used to also list the artist's music videos underneath the release row
+    (Video.artist_id - see services/video_scanner.py); removed 2026-09-15
+    (James: "Remove the video list...introduce a Video sidebar menu
+    option") in favor of a real "Videos" section of its own (see
+    NAV_ITEMS in ui/app.py) rather than duplicating a per-artist listing
+    here.
     """
 
     releaseActivated = Signal(int)
-    videoActivated = Signal(int)
 
     def __init__(self, ctx, parent=None) -> None:
         super().__init__(parent)
@@ -50,7 +51,17 @@ class ArtistDetailPanel(QWidget):
         # Breadcrumb for why (LibraryView wires the one click target this
         # page needs: back to the Artists grid).
         self.breadcrumb = Breadcrumb()
-        layout.addWidget(self.breadcrumb)
+        # the release row's own "N releases ‹ ›" counter/pager shares this
+        # row rather than getting one of its own below the header card
+        # (2026-09-15, James: "move the 41 releases up a row") - built by
+        # GatefoldCoverflow (it owns the wiring to the row itself) but laid
+        # out here, since *where* they sit is this page's call, not that
+        # widget's - see GatefoldCoverflow's own docstring.
+        crumb_row = QHBoxLayout()
+        crumb_row.setSpacing(8)
+        crumb_row.addWidget(self.breadcrumb)
+        crumb_row.addStretch(1)
+        layout.addLayout(crumb_row)
 
         header = QFrame()
         header.setObjectName("Card")
@@ -98,51 +109,19 @@ class ArtistDetailPanel(QWidget):
         hl.addLayout(meta, 0)
         layout.addWidget(header, 0, Qt.AlignLeft)
 
-        # a single left-to-right scrolling row, not a page-filling grid - an
-        # artist can have anywhere from one release to several hundred, and
-        # this is one section on a page that also has videos below it, not
-        # the whole screen the way the Albums library grid is. Smaller tiles
-        # than the full-page grid uses, so several fit across the row
-        # cleanly instead of one full tile plus a sliver of the next.
-        # No sort picker here either (2026-09-05) - pinned to Title, same as
-        # the top-level Library grids (see cover_grid.py's "Sort chips
-        # removed" note); James's follow-up request extended that removal to
-        # this row too.
-        self.releases = CoverGrid(
-            sorts=ALBUM_SORTS,
-            noun="release",
-            horizontal=True,
-            art_size=130,
-            default_sort="title",
-            show_sort_picker=False,
-        )
+        # a scroll/drag-driven "gatefold" row rather than a page-filling
+        # grid - an artist can have anywhere from one release to several
+        # hundred, and this is one section on a page. See
+        # gatefold_coverflow.py for the fold itself; sorted by title, same
+        # as the top-level Library grids.
+        self.releases = GatefoldCoverflow(noun="release", panel_size=190)
         self.releases.tileActivated.connect(self.releaseActivated.emit)
         layout.addWidget(self.releases, 0)
+        crumb_row.addWidget(self.releases.count_label)
+        crumb_row.addWidget(self.releases.prev_btn)
+        crumb_row.addWidget(self.releases.next_btn)
 
-        self.video_section = QWidget()
-        vs = QVBoxLayout(self.video_section)
-        vs.setContentsMargins(0, 0, 0, 0)
-        vs.setSpacing(6)
-        video_head = QLabel("Music videos")
-        video_head.setObjectName("Crumb")
-        vs.addWidget(video_head)
-        self.video_list = TouchList(row_height=64)
-        self.video_list.itemActivatedPayload.connect(
-            lambda p: self.videoActivated.emit(p["key"]) if p else None
-        )
-        vs.addWidget(self.video_list, 1)
-        # stretch=1 so this section fills whatever's left below the header
-        # and release row, the same way ReleaseDetailPanel anchors its
-        # track_list to the bottom of that page (see its
-        # `layout.addWidget(self.track_list, 1)`) - one list, one
-        # predictably-placed scrollbar flush with the page's true bottom
-        # edge. The old fixed setMaximumHeight(220) plus a trailing
-        # addStretch(1) left this list stranded mid-page with its own
-        # scrollbar floating above a block of dead space below it (James's
-        # "scroll bar in the middle" report, 2026-09-06) instead of reaching
-        # the bottom of the window.
-        layout.addWidget(self.video_section, 1)
-        self.video_section.setVisible(False)
+        layout.addStretch(1)
 
     # -- api ------------------------------------------------------------------
 
@@ -162,8 +141,6 @@ class ArtistDetailPanel(QWidget):
             self.name.setText("")
             self.stats.setText("")
             self.releases.set_tiles([])
-            self.video_list.set_rows([])
-            self.video_section.setVisible(False)
             self.breadcrumb.set_path([])
             return
 
@@ -209,17 +186,6 @@ class ArtistDetailPanel(QWidget):
                 artist.image_path or (tiles[0].cover_path if tiles else None),
                 artist.name,
             )
-
-            video_rows = [
-                {
-                    "primary": video.title,
-                    "secondary": format_duration(video.duration_ms),
-                    "key": video.id,
-                }
-                for video in vid_svc.list_videos(session, artist_id=artist_id)
-            ]
-        self.video_list.set_rows(video_rows)
-        self.video_section.setVisible(bool(video_rows))
 
         releases = len(tiles)
         tracks = len(self._tracks)

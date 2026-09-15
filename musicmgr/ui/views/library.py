@@ -281,7 +281,6 @@ class LibraryView(BaseView):
             lambda _index: self.panes.setCurrentIndex(PANE_ARTIST_GRID)
         )
         self.artist_detail.releaseActivated.connect(self._open_release_from_artist)
-        self.artist_detail.videoActivated.connect(self._open_video_from_artist)
         return self.artist_detail
 
     def _open_release_from_artist(self, release_id: int) -> None:
@@ -633,16 +632,11 @@ class LibraryView(BaseView):
         self.artist_detail.set_artist(artist_id)
         self.panes.setCurrentIndex(PANE_ARTIST_DETAIL)
 
-    def _open_video_from_artist(self, video_id: int) -> None:
-        """A tap on the artist page's "Music videos" list."""
-        self._activate_video(video_id)
-
     def _activate_video(self, video_id: int) -> None:
         """A search-matched video (in any of the four presentations - see the
-        module docstring, 2026-09-06) or an artist page's own video list
-        (`_open_video_from_artist`) switches to the Videos tab and plays it
-        there - a video plays in its own embedded pane, never inline inside
-        the Library view."""
+        module docstring, 2026-09-06) switches to the Videos tab and plays
+        it there - a video plays in its own embedded pane, never inline
+        inside the Library view."""
         self.ctx.navigateRequested.emit("videos")
         self.ctx.playVideoRequested.emit(video_id)
 
