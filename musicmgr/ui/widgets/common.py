@@ -41,7 +41,9 @@ from PySide6.QtWidgets import (
 )
 
 from ...config import TOUCH
+from ...services import artist_bio_downloader as bio_dl
 from ...services import lyrics_downloader as lyrics_dl
+from ...services import lastfm_popularity as popularity_dl
 from ..theme import COLORS
 
 ROLE_PAYLOAD = Qt.UserRole + 1
@@ -955,6 +957,65 @@ class LyricsDownloadThread(QThread):
         self.finished_with.emit(result)
 
 
+class BioDownloadThread(QThread):
+    """Runs `services.artist_bio_downloader.download_bios_for_artists` off
+    the UI thread - shared by the artist page's per-artist "Fetch bio"
+    button and Settings' bulk "Download artist profiles…" button (a single
+    artist is just a batch of one) - the same shape as LyricsDownloadThread
+    just above, for the same reason.
+
+    2026-09-16 follow-up (James: "Add a new menu option called artist
+    profile...collect a brief writeup of the artist" - see
+    artist_bio_downloader.py's own docstring for the full story and why a
+    fetched bio, unlike a downloaded lyric, is a database write rather than
+    a standalone sidecar file."""
+
+    progress = Signal(int, int, str)
+    finished_with = Signal(object)  # BioDownloadResult
+
+    def __init__(self, artist_ids: list, overwrite: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.artist_ids = artist_ids
+        self.overwrite = overwrite
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        result = bio_dl.download_bios_for_artists(
+            self.artist_ids,
+            overwrite=self.overwrite,
+            progress=lambda done, total, name: self.progress.emit(done, total, name),
+        )
+        self.finished_with.emit(result)
+
+
+class PopularityDownloadThread(QThread):
+    """Runs `services.lastfm_popularity.update_popularity_for_artists` off
+    the UI thread - shared by the artist page's per-artist "Fetch
+    popularity" button and Settings' bulk "Update track popularity from
+    Last.fm…" button (a single artist is just a batch of one) - the same
+    shape as BioDownloadThread just above, for the same reason.
+
+    2026-09-16 same-day follow-up (James, asked where "Top Tracks" ranking
+    came from and offered a choice of authoritative outside sources: "I was
+    thinking more like youtube playlist count or some authoritative
+    source" → picked Last.fm's artist top-tracks endpoint, after a first
+    pass at Spotify's equivalent hit a dead end - see
+    lastfm_popularity.py's own docstring for the full story)."""
+
+    progress = Signal(int, int, str)
+    finished_with = Signal(object)  # PopularityResult
+
+    def __init__(self, artist_ids: list, parent=None) -> None:
+        super().__init__(parent)
+        self.artist_ids = artist_ids
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        result = popularity_dl.update_popularity_for_artists(
+            self.artist_ids,
+            progress=lambda done, total, name: self.progress.emit(done, total, name),
+        )
+        self.finished_with.emit(result)
+
+
 # --------------------------------------------------------------------------
 # on-screen keyboard
 # --------------------------------------------------------------------------
@@ -1017,7 +1078,7 @@ class SearchBar(QWidget):
     textChanged = Signal(str)
     submitted = Signal(str)
 
-    def __init__(self, placeholder: str = "Search", parent=None) -> None:
+    def __init__(self, placeholder: str = "Search", parent=None, password: bool = False) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1028,6 +1089,12 @@ class SearchBar(QWidget):
         self.edit = QLineEdit()
         self.edit.setPlaceholderText(placeholder)
         self.edit.setClearButtonEnabled(True)
+        if password:
+            # 2026-09-16 follow-up - reused for the Last.fm credentials
+            # dialog's API-key field (ui/views/settings.py); a credential
+            # typed once during setup is still worth masking on a shared
+            # touch panel the way a password field always is.
+            self.edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.edit.textChanged.connect(self.textChanged.emit)
         self.edit.returnPressed.connect(lambda: self.submitted.emit(self.edit.text()))
         self.kb_button = TouchButton("⌨")

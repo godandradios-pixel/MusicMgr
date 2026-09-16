@@ -54,7 +54,18 @@ _COLUMN_ADDITIONS = {
     # since before Title Details existed to read it (2026-09-05), but a
     # database this old has no documented history for the column, and the
     # guard costs nothing when it's already there.
-    "tracks": [("rating", "INTEGER")],
+    #
+    # lastfm_popularity: 2026-09-16 follow-up - James wanted the artist
+    # page's "Top Tracks" ranked by an authoritative outside source rather
+    # than just local play counts; see services/lastfm_popularity.py and
+    # db.models.Track.lastfm_popularity's own docstring (which also covers
+    # the same-day pivot away from a short-lived spotify_popularity column,
+    # once Spotify turned out to be a dead end for this - see that
+    # docstring for why). A database that picked up the old column during
+    # the few hours it existed just keeps it sitting there unused, same as
+    # every other already-shipped column this project has never bothered
+    # dropping.
+    "tracks": [("rating", "INTEGER"), ("lastfm_popularity", "INTEGER")],
     # 2026-09-07 follow-up: genre chips on the Jukebox page (James: "I would
     # like the jukebox page to have a chip of 5 genres... select the
     # location and what genre page a track will be organized by") - see

@@ -101,6 +101,11 @@ class Artist(Base):
     )
     #: music videos filed under this artist - see Video.artist_id.
     videos: Mapped[list["Video"]] = relationship(back_populates="artist")
+    #: Last.fm's own ranked "top tracks" for this artist, independent of
+    #: what James owns - see ArtistTopTrack's own docstring.
+    lastfm_top_tracks: Mapped[list["ArtistTopTrack"]] = relationship(
+        back_populates="artist", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (UniqueConstraint("name_key", name="uq_artist_name_key"),)
 
@@ -140,6 +145,56 @@ class ArtistMembership(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     __table_args__ = (UniqueConstraint("group_id", "member_id", name="uq_membership"),)
+
+
+class ArtistTopTrack(Base):
+    """The full ranked list Last.fm returned for one `artist.getTopTracks`
+    call (see services/lastfm_popularity.py) - stored independently of
+    whether James actually owns any of these songs.
+
+    2026-09-16 follow-up #4 (James: "I don't want the list to be
+    constrained by only copies I own, I want the top songs to be their top
+    songs whether they are in the library or not") - replaces an earlier
+    same-day approach that stamped a popularity score onto individual
+    owned `Track` rows (a since-removed `Track.lastfm_popularity` column;
+    a database that already picked it up just keeps that column sitting
+    there unused, same as every other already-shipped column this project
+    has never bothered dropping - see db.session._ensure_columns' own
+    docstring). That approach could only ever rank songs James already
+    owned, which fell apart the moment he wanted the artist page to read
+    like YouTube Music's "Top songs" - a real chart, including songs
+    missing from the library.
+
+    Whether a given row is something James owns is worked out at *display*
+    time by matching `title` against his library
+    (ui/widgets/artist_panel.py:_refresh_top_tracks), not stored here - so
+    adding a missing top song to the library later is picked up immediately,
+    without needing another fetch.
+
+    Replaced wholesale (delete this artist's rows, then reinsert) on every
+    fetch, rather than merged/diffed against whatever was there before -
+    "this is what the last fetch said", the same as the one-shot,
+    replace-everything shape `Artist.spotify_id`/`Track.spotify_popularity`
+    used for their one day of existence.
+    """
+
+    __tablename__ = "artist_top_tracks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"))
+    #: 1-based position in Last.fm's own returned order
+    rank: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(500))
+    #: Last.fm's playcount for this track specifically - unbounded (a real
+    #: playcount, not a 0-100 score), and only ever used to display/sort,
+    #: never treated as anything but Last.fm's own number.
+    playcount: Mapped[Optional[int]] = mapped_column(Integer)
+
+    artist: Mapped["Artist"] = relationship(back_populates="lastfm_top_tracks")
+
+    __table_args__ = (
+        Index("ix_artist_top_tracks_artist_rank", "artist_id", "rank"),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -327,6 +382,18 @@ class Track(Base):
     musical_key: Mapped[Optional[str]] = mapped_column(String(20))
     comment: Mapped[Optional[str]] = mapped_column(Text)
     rating: Mapped[Optional[int]] = mapped_column(Integer)  # 0-5, user set
+    #
+    # 2026-09-16 follow-up #2 then #4 - this used to be where a Last.fm
+    # (briefly, a Spotify) popularity score got stamped per owned pressing.
+    # Removed same-day, once James wanted Top Tracks to show an artist's
+    # real top songs whether he owns them or not: a per-Track score can
+    # only ever rank what's already in the library. See ArtistTopTrack
+    # (this artist's full Last.fm chart, matched against ownership at
+    # display time instead) for what replaced it. A database that already
+    # picked up this column (or the `spotify_popularity` one before it)
+    # just keeps it sitting there unused, same as every other
+    # already-shipped column this project has never bothered dropping -
+    # see db/session.py's _ensure_columns' own docstring.
 
     # denormalised playback counters, kept in sync by PlayHistory writes
     play_count: Mapped[int] = mapped_column(Integer, default=0, index=True)
