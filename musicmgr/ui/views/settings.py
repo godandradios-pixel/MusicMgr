@@ -48,6 +48,60 @@ files to without waiting on every other watched folder as well. Mirrors
 `remove_folder`'s existing "act on whatever row is selected"
 (`self.folder_list.current_payload()`) shape, rather than inventing a
 second selection mechanism.
+
+2026-09-16 follow-up (James, on the new artist-profile page: "Settings
+option, like lyrics, to download profile") - a bulk "Download artist
+profiles…" button next to "Import artist images…" below, for the same
+network-fetch-a-missing-thing job `services.lyrics_downloader` already
+does for lyrics, just for `Artist.profile` instead (see
+`services.artist_bio_downloader`'s own docstring for why that one's a
+database write rather than a sidecar file, and `BioDownloadThread` (ui/
+widgets/common.py) / _on_bio_progress / _on_bio_done below for the
+mechanics - the same QThread-with-a-progress-signal shape as `ScanThread`
+above). Only ever
+targets artists with no biography yet (`bio_dl.artists_missing_bio`) -
+there's no "Scan now"-style "redo everything" mode here, matching how the
+per-artist "Fetch bio" button on the artist page itself only ever offers
+to fill in a *missing* bio, never to overwrite one already there.
+
+2026-09-16 same-day follow-up (James, asked where the artist page's "Top
+Tracks" ranking came from: "I was thinking more like youtube playlist
+count or some authoritative source" → first picked Spotify's own artist
+top-tracks endpoint after hearing the options, then - same day, once he
+went to actually set it up - switched to Last.fm's equivalent instead,
+after finding Spotify's Developer Mode now requires the app owner to hold
+a Premium subscription and, worse, had a February 2026 change remove the
+artist-top-tracks endpoint outright for a personal app's tier. See
+`services.lastfm_popularity`'s own module docstring for the full story)
+- two more additions here: `LastfmCredentialsDialog` below, opened from a
+new "Last.fm API key…" button, for the one free API key
+`services.lastfm_popularity` needs (no OAuth, no login, no Premium - just
+a key from last.fm/api/account/create); and a bulk "Update track
+popularity from Last.fm…" button next to "Download artist profiles…",
+which - unlike that one - deliberately targets *every* artist with a
+release, not just ones missing something, since popularity is meant to be
+refreshed periodically rather than fetched once and left alone (see
+`lastfm_popularity.all_artist_ids_with_releases`).
+
+2026-09-16 follow-up (James: "let's have settings be rows in a table. All
+those 'buttons' at bottom are cramed and I can't read their text") - the
+nine maintenance actions above (Import artist images… through Purge
+missing files…) used to sit in one `QHBoxLayout`, packed edge to edge with
+no wrap - fine at the width it was designed at, unreadable the moment the
+window was any narrower, since a button's own label just clips instead of
+the row wrapping. `_ToolRow` (below) turns each one into its own row - a
+title, a short description of what it actually does, and the button - laid
+out one per line in a Card frame. See `_ToolRow`'s own docstring for the
+rest of it.
+
+2026-09-16 same-day follow-up #2 (James, on the table above: "we don't
+need the line between the rows. Also can you put the action buttons to
+the left of the text. It looks strange having them hanging way out to the
+right") - dropped the `divider()` row separator (the Card frame's own
+outline plus the row spacing already reads as one grouped list without
+it), and swapped `_ToolRow`'s internal order so the button sits on the
+left with the title/description filling the rest of the row - see
+`_ToolRow` itself for the new layout.
 """
 
 from __future__ import annotations
@@ -57,6 +111,8 @@ from typing import Optional
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -64,6 +120,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QProgressBar,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -72,15 +129,67 @@ from sqlalchemy import select
 from ... import config
 from ...db.models import WatchedFolder
 from ...db.session import session_scope
+from ...services import artist_bio_downloader as bio_dl
 from ...services import data_migration
 from ...services import library as lib
 from ...services import scanner
+from ...services import lastfm_popularity as popularity_dl
 from ...services import video_scanner
 from ...services import videos as vid_svc
 from ...services.library import format_duration
 from ..context import AppContext
-from ..widgets.common import TouchButton, TouchList, dim_label
+from ..widgets.common import (
+    BioDownloadThread,
+    PopularityDownloadThread,
+    SearchBar,
+    TouchButton,
+    TouchList,
+    dim_label,
+)
 from .base import BaseView
+
+
+class LastfmCredentialsDialog(QDialog):
+    """A free Last.fm API key - see services/lastfm_popularity.py's module
+    docstring for why the "Update track popularity from Last.fm…" button
+    below needs this at all. Just the one field, unlike the short-lived
+    Spotify attempt this replaced (SpotifyCredentialsDialog, gone - Spotify
+    needed a client ID *and* secret; Last.fm's key-only auth needs only
+    this). A `SearchBar` (the same touch-keyboard-equipped field the app
+    already uses for every other text entry - see ui/widgets/cover_grid.py:
+    JumpBar/ui/views/videos.py's search row) rather than a plain QLineEdit,
+    since this is a touch panel with no physical keyboard to type a key
+    on otherwise. Masked (SearchBar's `password=True`) - a small courtesy
+    even for a value typed once during setup on what might be a
+    shared/kiosk screen.
+    """
+
+    def __init__(self, api_key: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Last.fm API key")
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        intro = QLabel(
+            "Create a free account at last.fm/api/account/create to get one - "
+            "no app review, no login flow, no subscription needed, just an "
+            "API key."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        layout.addWidget(QLabel("API key"))
+        self.api_key_field = SearchBar(placeholder="API key", password=True)
+        self.api_key_field.setText(api_key)
+        layout.addWidget(self.api_key_field)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def api_key(self) -> str:
+        return self.api_key_field.text().strip()
 
 
 class ScanThread(QThread):
@@ -176,6 +285,81 @@ class MigrationThread(QThread):
         self.finished_with.emit(result)
 
 
+class _ToolRow(QWidget):
+    """One row of the Settings page's "Maintenance" list: one action button
+    on the left, a title and a short description of what it does filling
+    the rest of the row. 2026-09-16 follow-up (James: "let's have settings
+    be rows in a table. All those 'buttons' at bottom are cramed and I
+    can't read their text") - replaces a single `QHBoxLayout` that packed
+    nine `TouchButton`s edge to edge (`add_folder`/`remove_folder` and up
+    through `purge_missing_files` below), which read fine at the width it
+    was built at but clipped every button's own label the moment the
+    window was any narrower - there was nowhere left to shrink to once the
+    buttons themselves started truncating. A vertical list of rows has no
+    such ceiling: each button keeps its full label, and the description
+    text is somewhere for James to actually read what a button does rather
+    than guessing from a name he might not be able to see all of.
+
+    2026-09-16 same-day follow-up #2 (James, seeing the first version of
+    this table: "put the action buttons to the left of the text. It looks
+    strange having them hanging way out to the right") - on a wide window
+    the text column's own stretch factor pushed each button out to the far
+    right edge of the card, a long way from the title/description it
+    belongs to; putting the button first reads as one unit with the text
+    immediately next to it regardless of how wide the card is.
+
+    2026-09-16 same-day follow-up #3 (James, on that same screenshot:
+    "extend the buttons so that the text can be displayed. Also make the
+    button the brown pallete colors") - the left-hand column's *first*
+    attempt gave every button one arbitrary fixed width (120px), which
+    turned out narrower than several of the actual labels ("Download…",
+    "Set key…") once TouchButton's touch-scaled font was accounted for, so
+    those still clipped. `_size_tool_row_buttons` below (called once from
+    SettingsView.__init__, after every row exists) replaces that guess with
+    each button's own `sizeHint()`, so the column is always exactly as wide
+    as its longest real label - no more guessing a pixel number that has to
+    be revisited every time a button's text changes. `primary=True` (the
+    walnut-brown `#Primary`/`#PrimaryWarm` fill - see theme.py's COLORS
+    comment for that palette's own history) is now this row's default
+    rather than opt-in, matching the rest of the page's brown-palette
+    buttons (add_btn's "Add folder…" above) instead of the plain gray
+    TouchButton default.
+    """
+
+    def __init__(
+        self, title: str, description: str, button_text: str, *, primary: bool = True, parent=None
+    ) -> None:
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 14, 0, 14)
+        row.setSpacing(16)
+
+        self.button = TouchButton(button_text, primary=primary)
+        row.addWidget(self.button, 0, Qt.AlignVCenter)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-weight: 600;")
+        text_col.addWidget(title_label)
+        text_col.addWidget(dim_label(description))
+        row.addLayout(text_col, 1)
+
+
+def _size_tool_row_buttons(rows: list["_ToolRow"]) -> None:
+    """Give every `_ToolRow` button in `rows` the same fixed width - the
+    widest one's own `sizeHint()`, plus a little breathing room - so the
+    Maintenance table's left-hand button column lines up into a straight
+    edge instead of each button hugging its own (differently-sized) label.
+    See `_ToolRow`'s docstring for why this replaced an earlier hardcoded
+    guess."""
+    if not rows:
+        return
+    width = max(row.button.sizeHint().width() for row in rows) + 12
+    for row in rows:
+        row.button.setFixedWidth(width)
+
+
 class SettingsView(BaseView):
     title_text = "Library & Settings"
 
@@ -183,6 +367,43 @@ class SettingsView(BaseView):
         super().__init__(ctx, parent)
         self._thread: Optional[ScanThread] = None
         self._migration_thread: Optional[MigrationThread] = None
+        self._bio_thread: Optional[BioDownloadThread] = None
+        self._popularity_thread: Optional[PopularityDownloadThread] = None
+
+        # 2026-09-16 follow-up (same one that added the row-per-tool
+        # Maintenance table below) - this page's content used to fit
+        # `BaseView`'s own plain (non-scrolling) body every time, because
+        # the old cramped-buttons "tools" row was short enough that the
+        # whole page's total height rarely exceeded a real window. Turning
+        # those buttons into nine full rows (see _ToolRow) made the page
+        # tall enough that it regularly doesn't - and unlike
+        # `ArtistDetailPanel` (ui/widgets/artist_panel.py), which has
+        # wrapped its own content in a QScrollArea since it grew a
+        # biography and Top Tracks section, `BaseView.body()` is a plain
+        # QVBoxLayout directly on the view widget with nothing scrollable
+        # about it: a view taller than the window it's given doesn't
+        # scroll, it just gets squeezed - every row's label and button
+        # compressed toward zero height rather than clipped cleanly, which
+        # is what actually happened (not a rendering bug in the new rows
+        # themselves - James's screenshot on a normal-height window showed
+        # everything crushed into illegibility). Wrapping this page's own
+        # body in its own scroll area - the same fix ArtistDetailPanel
+        # already uses, just applied here instead of changing `BaseView`
+        # for every other page - means a short window scrolls this page
+        # instead of crushing it. `body` (a local, shadowing but distinct
+        # from self.body()) is what every line below now builds into,
+        # instead of `self.body()` directly - only the page's own title
+        # (added by BaseView.__init__ above, before this) stays outside the
+        # scroll area, always visible.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        body = QVBoxLayout(content)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(14)
+        scroll.setWidget(content)
+        self.body().addWidget(scroll, 1)
 
         # ---- stats card ----
         card = QFrame()
@@ -203,7 +424,7 @@ class SettingsView(BaseView):
             self._stat_labels[name] = value
         self.total_time = dim_label("")
         grid.addWidget(self.total_time, 2, 0, 1, 6, alignment=Qt.AlignHCenter)
-        self.body().addWidget(card)
+        body.addWidget(card)
 
         # ---- folders ----
         folder_head = QHBoxLayout()
@@ -226,10 +447,10 @@ class SettingsView(BaseView):
         scan_btn.clicked.connect(self.scan_all)
         for b in (add_btn, remove_btn, scan_selected_btn, scan_btn):
             folder_head.addWidget(b)
-        self.body().addLayout(folder_head)
+        body.addLayout(folder_head)
 
         self.folder_list = TouchList()
-        self.body().addWidget(self.folder_list, 1)
+        body.addWidget(self.folder_list, 1)
 
         # 2026-09-08 follow-up - James: "have the progress bar appear on the
         # line with the folder." A scan's progress now paints directly into
@@ -241,30 +462,105 @@ class SettingsView(BaseView):
         self.progress = QProgressBar()
         self.progress.setObjectName("ProgressWarm")  # this page's brown pallet - see theme.py
         self.progress.setVisible(False)
-        self.body().addWidget(self.progress)
+        body.addWidget(self.progress)
         self.progress_label = dim_label("")
-        self.body().addWidget(self.progress_label)
+        body.addWidget(self.progress_label)
 
         # ---- maintenance ----
-        tools = QHBoxLayout()
-        tools.setSpacing(8)
-        artist_art = TouchButton("Import artist images…")
-        artist_art.clicked.connect(self.import_artist_images)
-        tools.addWidget(artist_art)
-        verify = TouchButton("Verify files")
-        verify.clicked.connect(self.verify_files)
-        rematch = TouchButton("Re-match all charts")
-        rematch.clicked.connect(self.rematch_all)
-        where = TouchButton("Where is my data?")
-        where.clicked.connect(self.show_paths)
-        move_btn = TouchButton("Move data location…")
-        move_btn.clicked.connect(self.move_data)
-        purge_missing = TouchButton("Purge missing files…")
-        purge_missing.clicked.connect(self.purge_missing_files)
-        for b in (verify, rematch, where, move_btn, purge_missing):
-            tools.addWidget(b)
-        tools.addStretch(1)
-        self.body().addLayout(tools)
+        # 2026-09-16 follow-up (James: "let's have settings be rows in a
+        # table" - see _ToolRow's own docstring above for the full "buttons
+        # cramed" complaint this replaces) - one row per tool, each with its
+        # own button and a one-line description, inside a Card frame rather
+        # than nine TouchButtons packed into a single QHBoxLayout with
+        # nowhere left to shrink to.
+        #
+        # 2026-09-16 same-day follow-up #2 (James: "we don't need the line
+        # between the rows") - dropped the `divider()` separator this used
+        # to add between every row; the Card frame's own outline already
+        # groups these into one list without it.
+        tools_label = QLabel("Maintenance")
+        tools_label.setObjectName("Crumb")
+        body.addWidget(tools_label)
+
+        tools_card = QFrame()
+        tools_card.setObjectName("Card")
+        tools_layout = QVBoxLayout(tools_card)
+        tools_layout.setContentsMargins(20, 2, 20, 2)
+        tools_layout.setSpacing(0)
+
+        tool_rows: list[_ToolRow] = []
+
+        def add_tool_row(title: str, description: str, button_text: str, handler) -> TouchButton:
+            row = _ToolRow(title, description, button_text)
+            row.button.clicked.connect(handler)
+            tools_layout.addWidget(row)
+            tool_rows.append(row)
+            return row.button
+
+        add_tool_row(
+            "Artist images",
+            "Import missing cover art for your artists from local files.",
+            "Import…",
+            self.import_artist_images,
+        )
+        # 2026-09-16 follow-up (James, on the new artist-profile page:
+        # "Settings option, like lyrics, to download profile") - see the
+        # module docstring and download_artist_profiles below.
+        add_tool_row(
+            "Artist profiles",
+            "Download a biography for every artist that doesn't have one yet.",
+            "Download…",
+            self.download_artist_profiles,
+        )
+        # 2026-09-16 same-day follow-up (James, on where "Top Tracks"
+        # ranking comes from - ended up on Last.fm, see the module
+        # docstring for why) - see update_track_popularity/
+        # open_lastfm_credentials below.
+        add_tool_row(
+            "Last.fm API key",
+            "Set the free API key track popularity needs to fetch Last.fm charts.",
+            "Set key…",
+            self.open_lastfm_credentials,
+        )
+        add_tool_row(
+            "Track popularity",
+            "Refresh Last.fm popularity for every artist with a release.",
+            "Update…",
+            self.update_track_popularity,
+        )
+        add_tool_row(
+            "Verify files",
+            "Check that every track's file can still be found on disk.",
+            "Verify",
+            self.verify_files,
+        )
+        add_tool_row(
+            "Charts",
+            "Re-match every chart entry against your current library.",
+            "Re-match",
+            self.rematch_all,
+        )
+        add_tool_row(
+            "Data location",
+            "See where your library database and media files live.",
+            "Show",
+            self.show_paths,
+        )
+        add_tool_row(
+            "Move data",
+            "Move your database and media files to a new location.",
+            "Move…",
+            self.move_data,
+        )
+        add_tool_row(
+            "Missing files",
+            "Remove tracks whose files can no longer be found.",
+            "Purge…",
+            self.purge_missing_files,
+        )
+        _size_tool_row_buttons(tool_rows)
+
+        body.addWidget(tools_card)
 
         ctx.libraryChanged.connect(self.refresh)
         ctx.videosChanged.connect(self.refresh)
@@ -437,6 +733,16 @@ class SettingsView(BaseView):
         if self._migration_thread is not None and self._migration_thread.isRunning():
             self.ctx.notify("A data move is running — wait for it to finish before scanning")
             return
+        if self._bio_thread is not None and self._bio_thread.isRunning():
+            self.ctx.notify(
+                "Artist profiles are downloading — wait for it to finish before scanning"
+            )
+            return
+        if self._popularity_thread is not None and self._popularity_thread.isRunning():
+            self.ctx.notify(
+                "Track popularity is updating — wait for it to finish before scanning"
+            )
+            return
         # 2026-09-08 follow-up - James: "have the progress bar appear on
         # the line with the folder." Give every folder about to be scanned
         # an immediate row-level state rather than leaving its stale "last
@@ -501,6 +807,164 @@ class SettingsView(BaseView):
         QMessageBox.information(self, "Artist images", "\n".join(lines))
         self.ctx.libraryChanged.emit()
 
+    def download_artist_profiles(self) -> None:
+        """Bulk "like lyrics" biography fetch (see module docstring) -
+        every artist with no `Artist.profile` yet, one Wikipedia lookup
+        each, same background-thread-plus-page-wide-progress-bar shape as
+        "Move data location…" (MigrationThread) below, since like that
+        job this isn't scoped to any one row in self.folder_list."""
+        if self._bio_thread is not None and self._bio_thread.isRunning():
+            self.ctx.notify("Already downloading artist profiles")
+            return
+        if self._thread is not None and self._thread.isRunning():
+            self.ctx.notify("A scan is running — wait for it to finish first")
+            return
+        if self._migration_thread is not None and self._migration_thread.isRunning():
+            self.ctx.notify("A data move is running — wait for it to finish first")
+            return
+        if self._popularity_thread is not None and self._popularity_thread.isRunning():
+            self.ctx.notify("Track popularity is updating — wait for it to finish first")
+            return
+
+        artist_ids = bio_dl.artists_missing_bio()
+        if not artist_ids:
+            QMessageBox.information(
+                self, "Artist profiles", "Every artist already has a saved biography."
+            )
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Download artist profiles",
+            f"Look up a short biography on Wikipedia for {len(artist_ids)} artist"
+            f"{'s' if len(artist_ids) != 1 else ''} with none saved yet?\n\n"
+            "This needs an internet connection and, being rate-limited to be "
+            "polite to a free public API, can take a while for a large library. "
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self.progress.setVisible(True)
+        self.progress.setRange(0, len(artist_ids))
+        self.progress_label.setText("Starting…")
+        self._bio_thread = BioDownloadThread(artist_ids, parent=self)
+        self._bio_thread.progress.connect(self._on_bio_progress)
+        self._bio_thread.finished_with.connect(self._on_bio_done)
+        self._bio_thread.start()
+
+    def _on_bio_progress(self, done: int, total: int, name: str) -> None:
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.progress_label.setText(f"{done}/{total} — {name}" if name else f"{done}/{total}")
+
+    def _on_bio_done(self, result: bio_dl.BioDownloadResult) -> None:
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
+        lines = [result.summary()]
+        if result.errors:
+            lines.append("")
+            lines += [f"  ! {err}" for err in result.errors[:8]]
+        QMessageBox.information(self, "Artist profiles", "\n".join(lines))
+
+    def open_lastfm_credentials(self) -> None:
+        """Opens `LastfmCredentialsDialog` pre-filled with whatever's
+        already saved (empty the first time) and persists whatever comes
+        back on Ok - see that dialog's own docstring and
+        `services.lastfm_popularity.get_api_key`/`set_api_key` for why this
+        lives in the `Setting` table rather than a config file (same
+        precedent `services/jukebox.py` already set)."""
+        with self.ctx.session() as session:
+            api_key = popularity_dl.get_api_key(session)
+        dialog = LastfmCredentialsDialog(api_key or "", parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        new_key = dialog.api_key()
+        with self.ctx.session() as session:
+            popularity_dl.set_api_key(session, new_key)
+        self.ctx.notify("Last.fm API key saved")
+
+    def update_track_popularity(self) -> None:
+        """Bulk Last.fm popularity refresh (see module docstring) -
+        deliberately every artist with a release, not just ones missing
+        something, since a Last.fm playcount drifts over time and is meant
+        to be periodically refreshed rather than fetched once and left
+        alone - unlike download_artist_profiles above, which only ever
+        fills in a *missing* biography. Same background-thread-plus-
+        page-wide-progress-bar shape as that method and "Move data
+        location…" (MigrationThread), since like those jobs this isn't
+        scoped to any one row in self.folder_list."""
+        if self._popularity_thread is not None and self._popularity_thread.isRunning():
+            self.ctx.notify("Already updating track popularity")
+            return
+        if self._thread is not None and self._thread.isRunning():
+            self.ctx.notify("A scan is running — wait for it to finish first")
+            return
+        if self._migration_thread is not None and self._migration_thread.isRunning():
+            self.ctx.notify("A data move is running — wait for it to finish first")
+            return
+        if self._bio_thread is not None and self._bio_thread.isRunning():
+            self.ctx.notify("Artist profiles are downloading — wait for it to finish first")
+            return
+
+        if not popularity_dl.has_api_key():
+            confirm = QMessageBox.question(
+                self,
+                "Last.fm API key needed",
+                "Track popularity needs a free Last.fm API key, which isn't "
+                "saved yet.\n\n"
+                "Open \"Last.fm API key…\" now?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if confirm == QMessageBox.Yes:
+                self.open_lastfm_credentials()
+            return
+
+        artist_ids = popularity_dl.all_artist_ids_with_releases()
+        if not artist_ids:
+            QMessageBox.information(
+                self, "Track popularity", "No artists with any releases yet."
+            )
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Update track popularity",
+            f"Look up Last.fm's playcount for {len(artist_ids)} artist"
+            f"{'s' if len(artist_ids) != 1 else ''} and use it to rank each "
+            "artist page's Top Tracks list?\n\n"
+            "This needs an internet connection and, being rate-limited to be "
+            "polite to Last.fm's API, can take a while for a large library. "
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self.progress.setVisible(True)
+        self.progress.setRange(0, len(artist_ids))
+        self.progress_label.setText("Starting…")
+        self._popularity_thread = PopularityDownloadThread(artist_ids, parent=self)
+        self._popularity_thread.progress.connect(self._on_popularity_progress)
+        self._popularity_thread.finished_with.connect(self._on_popularity_done)
+        self._popularity_thread.start()
+
+    def _on_popularity_progress(self, done: int, total: int, name: str) -> None:
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.progress_label.setText(f"{done}/{total} — {name}" if name else f"{done}/{total}")
+
+    def _on_popularity_done(self, result: popularity_dl.PopularityResult) -> None:
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
+        lines = [result.summary()]
+        if result.errors:
+            lines.append("")
+            lines += [f"  ! {err}" for err in result.errors[:8]]
+        QMessageBox.information(self, "Track popularity", "\n".join(lines))
+        self.ctx.libraryChanged.emit()
+
     def verify_files(self) -> None:
         # 2026-09-07 follow-up: checks video files too now, not just audio -
         # the same "one unified thing" this whole view's folder merge is
@@ -541,6 +1005,16 @@ class SettingsView(BaseView):
             return
         if self._thread is not None and self._thread.isRunning():
             self.ctx.notify("A scan is running — wait for it to finish before moving data")
+            return
+        if self._bio_thread is not None and self._bio_thread.isRunning():
+            self.ctx.notify(
+                "Artist profiles are downloading — wait for it to finish before moving data"
+            )
+            return
+        if self._popularity_thread is not None and self._popularity_thread.isRunning():
+            self.ctx.notify(
+                "Track popularity is updating — wait for it to finish before moving data"
+            )
             return
 
         folder = QFileDialog.getExistingDirectory(
