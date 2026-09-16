@@ -25,6 +25,7 @@ section dividers, not a real tree.
 
 from __future__ import annotations
 
+import string
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -64,6 +65,10 @@ COL_DURATION = 3
 GROUP_NONE = "none"
 GROUP_ARTIST = "artist"
 
+#: below this, an A-Z bar is pure chrome - matches cover_grid.py's own
+#: MIN_TILES_FOR_SORTING threshold for the same reason
+MIN_ROWS_FOR_JUMP = 5
+
 
 @dataclass
 class VideoRow:
@@ -83,6 +88,10 @@ class VideoTable(QWidget):
     """Group-by chips above a sortable table."""
 
     rowActivated = Signal(int)  # VideoRow.key
+    #: fires whenever rows, the filter text, the sort, or the group-by
+    #: change - VideosView listens so it can refresh the shared A-Z bar's
+    #: available letters/visibility, same contract as CoverGrid.updated
+    updated = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -90,6 +99,7 @@ class VideoTable(QWidget):
         self._group = GROUP_NONE
         self._sort_col = 0
         self._sort_asc = True
+        self._filter_text = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -150,6 +160,27 @@ class VideoTable(QWidget):
     def set_rows(self, rows: Sequence[VideoRow]) -> None:
         self._rows = list(rows)
         self._rebuild()
+
+    def set_filter_text(self, text: str) -> None:
+        """Narrow to videos whose title OR artist matches `text` - both, not
+        either/or a picked field, since a video has no separate "search by"
+        control the way Library's grids have a whole view each to search
+        within (2026-09-15, James: "the search bar for videos to include
+        artists and track titles"). Same shape as CoverGrid.set_filter_text:
+        matching, not re-sorting - the active sort/group stays put, this
+        just drops rows that don't qualify. An empty string shows
+        everything again."""
+        text = text.strip().lower()
+        if text == self._filter_text:
+            return
+        self._filter_text = text
+        self._rebuild()
+
+    def _matches_filter(self, row: VideoRow) -> bool:
+        if not self._filter_text:
+            return True
+        needle = self._filter_text
+        return needle in (row.title or "").lower() or needle in (row.artist or "").lower()
 
     @property
     def group_by(self) -> str:
@@ -215,14 +246,67 @@ class VideoTable(QWidget):
     def _sorted(self, rows: Sequence[VideoRow]) -> list[VideoRow]:
         return sorted(rows, key=self._sort_value, reverse=not self._sort_asc)
 
+    def _visible_rows(self) -> list[VideoRow]:
+        return [r for r in self._rows if self._matches_filter(r)]
+
+    # -- A-Z jump bar -----------------------------------------------------
+
+    def jump_letters(self) -> Optional[set[str]]:
+        """Letters worth showing on the shared A-Z bar right now, or None to
+        hide it entirely - same contract as cover_grid.py's
+        CoverGrid.jump_letters. Grouped by artist, letters index the group
+        headers (what a tap actually jumps to); ungrouped, they index
+        whichever column is currently sorted, and only when that's a text
+        column - Year/Time have no alphabetical order to jump within, the
+        same reason Library's Title Details table hides the bar for those
+        sorts."""
+        rows = self._visible_rows()
+        if len(rows) <= MIN_ROWS_FOR_JUMP:
+            return None
+        if self._group == GROUP_ARTIST:
+            return {self._letter_of(r.artist or "Unknown artist") for r in rows}
+        sort_field = COLUMNS[self._sort_col][0]
+        if sort_field not in ("title", "artist"):
+            return None
+        return {self._letter_of(getattr(r, sort_field) or "") for r in rows}
+
+    def _letter_of(self, text: str) -> str:
+        first = text.strip()[:1].upper()
+        return first if first in string.ascii_uppercase else "#"
+
+    def scroll_to_letter(self, letter: str) -> None:
+        """Jump straight to this letter - the matching group header when
+        grouped by artist, or the first leaf row whose sorted column starts
+        with it otherwise. A no-op if nothing matches, which shouldn't
+        happen for a letter jump_letters() itself just offered."""
+        if self._group == GROUP_ARTIST:
+            for i in range(self.tree.topLevelItemCount()):
+                header = self.tree.topLevelItem(i)
+                artist = header.data(0, ROLE_GROUP_ARTIST)
+                if artist is not None and self._letter_of(artist) == letter:
+                    self.tree.scrollToItem(header, QAbstractItemView.PositionAtTop)
+                    self.tree.setCurrentItem(header)
+                    return
+            return
+        col = 1 if COLUMNS[self._sort_col][0] == "artist" else 0
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            if item.data(0, ROLE_KEY) is None:
+                continue
+            if self._letter_of(item.text(col)) == letter:
+                self.tree.scrollToItem(item, QAbstractItemView.PositionAtTop)
+                self.tree.setCurrentItem(item)
+                return
+
     # -- building -----------------------------------------------------------
 
     def _rebuild(self) -> None:
         self.tree.setUpdatesEnabled(False)
         self.tree.clear()
+        rows = self._visible_rows()
         if self._group == GROUP_ARTIST:
             groups: dict[str, list[VideoRow]] = {}
-            for row in self._rows:
+            for row in rows:
                 groups.setdefault(row.artist or "Unknown artist", []).append(row)
             for artist in sorted(groups, key=str.lower):
                 members = groups[artist]
@@ -247,9 +331,10 @@ class VideoTable(QWidget):
                 # would render with no visible rows underneath it at all
                 header_item.setExpanded(True)
         else:
-            for row in self._sorted(self._rows):
+            for row in self._sorted(rows):
                 self._add_row(self.tree, row)
         self.tree.setUpdatesEnabled(True)
+        self.updated.emit()
 
     def _add_row(self, parent, row: VideoRow) -> None:
         item = QTreeWidgetItem([

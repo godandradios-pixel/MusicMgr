@@ -289,3 +289,137 @@ class TestRowActivation:
         table._on_item_clicked(header, 0)
 
         assert activated == []
+
+
+class TestSetFilterText:
+    def test_matches_by_title(self, table):
+        table.set_rows([row(1, "Take On Me", artist="a-ha"), row(2, "Chiquitita", artist="ABBA")])
+
+        table.set_filter_text("take on")
+
+        assert table.leaf_titles() == ["Take On Me"]
+
+    def test_matches_by_artist_even_when_title_does_not_match(self, table):
+        table.set_rows([row(1, "Take On Me", artist="a-ha"), row(2, "Chiquitita", artist="ABBA")])
+
+        table.set_filter_text("abba")
+
+        assert table.leaf_titles() == ["Chiquitita"]
+
+    def test_is_case_insensitive(self, table):
+        table.set_rows([row(1, "Take On Me", artist="a-ha")])
+
+        table.set_filter_text("TAKE on ME")
+
+        assert table.leaf_titles() == ["Take On Me"]
+
+    def test_empty_text_shows_everything_again(self, table):
+        table.set_rows([row(1, "Take On Me", artist="a-ha"), row(2, "Chiquitita", artist="ABBA")])
+        table.set_filter_text("abba")
+
+        table.set_filter_text("")
+
+        assert table.leaf_titles() == ["Chiquitita", "Take On Me"]
+
+    def test_no_match_leaves_the_table_empty(self, table):
+        table.set_rows([row(1, "Take On Me", artist="a-ha")])
+
+        table.set_filter_text("nothing matches this")
+
+        assert table.leaf_titles() == []
+
+    def test_filters_within_groups_too(self, table):
+        table.set_rows([
+            row(1, "Take On Me", artist="a-ha"),
+            row(2, "The Sun Always Shines on T.V.", artist="a-ha"),
+            row(3, "Chiquitita", artist="ABBA"),
+        ])
+        table._set_group(vt.GROUP_ARTIST)
+
+        table.set_filter_text("take on")
+
+        assert table.group_headers() == ["a-ha  ·  1 video"]
+        assert table.leaf_titles() == ["Take On Me"]
+
+
+def many_rows(n=10) -> list[VideoRow]:
+    """Past MIN_ROWS_FOR_JUMP, so jump_letters() doesn't hide the bar as
+    not-worth-it chrome for a handful of rows. The letter that varies per
+    row is the *first* character of both title and artist - not just
+    somewhere in the string - since that's the one _letter_of actually
+    reads."""
+    return [row(i, f"{chr(65 + i)} Song", artist=f"{chr(65 + i)} Artist") for i in range(n)]
+
+
+class TestJumpLetters:
+    def test_none_below_the_worth_showing_threshold(self, table):
+        table.set_rows(many_rows(3))
+
+        assert table.jump_letters() is None
+
+    def test_indexes_the_sorted_title_column_by_default(self, table):
+        table.set_rows(many_rows())
+
+        assert table.jump_letters() == {chr(65 + i) for i in range(10)}
+
+    def test_indexes_the_artist_column_once_sorted_by_it(self, table):
+        table.set_rows(many_rows())
+        table._on_header_clicked(1)  # Artist column
+
+        assert table.jump_letters() == {chr(65 + i) for i in range(10)}
+
+    def test_none_for_a_numeric_sort_column(self, table):
+        table.set_rows(many_rows())
+        table._on_header_clicked(vt.COL_YEAR)
+
+        assert table.jump_letters() is None
+
+    def test_indexes_group_headers_when_grouped_by_artist(self, table):
+        table.set_rows(many_rows())
+        table._set_group(vt.GROUP_ARTIST)
+
+        assert table.jump_letters() == {chr(65 + i) for i in range(10)}
+
+    def test_only_counts_currently_filtered_rows(self, table):
+        # 12 rows, letters A-L; "Keep" narrows it to just A-F's 6 rows -
+        # still above MIN_ROWS_FOR_JUMP, so this actually exercises
+        # narrowing rather than the below-threshold hide from the test above
+        keep = [row(i, f"{chr(65 + i)} Keep", artist=f"{chr(65 + i)} Artist") for i in range(6)]
+        skip = [row(100 + i, f"{chr(65 + i)} Skip", artist=f"{chr(65 + i)} Artist") for i in range(6)]
+        table.set_rows(keep + skip)
+
+        table.set_filter_text("keep")
+
+        assert table.jump_letters() == {chr(65 + i) for i in range(6)}
+
+
+class TestScrollToLetter:
+    def test_selects_the_first_matching_leaf_row(self, table):
+        table.set_rows(many_rows())
+
+        table.scroll_to_letter("C")
+
+        assert table.tree.currentItem().text(0) == "C Song"
+
+    def test_selects_by_artist_when_sorted_by_artist(self, table):
+        table.set_rows(many_rows())
+        table._on_header_clicked(1)  # Artist column
+
+        table.scroll_to_letter("C")
+
+        assert table.tree.currentItem().text(1) == "C Artist"
+
+    def test_selects_the_matching_group_header_when_grouped(self, table):
+        table.set_rows(many_rows())
+        table._set_group(vt.GROUP_ARTIST)
+
+        table.scroll_to_letter("C")
+
+        assert table.tree.currentItem().data(0, vt.ROLE_GROUP_ARTIST) == "C Artist"
+
+    def test_no_match_is_a_no_op(self, table):
+        table.set_rows([row(1, "Song A", artist="Artist A")])
+
+        table.scroll_to_letter("Z")
+
+        assert table.tree.currentItem() is None

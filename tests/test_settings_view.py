@@ -14,12 +14,14 @@ feature is about, and it doesn't need a real scan to run to prove it.
 
 from __future__ import annotations
 
+import wave
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from musicmgr.db.models import WatchedFolder
+from musicmgr.db.models import Track, Video, WatchedFolder
+from musicmgr.services import scanner
 from musicmgr.ui.views import settings as settings_module
 from musicmgr.ui.views.settings import SettingsView
 
@@ -27,6 +29,18 @@ from musicmgr.ui.views.settings import SettingsView
 @pytest.fixture
 def view(ctx):
     return SettingsView(ctx)
+
+
+def make_silent_wav(path: Path, seconds: float = 0.2) -> None:
+    """A tiny, real, tagless WAV file - same helper as test_scanner.py's,
+    duplicated locally rather than imported cross-file (this suite's own
+    convention - see test_video_scanner.py's make_placeholder_video)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\x00\x00" * int(8000 * seconds))
 
 
 def add_watched_folder(session, path: str) -> None:
@@ -190,3 +204,84 @@ class TestRemoveFolder:
 
         with ctx.session() as session:
             assert watched_paths(session) == ["/music/one"]
+
+
+class TestPurgeMissingFiles:
+    """purge_missing_files covers both a missing Track (subject to
+    purge_orphaned_tracks's own history-skip rules - already fully covered
+    by tests/test_scanner.py:TestPurgeOrphanedTracks, not re-tested here)
+    and a missing Video (unconditional - see purge_missing_videos's
+    docstring). Each case below carries one real scanned-then-deleted
+    audio file alongside a plain Video row, so both sides are exercised
+    together the way the actual button call does it."""
+
+    def test_no_missing_files_notifies_and_skips_the_confirmation(self, ctx, view, monkeypatch):
+        boxes = []
+        monkeypatch.setattr(
+            settings_module.QMessageBox,
+            "question",
+            staticmethod(lambda *a, **k: boxes.append(a) or settings_module.QMessageBox.Yes),
+        )
+        notifications = []
+        ctx.notified.connect(notifications.append)
+
+        view.purge_missing_files()
+
+        assert boxes == []
+        assert notifications and "no missing files" in notifications[0].lower()
+
+    def test_declining_the_confirmation_purges_nothing(self, ctx, view, monkeypatch, tmp_path):
+        wav = tmp_path / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(wav)
+        with ctx.session() as session:
+            scanner.scan_folder(session, tmp_path)
+            session.add(Video(title="Gone", title_key="gone", path="/old/gone.mp4", is_missing=True))
+        wav.unlink()
+        monkeypatch.setattr(
+            settings_module.QMessageBox,
+            "question",
+            staticmethod(lambda *a, **k: settings_module.QMessageBox.No),
+        )
+
+        view.purge_missing_files()
+
+        with ctx.session() as session:
+            assert session.scalar(select(func.count(Track.id))) == 1
+            assert session.scalar(select(func.count(Video.id))) == 1
+
+    def test_confirming_purges_both_missing_tracks_and_missing_videos(
+        self, ctx, view, monkeypatch, tmp_path
+    ):
+        wav = tmp_path / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(wav)
+        # a real file, not just is_missing=False on the row - purge_missing_files
+        # re-checks disk state (mark_missing_videos) before purging, so a
+        # merely-flagged-False row whose path doesn't actually exist would
+        # get correctly re-flagged missing and purged too, defeating the
+        # point of this "keeps present ones" assertion below. .mkv rather
+        # than .mp4 deliberately - .mp4 is in config.AUDIO_EXTENSIONS too
+        # (an MP4 container can hold audio-only content), so scanner.scan_folder
+        # below would also pick this up as a *second*, unrelated Track.
+        here = tmp_path / "real" / "here.mkv"
+        here.parent.mkdir(parents=True, exist_ok=True)
+        here.write_bytes(b"not a real video")
+        with ctx.session() as session:
+            scanner.scan_folder(session, tmp_path)
+            session.add(Video(title="Gone", title_key="gone", path="/old/gone.mp4", is_missing=True))
+            session.add(Video(title="Here", title_key="here", path=str(here), is_missing=False))
+        wav.unlink()
+        monkeypatch.setattr(
+            settings_module.QMessageBox,
+            "question",
+            staticmethod(lambda *a, **k: settings_module.QMessageBox.Yes),
+        )
+        notifications = []
+        ctx.notified.connect(notifications.append)
+
+        view.purge_missing_files()
+
+        with ctx.session() as session:
+            assert session.scalar(select(func.count(Track.id))) == 0
+            remaining_videos = [v.title for v in session.scalars(select(Video))]
+        assert remaining_videos == ["Here"]
+        assert notifications[-1] == "Removed 1 missing track and 1 missing video"

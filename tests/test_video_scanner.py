@@ -272,6 +272,30 @@ class TestMarkMissingVideos:
         assert session.scalar(select(Video)).is_missing is False
 
 
+class TestPurgeMissingVideos:
+    def test_deletes_a_missing_video(self, session, tmp_path):
+        path = tmp_path / "Artist" / "Clip.mp4"
+        make_placeholder_video(path)
+        video_scanner.scan_video_folder(session, tmp_path)
+        path.unlink()
+        video_scanner.mark_missing_videos(session)
+
+        removed = video_scanner.purge_missing_videos(session)
+
+        assert removed == 1
+        assert session.scalar(select(func.count(Video.id))) == 0
+
+    def test_a_present_video_is_never_purged(self, session, tmp_path):
+        path = tmp_path / "Artist" / "Clip.mp4"
+        make_placeholder_video(path)
+        video_scanner.scan_video_folder(session, tmp_path)
+
+        removed = video_scanner.purge_missing_videos(session)
+
+        assert removed == 0
+        assert session.scalar(func.count(Video.id)) == 1
+
+
 class TestRescanAllVideos:
     def test_scans_every_enabled_watched_folder_and_marks_missing_files(self, session, tmp_path):
         folder_a = tmp_path / "a"

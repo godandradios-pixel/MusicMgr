@@ -175,3 +175,30 @@ def mark_missing_videos(session: Session) -> int:
         elif exists and video.is_missing:
             video.is_missing = False
     return count
+
+
+def purge_missing_videos(session: Session) -> int:
+    """Permanently delete every `Video` row currently flagged `is_missing`.
+
+    Unlike scanner.py's `purge_orphaned_tracks`, this needs no has-history
+    check before deleting - nothing in the schema has a foreign key to
+    `videos.id` (a video is never a playlist item, a chart entry, a play
+    event, or a jukebox slot side), so there is nothing a delete here could
+    silently take down with it. That's also why, unlike the audio purge
+    (which runs automatically on every scan - see its own docstring), this
+    one is wired to a manual, confirmed Settings button instead: it's the
+    one video-library action that's actually irreversible, so it gets a
+    "are you sure" rather than running unattended (2026-09-15, James: a
+    library carried over from another machine's Linux paths showed every
+    video "missing" and duplicated after a Windows rescan - see
+    mark_missing_videos above for why the paths themselves don't move, and
+    settings.py's "Purge missing videos…" button for the cleanup step).
+    Call `mark_missing_videos` first (or run a scan) so `is_missing` is
+    actually current before purging by it.
+    """
+    candidates = list(session.scalars(select(Video).where(Video.is_missing.is_(True))))
+    for video in candidates:
+        session.delete(video)
+    if candidates:
+        session.flush()
+    return len(candidates)

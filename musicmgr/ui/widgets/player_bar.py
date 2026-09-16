@@ -13,8 +13,7 @@ moved here from Now Playing; see ui/widgets/visualizer.py's module
 docstring for the full history, including the same-day follow-up that
 made it audio-reactive again). Its active/idle state is wired to the exact
 same `on_state` transitions the transport already reacts to, so it tracks
-play/pause for both music and a hand-off video with no separate wiring of
-its own.
+play/pause for music with no separate wiring of its own.
 
 **Feeding it real data (2026-09-06 follow-up).** `_start_spectrum` fires a
 background `SpectrumThread` (services/spectrum.py) on every track change,
@@ -22,10 +21,17 @@ the same "analyze once per track, off the GUI thread" shape the original
 2026-09-05 spectrum feature used before it was removed - see that
 module's docstring for why this was brought back. `on_position` (already
 firing every position tick for the seek bar) also feeds the visualizer's
-`update_position`, and `on_track_changed`/`enter_video_mode` clear its data
-for a video's own audio (never analyzed - there's nothing correct to show
-while one plays, same rule the original feature followed) or an emptied
-queue. `SPECTRUM_ENABLED` and the discard-stale-results pattern in
+`update_position`. `on_track_changed`/`enter_video_mode` both clear its
+data - an emptied queue, or a playing video - rather than start a new
+analysis. Video briefly got its own real analysis too (2026-09-15,
+same-day follow-up - the same decode-the-file-and-index-by-position trick
+works whether `path` is an audio file or a video container's audio
+track), then James asked for that back out again along with the
+visualizer strip itself, wanting the video bigger and no pulse bar while
+watching one at all: `enter_video_mode`/`exit_video_mode` now also
+`setVisible()` the strip and call `_update_height()` to actually give its
+row of height back rather than just leaving it there, hidden and idle.
+`SPECTRUM_ENABLED` and the discard-stale-results pattern in
 `_on_spectrum_ready`/`_on_spectrum_failed` mirror that same removed
 feature's own conventions exactly, including the reason for both (see
 their docstrings and tests/conftest.py's autouse fixture).
@@ -93,8 +99,12 @@ class PlayerBar(QFrame):
         #: garbage-collect a still-running QThread out from under itself;
         #: pruned as each one finishes (see _start_spectrum)
         self._spectrum_threads: List[SpectrumThread] = []
-        _CONTENT_HEIGHT = 120
-        self.setFixedHeight(_CONTENT_HEIGHT + VISUALIZER_HEIGHT)
+        #: referenced again by _update_height() below, once a video needs
+        #: to drop back to just this (no visualizer strip) - kept on self
+        #: rather than a local, unlike before this needed revisiting after
+        #: construction
+        self._content_height = 120
+        self.setFixedHeight(self._content_height + VISUALIZER_HEIGHT)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -104,7 +114,7 @@ class PlayerBar(QFrame):
         outer.addWidget(self.visualizer)
 
         content = QWidget()
-        content.setFixedHeight(_CONTENT_HEIGHT)
+        content.setFixedHeight(self._content_height)
         outer.addWidget(content)
 
         root = QHBoxLayout(content)
@@ -280,17 +290,33 @@ class PlayerBar(QFrame):
 
     # -- video hand-off -------------------------------------------------------
 
-    def enter_video_mode(self, controller: VideoController, title: str, artist: str) -> None:
+    def enter_video_mode(
+        self, controller: VideoController, title: str, artist: str
+    ) -> None:
         """Point the transport row at a playing video instead of the audio
         queue, called from ui/app.py on AppContext.videoPlaybackStarted (the
         audio queue is paused by the caller before this fires, so nothing
         talks over the video). No queue concept for a single video, so
         prev/next/shuffle/repeat are disabled for as long as this lasts."""
-        # a video's own audio is never analyzed (see _start_spectrum) - the
-        # same rule the original 2026-09-05 spectrum feature followed
+        # 2026-09-15, two follow-ups same day: a video's own audio was
+        # briefly analyzed here too (same decode a music track gets, so the
+        # visualizer would react to it), then James asked for that back out
+        # entirely - "When watching a music video, I really don't need the
+        # pulse visualizer. I want to look at the video" - along with the
+        # visualizer strip itself hidden during video, not just idle, so
+        # its height goes back to the picture (see _update_height below).
+        # No decode even attempted now, not just an unused one - clearing
+        # here is also what keeps a stale music track's bars from lingering
+        # once the strip is hidden and no longer overwriting them itself.
         self._start_spectrum(None)
+        self.visualizer.setVisible(False)
         already_bound = self._video is controller
         self._video = controller
+        # _update_height() reads self._video to decide whether the strip's
+        # row is reserved right now - has to run after the assignment
+        # above, or it'd still see the pre-video state and compute no
+        # change at all
+        self._update_height()
         self.title.setText(title)
         self.subtitle.setText(artist)
         self.cover.set_source(None, title)
@@ -322,11 +348,26 @@ class PlayerBar(QFrame):
         controller.durationChanged.disconnect(self.on_duration)
         controller.playbackStateChanged.disconnect(self.on_state)
         self._video = None
+        self.visualizer.setVisible(True)
+        self._update_height()
         for b in (self.shuffle_btn, self.prev_btn, self.next_btn, self.repeat_btn):
             b.setEnabled(True)
         self.on_track_changed(self.player.current)
         self.on_duration(self.player.duration())
         self.on_state("playing" if self.player.is_playing() else "paused")
+
+    def _update_height(self) -> None:
+        """The visualizer strip's height is only ever "there" or "not" -
+        hiding the widget (enter_video_mode/exit_video_mode above) doesn't
+        by itself shrink this frame's own fixed height, so the room it used
+        to take stays reserved as dead space unless this also runs. Giving
+        that room back is the actual point of hiding it during video
+        (2026-09-15, James: "so that video size can be bigger") - this bar
+        sits below the stacked view content in MainWindow's layout, so a
+        shorter PlayerBar directly means more vertical room for whatever's
+        above it, the embedded video player included."""
+        extra = 0 if self._video is not None else VISUALIZER_HEIGHT
+        self.setFixedHeight(self._content_height + extra)
 
     # -- slots ---------------------------------------------------------------
 

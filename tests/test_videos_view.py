@@ -217,3 +217,70 @@ class TestFocusArtist:
 
         assert view.panes.currentIndex() == PANE_TABLE
         assert calls == ["Target Artist"]
+
+
+class TestSearch:
+    def test_typing_in_the_search_box_filters_the_table_by_title_or_artist(self, ctx, view):
+        with ctx.session() as session:
+            make_video(session, "Take On Me", artist="a-ha")
+            make_video(session, "Chiquitita", artist="ABBA")
+        view.refresh()
+
+        view.search_box.setText("abba")
+
+        assert view.table.leaf_titles() == ["Chiquitita"]
+
+        view.search_box.clear()
+
+        assert sorted(view.table.leaf_titles()) == ["Chiquitita", "Take On Me"]
+
+
+class TestJumpBar:
+    def test_tapping_a_letter_types_it_into_the_search_box(self, ctx, view):
+        with ctx.session() as session:
+            for i in range(10):
+                make_video(session, f"{chr(65 + i)} Song")
+        view.refresh()
+
+        view._on_letter_typed("C")
+
+        assert view.search_box.text() == "C"
+
+    def test_hash_is_never_typed(self, ctx, view):
+        view._on_letter_typed("#")
+
+        assert view.search_box.text() == ""
+
+    def test_tapping_a_letter_scrolls_the_table_to_it(self, ctx, view, monkeypatch):
+        with ctx.session() as session:
+            for i in range(10):
+                make_video(session, f"{chr(65 + i)} Song")
+        view.refresh()
+
+        calls = []
+        monkeypatch.setattr(view.table, "scroll_to_letter", calls.append)
+
+        view._on_letter_key("C")
+
+        assert calls == ["C"]
+
+    def test_jump_bar_hides_for_a_short_list(self, ctx, view):
+        with ctx.session() as session:
+            make_video(session, "One")
+
+        view.refresh()
+
+        # isHidden(), not isVisible() - this view is never actually shown
+        # in a window in this headless test, so isVisible() is always False
+        # regardless of setVisible() - isHidden() reflects the explicit
+        # flag setVisible() actually sets, independent of on-screen state
+        assert view.jump_bar.isHidden() is True
+
+    def test_jump_bar_shows_and_updates_for_a_long_list(self, ctx, view):
+        with ctx.session() as session:
+            for i in range(10):
+                make_video(session, f"{chr(65 + i)} Song")
+
+        view.refresh()
+
+        assert view.jump_bar.isHidden() is False

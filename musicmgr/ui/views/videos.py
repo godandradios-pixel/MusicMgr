@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtWidgets import QStackedWidget
+from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QStackedWidget
 
 from ...db.models import Video
 from ...services import videos as vid_svc
 from ...services.library import format_duration
 from ..context import AppContext
-from ..widgets.common import dim_label
+from ..widgets.common import TouchButton, dim_label
+from ..widgets.cover_grid import JumpBar
 from ..widgets.video_panel import VideoPlayerPanel
 from ..widgets.video_table import VideoRow, VideoTable
 from .base import BaseView
@@ -49,13 +50,67 @@ class VideosView(BaseView):
         self.stats = dim_label("")
         self.header.insertWidget(1, self.stats)
 
-        hint = dim_label("Add folders to scan from Settings → Watched video folders")
-        self.body().addWidget(hint)
+        # a "Add folders to scan from Settings…" hint used to sit here,
+        # always shown regardless of whether any videos existed - removed
+        # 2026-09-15 (James: reclaim that row of height "to allow the video
+        # to be larger" - the embedded player's actual height is whatever's
+        # left after everything else in body(), so one less always-on row
+        # is real vertical room back for the picture).
+        # same "Search this view…" + Space/⌫/✕ shape as LibraryView's own
+        # search row (2026-09-15, James: "the search bar for videos to
+        # include artists and track titles") - videos had no search at all
+        # before this, unlike every Library presentation. Matches by title
+        # OR artist (see VideoTable.set_filter_text) rather than needing a
+        # separate "search by" picker the way Library's four presentations
+        # each search their own field.
+        search_row = QHBoxLayout()
+        search_row.setSpacing(8)
+
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Search this view…")
+        self.search_box.setFixedWidth(640)
+        self.search_box.setToolTip("Searches by video title or artist")
+        self.search_box.textChanged.connect(self._on_search_changed)
+        search_row.addWidget(self.search_box)
+
+        space_btn = TouchButton("Space")
+        space_btn.setFixedWidth(96)
+        space_btn.setToolTip("Insert a space")
+        space_btn.clicked.connect(lambda: self.search_box.insert(" "))
+        search_row.addWidget(space_btn)
+
+        backspace_btn = TouchButton("⌫")
+        backspace_btn.setFixedWidth(72)
+        backspace_btn.setToolTip("Backspace")
+        backspace_btn.clicked.connect(self.search_box.backspace)
+        search_row.addWidget(backspace_btn)
+
+        clear_btn = TouchButton("✕")
+        clear_btn.setFixedWidth(72)
+        clear_btn.setToolTip("Clear the search box")
+        clear_btn.clicked.connect(self.search_box.clear)
+        search_row.addWidget(clear_btn)
+
+        search_row.addStretch(1)
+        self.body().addLayout(search_row)
+
+        # 2026-09-15 same-day follow-up - James: "It's missing the
+        # alphabet, how do I touch type letters to search without it" -
+        # the search row above added Space/⌫/✕ but not this, and on a
+        # touch panel with no physical keyboard this bar is the *only* way
+        # to actually type a letter (tapping one spells it into the search
+        # box) - see JumpBar's own docstring and LibraryView's module
+        # docstring for the same reasoning there.
+        self.jump_bar = JumpBar()
+        self.jump_bar.letterPicked.connect(self._on_letter_key)
+        self.jump_bar.letterTyped.connect(self._on_letter_typed)
+        self.body().addWidget(self.jump_bar)
 
         self.panes = QStackedWidget()
         self.panes.addWidget(self._build_table())   # 0
         self.panes.addWidget(self._build_player())  # 1
         self.body().addWidget(self.panes, 1)
+        self.table.updated.connect(self._refresh_jump_bar)
 
         ctx.videosChanged.connect(self._on_videos_changed)
         ctx.playVideoRequested.connect(self._open_video)
@@ -106,6 +161,29 @@ class VideosView(BaseView):
         plural = "" if len(rows) == 1 else "s"
         self.stats.setText(f"{len(rows)} video{plural} · {format_duration(total_ms)}")
         self._loaded = True
+
+    def _on_search_changed(self, text: str) -> None:
+        self.table.set_filter_text(text)
+
+    def _on_letter_key(self, letter: str) -> None:
+        """JumpBar.letterPicked - scrolls the table straight to this
+        letter (see VideoTable.scroll_to_letter)."""
+        self.table.scroll_to_letter(letter)
+
+    def _on_letter_typed(self, letter: str) -> None:
+        """JumpBar.letterTyped - the literal letter tapped, spelled into
+        the search box the same way LibraryView._on_letter_typed does,
+        since there's no physical keyboard to type one with here either.
+        '#' isn't a real character, so it's never typed, only used for
+        its usual jump."""
+        if letter != "#":
+            self.search_box.insert(letter)
+
+    def _refresh_jump_bar(self) -> None:
+        letters = self.table.jump_letters()
+        self.jump_bar.setVisible(bool(letters))
+        if letters:
+            self.jump_bar.set_available(letters)
 
     # -- navigation -----------------------------------------------------------
 

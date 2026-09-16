@@ -259,7 +259,9 @@ class SettingsView(BaseView):
         where.clicked.connect(self.show_paths)
         move_btn = TouchButton("Move data location…")
         move_btn.clicked.connect(self.move_data)
-        for b in (verify, rematch, where, move_btn):
+        purge_missing = TouchButton("Purge missing files…")
+        purge_missing.clicked.connect(self.purge_missing_files)
+        for b in (verify, rematch, where, move_btn, purge_missing):
             tools.addWidget(b)
         tools.addStretch(1)
         self.body().addLayout(tools)
@@ -336,6 +338,74 @@ class SettingsView(BaseView):
             if folder is not None:
                 session.delete(folder)
         self.ctx.notify("Folder removed. Existing tracks and videos were kept.")
+        self.refresh()
+
+    def purge_missing_files(self) -> None:
+        """Permanently delete both missing tracks and missing videos in one
+        action (2026-09-15 follow-up - James: audio-only video purging
+        wasn't enough, this should cover "any file both audio and video").
+
+        The two sides keep their own, already-established safety rules
+        rather than being forced to match each other: `purge_orphaned_tracks`
+        still skips a missing track that's on a playlist, a chart, or a
+        jukebox slot, or has play history (see its own docstring) - only
+        `purge_missing_videos` is unconditional, since nothing references a
+        `Video` row the way those tables reference a `Track`. So "N missing"
+        and "N removed" can legitimately differ for audio; the confirmation
+        text below says so rather than that reading as a bug.
+
+        Re-checks `is_missing` against disk right before purging (via
+        mark_missing_files/mark_missing_videos) rather than trusting
+        whatever it was left at by the last scan - this button is meant to
+        give a correct answer right now, not only right after a fresh scan.
+        A library carried over to a new machine (different drive letter, a
+        USB stick mounted somewhere else) can show everything as "missing"
+        purely because the old paths don't resolve there; the confirmation
+        text says so explicitly rather than letting that read as data loss,
+        and points at rescanning as the fix for a merely-moved drive rather
+        than purging.
+        """
+        with self.ctx.session() as session:
+            # discard the return values here - each only counts files newly
+            # marked missing *this call*, not the total currently missing
+            # (a file already flagged missing by an earlier scan wouldn't
+            # count again); library_stats()/video_counts() below read the
+            # real total off the now-refreshed is_missing flags instead.
+            scanner.mark_missing_files(session)
+            video_scanner.mark_missing_videos(session)
+            missing_tracks = lib.library_stats(session)["missing"]
+            missing_videos = vid_svc.video_counts(session)["video_missing"]
+        if not missing_tracks and not missing_videos:
+            self.ctx.notify("No missing files to remove")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Purge missing files",
+            f"Permanently remove MusicMgr's record of {missing_tracks} track"
+            f"{'s' if missing_tracks != 1 else ''} and {missing_videos} video"
+            f"{'s' if missing_videos != 1 else ''} whose file can't currently "
+            "be found?\n\n"
+            "This never touches anything on disk - only MusicMgr's own "
+            "records. A track on a playlist, a chart, or a jukebox slot, or "
+            "with play history, is kept even if missing, so the count "
+            "actually removed can be lower than the count shown here; a "
+            "missing video has no such protection and is always removed.\n\n"
+            "If files are only missing because a drive isn't connected "
+            "right now (or a watched folder points at an old location, "
+            "like a path from a different machine), reconnect it or fix "
+            "the folder and scan again instead - anything purged here has "
+            "to be rescanned from scratch to come back.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        with self.ctx.session() as session:
+            tracks_removed = scanner.purge_orphaned_tracks(session)
+            videos_removed = video_scanner.purge_missing_videos(session)
+        self.ctx.notify(
+            f"Removed {tracks_removed} missing track{'s' if tracks_removed != 1 else ''} "
+            f"and {videos_removed} missing video{'s' if videos_removed != 1 else ''}"
+        )
         self.refresh()
 
     def scan_all(self) -> None:

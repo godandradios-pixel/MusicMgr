@@ -1,4 +1,6 @@
-# Dependencies only needed to run the test suite - not part of the
-# shipped/bundled app (kept out of requirements.txt for that reason).
+# Dependencies only needed to run the test suite, or to build the Windows
+# .exe distribution - not part of the shipped/bundled app itself (kept out
+# of requirements.txt for that reason).
 -r requirements.txt
 pytest>=7.4
+pyinstaller>=6.6
