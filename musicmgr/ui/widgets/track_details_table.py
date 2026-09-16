@@ -98,6 +98,37 @@ tapping anywhere else on the row plays it instead (`_on_clicked`,
 the default unfiltered table - the same rule the other three Library
 presentations apply to their own video items.
 
+2026-09-16 follow-up (James: "add the group by to the track details. And
+add a Genre, and Artist/album group by option" - referencing `VideoTable`'s
+own "Group by: None / Artist" chip bar, see that widget's module
+docstring): a matching chip bar sits above this table too now, with three
+options - None (today's flat, fully-sortable table, unchanged), Genre, and
+Artist / Album. Genre works exactly like `VideoTable`'s Artist grouping -
+one level of `GroupHeaderRow` dividers, alphabetical by genre, with header
+clicks still re-sorting *within* each genre group by whatever column was
+clicked (same "own the grouping, header clicks still matter" contract
+`VideoTable`'s docstring lays out). Artist / Album is two levels deep -
+an artist divider, then an album divider under it, then that album's
+tracks - which needed a real decision `VideoTable` never had to make:
+what governs the leaf order inside a two-level group. Letting the active
+column sort reach all the way into "order tracks within one album" would
+mean a stray "sort by Time" click scrambles every album's own track
+order, which nothing in this app's other grouped/ordered views does (the
+artist page's own release row, `GatefoldCoverflow`, always orders by
+year-then-title regardless of anything else on screen). So Artist / Album
+has its own fixed, natural order at every level instead - artist
+alphabetical, album by year-then-title (the same tuple `artist_panel.py`'s
+own release query already sorts by), track by track number - and
+`self.view.setSortingEnabled(False)` while it's active, so a header click
+does nothing rather than silently failing to do what it looks like it
+should. `TrackDetailsModel._rebuild_display()` is where all of this
+actually lives; see its own docstring for the row-list mechanics
+(`GroupHeaderRow`, `QTableView.setSpan()`) that make two-level grouping
+possible without abandoning the flat `QAbstractTableModel` this file's
+own module docstring already explains the reasoning for keeping (a real
+per-`QTreeWidgetItem` grouped table, `VideoTable`'s own approach, isn't
+viable at this table's tens-of-thousands-of-rows scale - see above).
+
 Rows are selectable and a double click on a real (non-video) row plays it
 (2026-09-06 follow-up, James: "I want to be able to select or click on a
 title. A double click should automatically start playing that track") -
@@ -120,10 +151,12 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from PySide6.QtCore import QAbstractTableModel, QEvent, QModelIndex, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
+    QHBoxLayout,
     QHeaderView,
     QScroller,
     QStyle,
@@ -136,7 +169,7 @@ from PySide6.QtWidgets import (
 from ...config import TOUCH
 from ...services.player import QueueItem
 from ..theme import COLORS
-from .common import STAR_COUNT, STAR_EMPTY, STAR_FULL
+from .common import STAR_COUNT, STAR_EMPTY, STAR_FULL, ChipButton, dim_label
 from .cover_grid import MIN_TILES_FOR_SORTING
 
 COL_GENRE = 0
@@ -172,6 +205,28 @@ ALPHA_SORT_COLS = (COL_GENRE, COL_ALBUM_ARTIST, COL_ALBUM, COL_TITLE)
 #: DisplayRole is left returning None for this column since the delegate,
 #: not QStyledItemDelegate's default text painting, owns how it looks
 ROLE_RATING = Qt.UserRole + 1
+
+#: the three "Group by" chip options (2026-09-16 follow-up - see module
+#: docstring). GROUP_NONE is today's flat, fully-sortable table; the other
+#: two insert `GroupHeaderRow` dividers into the model's row list (see
+#: `TrackDetailsModel._rebuild_display`).
+GROUP_NONE = "none"
+GROUP_GENRE = "genre"
+GROUP_ARTIST_ALBUM = "artist_album"
+
+#: fallback bucket labels for a blank grouping field - same idea as
+#: `VideoTable`'s "Unknown artist" for a blank artist, just for the two
+#: fields this table can group by.
+_NO_GENRE = "No genre"
+_NO_ALBUM = "No album"
+
+
+def _first_letter(text: str) -> str:
+    """Uppercased first letter for the shared A-Z jump bar, or '#' for
+    anything that doesn't start with A-Z (blank text, a leading digit or
+    symbol) - the same catch-all bucket every jump bar in this app uses."""
+    first = (text or "").strip()[:1].upper()
+    return first if first in string.ascii_uppercase else "#"
 
 
 @dataclass
@@ -234,6 +289,32 @@ class TrackDetailRow:
         )
 
 
+@dataclass
+class GroupHeaderRow:
+    """One divider row inserted into `TrackDetailsModel`'s display list by
+    `_rebuild_display()` when grouping is on (2026-09-16 follow-up - see
+    module docstring). Not a real track - `TrackDetailsModel.row_at()`
+    returns None for one of these, same contract a video search-match row
+    already relied on (see `TrackDetailRow.is_video`), so the click/
+    rating/jukebox handling that already tolerates "nothing here" needed
+    no further changes.
+
+    `level` is 0 for a top-level divider (a genre, or an artist in Artist /
+    Album mode) and 1 for the album sub-divider nested under an artist in
+    Artist / Album mode - `TrackDetailsTable._apply_spans()` spans every
+    level the same way (the whole row, all columns), but only level 0
+    dividers are jump-bar targets (`letter_source` is None on a level-1
+    one, so `TrackDetailsModel.top_level_headers()` skips it - MusicBee's
+    own grouped view doesn't jump by album name either, just artist)."""
+
+    text: str
+    level: int = 0
+    #: the raw (un-formatted) grouping key this divider represents - "Rock",
+    #: "Rush" - read by the shared A-Z jump bar. None for a level-1 (album)
+    #: divider, which isn't a jump target at all (see class docstring).
+    letter_source: Optional[str] = None
+
+
 def _alpha_letter(row: TrackDetailRow, col: int) -> str:
     """First letter of whichever field `col` sorts by, uppercased - the same
     rule `CoverGrid._letter_of` uses for the Albums/Artists grids, extended
@@ -248,27 +329,45 @@ def _alpha_letter(row: TrackDetailRow, col: int) -> str:
         source = row.album
     else:  # COL_TITLE, and the only other caller is already ALPHA_SORT_COLS-gated
         source = row.title
-    first = (source or "").strip()[:1].upper()
-    return first if first in string.ascii_uppercase else "#"
+    return _first_letter(source)
 
 
 class TrackDetailsModel(QAbstractTableModel):
     """Backs the table. `set_rows()` replaces the whole (already filtered)
     row set; `sort()` is Qt's own hook, called automatically by
-    `QTableView.setSortingEnabled(True)` whenever a header is tapped."""
+    `QTableView.setSortingEnabled(True)` whenever a header is tapped.
+
+    2026-09-16 follow-up (James: "add the group by to the track details.
+    And add a Genre, and Artist/album group by option" - see the class-
+    level `TrackDetailsTable`'s own docstring for the full rationale):
+    `self._rows` is still the flat, filtered leaf list `set_rows()` is
+    handed - the source of truth, untouched by grouping. What the view
+    actually reads (`rowCount`/`data`/etc.) is `self._display_rows`, a
+    separate list `_rebuild_display()` rebuilds from `self._rows` whenever
+    the row set, the sort, or `self._group` changes - plain `TrackDetailRow`
+    leaves when ungrouped, leaves interleaved with `GroupHeaderRow` dividers
+    otherwise. Kept as two lists rather than mutating `self._rows` in place
+    (the old `_apply_sort` did) because a header divider isn't a row this
+    table's search/filter/rating logic should ever see - keeping it out of
+    `self._rows` entirely means none of that logic needed to learn about
+    dividers at all; only the handful of places that render or navigate the
+    table (`data`, `flags`, `row_at`, `header_at`, `rows`,
+    `top_level_headers`) needed to."""
 
     ratingChanged = Signal(int, int)  # track_id, new rating (0 = cleared)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._rows: list[TrackDetailRow] = []
+        self._display_rows: list = []  # TrackDetailRow | GroupHeaderRow
+        self._group = GROUP_NONE
         self._sort_col = COL_TITLE
         self._sort_asc = True
 
     # -- Qt model plumbing ---------------------------------------------------
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return 0 if parent.isValid() else len(self._rows)
+        return 0 if parent.isValid() else len(self._display_rows)
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(HEADERS)
@@ -278,11 +377,35 @@ class TrackDetailsModel(QAbstractTableModel):
             return HEADERS[section]
         return None
 
+    def flags(self, index: QModelIndex):
+        if not index.isValid():
+            return Qt.NoItemFlags
+        item = self._display_rows[index.row()]
+        if isinstance(item, GroupHeaderRow):
+            # a divider, not a selectable/checkable row - matches
+            # VideoTable's own group headers (Qt.ItemIsEnabled only, no
+            # ItemIsSelectable), so a click on one just falls through
+            # row_at()/header_at() returning the "nothing to act on" shape
+            # every existing handler already tolerates (see class docstring)
+            return Qt.ItemIsEnabled
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+
     def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
         if not index.isValid():
             return None
-        row = self._rows[index.row()]
+        item = self._display_rows[index.row()]
         col = index.column()
+        if isinstance(item, GroupHeaderRow):
+            if role == Qt.DisplayRole and col == 0:
+                return item.text
+            if role == Qt.FontRole and col == 0:
+                font = QFont()
+                font.setBold(True)
+                return font
+            if role == Qt.TextAlignmentRole:
+                return Qt.AlignLeft | Qt.AlignVCenter
+            return None
+        row = item
         if role == Qt.DisplayRole:
             return self._display(row, col)
         if role == ROLE_RATING and col == COL_RATING:
@@ -319,11 +442,25 @@ class TrackDetailsModel(QAbstractTableModel):
     def set_rows(self, rows: Sequence[TrackDetailRow]) -> None:
         self.beginResetModel()
         self._rows = list(rows)
-        self._apply_sort()
+        self._rebuild_display()
         self.endResetModel()
 
     def row_at(self, row: int) -> Optional[TrackDetailRow]:
-        return self._rows[row] if 0 <= row < len(self._rows) else None
+        """The real track at this display row, or None for a group header -
+        the same "nothing here" contract a video search-match row's caller
+        already had to handle (`TrackDetailRow.is_video`), extended to
+        cover a header divider too, so `_on_clicked`/`_on_double_clicked`/
+        `RatingDelegate` needed no new special-casing for grouping."""
+        if not (0 <= row < len(self._display_rows)):
+            return None
+        item = self._display_rows[row]
+        return item if isinstance(item, TrackDetailRow) else None
+
+    def header_at(self, row: int) -> Optional[GroupHeaderRow]:
+        if not (0 <= row < len(self._display_rows)):
+            return None
+        item = self._display_rows[row]
+        return item if isinstance(item, GroupHeaderRow) else None
 
     def set_rating(self, row: int, rating: int) -> None:
         detail = self.row_at(row)
@@ -335,17 +472,52 @@ class TrackDetailsModel(QAbstractTableModel):
         self.ratingChanged.emit(detail.track_id, rating)
 
     def count(self) -> int:
+        """How many real tracks are currently loaded - deliberately
+        `len(self._rows)`, not the display list, so a group header divider
+        never inflates this (matches what `set_rows()` was actually handed,
+        regardless of how it's currently grouped)."""
         return len(self._rows)
 
     def rows(self) -> list[TrackDetailRow]:
-        """The current (filtered, sorted) row set, in display order - what
-        `jump_letters()`/`scroll_to_letter()` walk to answer "what letters
-        are on screen right now" without duplicating the model's own state."""
-        return self._rows
+        """The current (filtered, sorted, and - if grouped - flattened)
+        leaf rows, in on-screen display order, with any group headers
+        stripped out - what `jump_letters()`/`scroll_to_letter()` walk to
+        answer "what letters are on screen right now" without duplicating
+        the model's own state."""
+        return [r for r in self._display_rows if isinstance(r, TrackDetailRow)]
+
+    def top_level_headers(self) -> list[tuple[int, str]]:
+        """(display row index, raw grouping-key text) for every top-level
+        `GroupHeaderRow` currently shown - a genre name, or an artist name
+        in Artist / Album mode - what the shared A-Z jump bar indexes while
+        grouped (see `TrackDetailsTable.jump_letters`/`scroll_to_letter`).
+        Empty while `group == GROUP_NONE`, since there are no dividers at
+        all then; also skips the album sub-dividers Artist / Album mode
+        adds (`level == 1`) - MusicBee's own grouped view doesn't jump by
+        album name either, just artist."""
+        return [
+            (i, item.letter_source)
+            for i, item in enumerate(self._display_rows)
+            if isinstance(item, GroupHeaderRow)
+            and item.level == 0
+            and item.letter_source is not None
+        ]
 
     @property
     def sort_column(self) -> int:
         return self._sort_col
+
+    @property
+    def group(self) -> str:
+        return self._group
+
+    def set_group(self, group: str) -> None:
+        if group == self._group:
+            return
+        self.beginResetModel()
+        self._group = group
+        self._rebuild_display()
+        self.endResetModel()
 
     # -- sorting -----------------------------------------------------------------
 
@@ -353,7 +525,7 @@ class TrackDetailsModel(QAbstractTableModel):
         self._sort_col = column
         self._sort_asc = order == Qt.AscendingOrder
         self.layoutAboutToBeChanged.emit()
-        self._apply_sort()
+        self._rebuild_display()
         self.layoutChanged.emit()
 
     def _sort_value(self, row: TrackDetailRow):
@@ -374,8 +546,97 @@ class TrackDetailsModel(QAbstractTableModel):
             return (row.rating if row.rating is not None else -1, row.sort_key)
         return row.sort_key  # Title, and the fallback
 
-    def _apply_sort(self) -> None:
-        self._rows.sort(key=self._sort_value, reverse=not self._sort_asc)
+    # -- grouping (2026-09-16 follow-up - see class docstring) -----------------
+
+    def _rebuild_display(self) -> None:
+        if self._group == GROUP_GENRE:
+            self._display_rows = self._grouped_by_genre()
+        elif self._group == GROUP_ARTIST_ALBUM:
+            self._display_rows = self._grouped_by_artist_album()
+        else:
+            self._display_rows = sorted(
+                self._rows, key=self._sort_value, reverse=not self._sort_asc
+            )
+
+    def _grouped_by_genre(self) -> list:
+        """One divider per genre, alphabetical, tracks within each genre
+        ordered by whatever column is currently sorted - the same "own the
+        grouping, header clicks still matter" contract `VideoTable`'s own
+        Artist grouping already established (see that widget's module
+        docstring)."""
+        groups: dict[str, list[TrackDetailRow]] = {}
+        for row in self._rows:
+            groups.setdefault(row.genre or _NO_GENRE, []).append(row)
+        display: list = []
+        for genre in sorted(groups, key=str.lower):
+            members = groups[genre]
+            plural = "" if len(members) == 1 else "s"
+            display.append(
+                GroupHeaderRow(
+                    text=f"{genre}  ·  {len(members)} track{plural}",
+                    level=0,
+                    letter_source=genre,
+                )
+            )
+            display.extend(sorted(members, key=self._sort_value, reverse=not self._sort_asc))
+        return display
+
+    def _grouped_by_artist_album(self) -> list:
+        """Two dividers deep - an artist, then each of their albums under
+        it - with a fixed, natural order at every level rather than
+        following whatever column is currently sorted (see
+        `TrackDetailsTable`'s own docstring for why: letting an arbitrary
+        column reach into "track order within one album" would scramble
+        it, which nothing else in this app's grouped/ordered views does).
+        Artist alphabetical; album by year-then-title (the same tuple
+        `artist_panel.py`'s own release query already sorts by); track by
+        track number, falling back to the same title `sort_key` every
+        other "no track number" case in this app already falls back to."""
+        by_artist: dict[str, list[TrackDetailRow]] = {}
+        for row in self._rows:
+            by_artist.setdefault(row.album_artist or "Unknown artist", []).append(row)
+        display: list = []
+        for artist in sorted(by_artist, key=str.lower):
+            artist_rows = by_artist[artist]
+            by_album: dict[str, list[TrackDetailRow]] = {}
+            for row in artist_rows:
+                by_album.setdefault(row.album or _NO_ALBUM, []).append(row)
+            album_plural = "" if len(by_album) == 1 else "s"
+            track_plural = "" if len(artist_rows) == 1 else "s"
+            display.append(
+                GroupHeaderRow(
+                    text=(
+                        f"{artist}  ·  {len(by_album)} album{album_plural}, "
+                        f"{len(artist_rows)} track{track_plural}"
+                    ),
+                    level=0,
+                    letter_source=artist,
+                )
+            )
+
+            def _album_year(album_name: str, _by_album=by_album) -> int:
+                years = [r.year for r in _by_album[album_name] if r.year is not None]
+                return min(years) if years else 9999
+
+            for album in sorted(by_album, key=lambda a: (_album_year(a), a.lower())):
+                album_rows = by_album[album]
+                plural = "" if len(album_rows) == 1 else "s"
+                year = next((r.year for r in album_rows if r.year is not None), None)
+                caption = f"{album}  ·  {year}" if year else album
+                display.append(
+                    GroupHeaderRow(
+                        text=f"{caption}  ·  {len(album_rows)} track{plural}",
+                        level=1,
+                        letter_source=None,
+                    )
+                )
+                display.extend(
+                    sorted(
+                        album_rows,
+                        key=lambda r: (r.track_no if r.track_no is not None else 9999, r.sort_key),
+                    )
+                )
+        return display
 
 
 class RatingDelegate(QStyledItemDelegate):
@@ -421,7 +682,13 @@ class RatingDelegate(QStyledItemDelegate):
             super().paint(painter, option, index)
             return
         row = index.model().row_at(index.row())
-        if row is not None and row.is_video:
+        # row_at() is also None for a group header divider (2026-09-16
+        # follow-up - see TrackDetailsModel's docstring); in practice
+        # QTableView.setSpan() already merges a header's whole row into
+        # column 0's index so COL_RATING's delegate is never even asked to
+        # paint one, but bailing here too costs nothing and doesn't rely on
+        # spans having been (re)applied yet.
+        if row is None or row.is_video:
             # a video has no rating field at all - leave the cell blank
             # rather than paint stars for something that can't be rated
             return
@@ -446,9 +713,10 @@ class RatingDelegate(QStyledItemDelegate):
         if index.column() != COL_RATING:
             return super().editorEvent(event, model, option, index)
         row = model.row_at(index.row())
-        if row is not None and row.is_video:
-            # no rating field to set on a video - refuse the tap before any
-            # star hit-testing logic runs
+        if row is None or row.is_video:
+            # no rating field to set on a video, or nothing to set at all
+            # on a group header divider - refuse the tap before any star
+            # hit-testing logic runs
             return False
         if event.type() == QEvent.MouseButtonRelease:
             point = event.position().toPoint()
@@ -602,9 +870,48 @@ class TrackDetailsTable(QWidget):
         )
         self.videos_only_checkbox.toggled.connect(self._on_videos_only_toggled)
 
+        # "Group by: None / Genre / Artist / Album" (2026-09-16 follow-up -
+        # see the class docstring's newest entry) - same chip-bar shape as
+        # VideoTable's own "Group by" row (dim_label + a QButtonGroup of
+        # ChipButtons), built and placed in this table's own layout rather
+        # than reparented into LibraryView's shared header the way the
+        # Videos-only checkbox above is: unlike that checkbox (Title
+        # Details-only, so it only makes sense in the header LibraryView
+        # already swaps per presentation), Group by is entirely local to
+        # this table's own row list, the same reasoning VideoTable's
+        # module docstring gives for keeping its own bar in its own layout.
+        group_bar = QHBoxLayout()
+        group_bar.setSpacing(8)
+        group_bar.addWidget(dim_label("Group by"))
+        self._group_buttons = QButtonGroup(self)
+        self._group_buttons.setExclusive(True)
+        none_chip = ChipButton("None")
+        none_chip.setProperty("group", GROUP_NONE)
+        none_chip.setChecked(True)
+        genre_chip = ChipButton("Genre")
+        genre_chip.setProperty("group", GROUP_GENRE)
+        artist_album_chip = ChipButton("Artist / Album")
+        artist_album_chip.setProperty("group", GROUP_ARTIST_ALBUM)
+        for chip in (none_chip, genre_chip, artist_album_chip):
+            self._group_buttons.addButton(chip)
+            group_bar.addWidget(chip)
+        self._group_buttons.buttonClicked.connect(
+            lambda b: self._set_group(b.property("group"))
+        )
+        group_bar.addStretch(1)
+        root.addLayout(group_bar)
+
         self.model = TrackDetailsModel(self)
         self.model.ratingChanged.connect(self.ratingChanged)
         self.model.modelReset.connect(self.updated)
+        # a header divider only ever exists after grouping is on, and a
+        # fresh row set or a header re-sort both rebuild the display list
+        # from scratch - modelReset (set_rows/set_group) and layoutChanged
+        # (sort) are the two ways that happens, so both need every header
+        # row re-spanned across the whole width, or a stale span from
+        # before the rebuild would merge the wrong cells
+        self.model.modelReset.connect(self._apply_spans)
+        self.model.layoutChanged.connect(self._apply_spans)
 
         self.view = QTableView()
         self.view.setObjectName("TitleDetails")
@@ -693,6 +1000,44 @@ class TrackDetailsTable(QWidget):
             return
         self.trackActivated.emit(row.track_id)
 
+    # -- grouping (2026-09-16 follow-up - see class docstring) -----------------
+
+    @property
+    def group_by(self) -> str:
+        return self.model.group
+
+    def _set_group(self, group: str) -> None:
+        if group == self.model.group:
+            return
+        self.model.set_group(group)
+        # Artist / Album has its own fixed, natural order at every level
+        # (artist alphabetical, album by year-then-title, track by track
+        # number) rather than following whatever column is clicked - see
+        # TrackDetailsModel._grouped_by_artist_album's own docstring for
+        # why a column-driven re-sort doesn't make sense two levels deep.
+        # Disabling native sorting here means a header click does nothing
+        # at all while this mode is active, rather than looking like it
+        # should reorder something and quietly not doing it. Genre (one
+        # level, same contract VideoTable's Artist grouping already uses)
+        # and None both keep header-click sorting live.
+        self.view.setSortingEnabled(group != GROUP_ARTIST_ALBUM)
+        self.updated.emit()
+
+    def _apply_spans(self) -> None:
+        """Every `GroupHeaderRow` currently in the model's display list
+        gets its one cell (column 0) spanned across every column - the
+        `QTableView` equivalent of `QTreeWidgetItem.setFirstColumnSpanned`,
+        which is what actually makes a header read as one full-width bar
+        instead of a row with text in its first cell and four empty ones
+        trailing it. Called after every rebuild (`modelReset`/
+        `layoutChanged` - see `__init__`'s connections) since a stale span
+        from before the rebuild would otherwise merge whatever now happens
+        to sit at that row/column into the wrong shape."""
+        self.view.clearSpans()
+        for row in range(self.model.rowCount()):
+            if self.model.header_at(row) is not None:
+                self.view.setSpan(row, 0, 1, len(HEADERS))
+
     # -- data ---------------------------------------------------------------
 
     def set_rows(self, rows: Sequence[TrackDetailRow]) -> None:
@@ -773,7 +1118,18 @@ class TrackDetailsTable(QWidget):
         currently sorted by (Track #/Time/Year/Rating are numeric - see
         `ALPHA_SORT_COLS`) or there's too little on screen to be worth it -
         the same `MIN_TILES_FOR_SORTING` threshold `CoverGrid.jump_letters()`
-        already applies for the Albums/Artists grids."""
+        already applies for the Albums/Artists grids.
+
+        2026-09-16 follow-up (see class docstring) - grouped by Genre or
+        Artist / Album, letters index the top-level group headers instead
+        of a column: the dividers are what a jump-bar tap should actually
+        land on while grouped, the same rule `VideoTable`'s own Group by
+        Artist already established (see that widget's `jump_letters`)."""
+        if self.model.group != GROUP_NONE:
+            headers = self.model.top_level_headers()
+            if len(headers) <= MIN_TILES_FOR_SORTING:
+                return None
+            return {_first_letter(text) for _row, text in headers}
         col = self.model.sort_column
         rows = self.model.rows()
         if col not in ALPHA_SORT_COLS or len(rows) <= MIN_TILES_FOR_SORTING:
@@ -781,6 +1137,14 @@ class TrackDetailsTable(QWidget):
         return {_alpha_letter(r, col) for r in rows}
 
     def scroll_to_letter(self, letter: str) -> None:
+        if self.model.group != GROUP_NONE:
+            for row_index, text in self.model.top_level_headers():
+                if _first_letter(text) == letter:
+                    self.view.scrollTo(
+                        self.model.index(row_index, 0), QAbstractItemView.PositionAtTop
+                    )
+                    return
+            return
         col = self.model.sort_column
         for row_index, row in enumerate(self.model.rows()):
             if _alpha_letter(row, col) == letter:

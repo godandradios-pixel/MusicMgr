@@ -97,7 +97,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QStackedWidget,
     QVBoxLayout,
@@ -348,19 +347,19 @@ class LibraryView(BaseView):
         # Title-Details-only sync it already does for the A-Z bar.
         self.details_table.videos_only_checkbox.setVisible(self._mode == BROWSE_DETAILS)
 
-        return self._pane("Title Details", self.details_table, name="details_title")
-
-    def _pane(self, heading: str, widget: QWidget, name: str) -> QWidget:
-        box = QWidget()
-        layout = QVBoxLayout(box)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        label = QLabel(heading)
-        label.setObjectName("Crumb")
-        setattr(self, name, label)
-        layout.addWidget(label)
-        layout.addWidget(widget, 1)
-        return box
+        # 2026-09-16 follow-up (James: "Remove the Title Details (99,754
+        # tracks) to free up a row. It's redundant with the top line
+        # Library label") - this used to come back wrapped in `_pane()`,
+        # a small heading label ("Title Details (N tracks)", kept live by
+        # `_load_details()` below) sitting above the table. Every other
+        # pane here (Albums/Artists/Tracks/the two detail panels) already
+        # returns its own content widget directly with no heading of its
+        # own - Title Details was the only one that had it, and the count
+        # it showed just repeated what `self.stats` already says at the
+        # top of the page ("N artists · N releases · N tracks"). `_pane()`
+        # had no other caller, so it's gone entirely rather than left
+        # behind unused.
+        return self.details_table
 
     # -- data loading ---------------------------------------------------------
 
@@ -701,7 +700,6 @@ class LibraryView(BaseView):
             for v in video_rows
         )
         self.details_table.set_rows(details)
-        self.details_title.setText(f"Title Details ({len(rows):,} tracks)")
         self._loaded.add(BROWSE_DETAILS)
         self._apply_search()
 
