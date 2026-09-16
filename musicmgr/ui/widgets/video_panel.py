@@ -54,8 +54,12 @@ from .common import PAUSE_GLYPH, TouchButton, dim_label
 class VideoPlayerPanel(QWidget):
     #: the "‹ Back" button was tapped. Generic and target-less by design -
     #: this panel doesn't know (or care) what should happen next; its one
-    #: connection (VideosView._build_player) drops back onto that view's
-    #: own table.
+    #: connection (VideosView._build_player) just re-emits
+    #: ctx.videosBackRequested, which MainWindow answers by returning to
+    #: whatever section was active before a search match routed here (see
+    #: that signal's own docstring - a brief 2026-09-15 detour had this
+    #: drop onto Videos' own table instead, back while Videos had a real
+    #: sidebar entry of its own).
     backRequested = Signal()
 
     def __init__(self, ctx, parent=None) -> None:

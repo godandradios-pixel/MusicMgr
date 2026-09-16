@@ -50,14 +50,17 @@ NAV_ITEMS = [
     ("jukebox", "Jukebox"),
     ("track", "Tracks"),
     ("details", "Title Details"),
-    # 2026-09-15, James: "introduce a Video sidebar menu option" - Videos
-    # used to have no sidebar entry at all, reachable only mid-transit from
-    # a search match or the artist page's own video list (see
-    # ctx.playVideoRequested/focusVideoArtistRequested and
-    # views/videos.py). Now a real destination, so its embedded player's
-    # "‹ Back" button returns to its own table instead of leaving Videos
-    # entirely - see VideosView._build_player.
-    ("videos", "Videos"),
+    # Videos briefly got a real sidebar entry here (2026-09-15), reverted
+    # the very next day (James: "remove the Videos sidebar menu option"
+    # now that Title Details has its own "Videos only" checkbox - see
+    # track_details_table.py - giving a second, redundant way to reach the
+    # same videos). Back to how it started: no sidebar entry, reachable
+    # only mid-transit from a search match or the artist page's own video
+    # list (ctx.playVideoRequested/focusVideoArtistRequested, both still
+    # wired up below) - the "videos" key stays in the views/PANES mapping
+    # a few lines down for exactly that, it just isn't one of these
+    # buttons any more. See ctx.videosBackRequested's own docstring for
+    # what changed in the embedded player's "‹ Back" button to match.
     ("charts", "Charts"),
     ("playlists", "Playlists"),
     ("settings", "Settings"),
@@ -85,6 +88,7 @@ class MainWindow(QMainWindow):
         self.ctx.notified.connect(self._show_toast)
         self.ctx.navigateRequested.connect(self.navigate)
         self.ctx.nowPlayingBackRequested.connect(self._go_back_from_nowplaying)
+        self.ctx.videosBackRequested.connect(self._go_back_from_videos)
         self.player.errorOccurred.connect(self._show_toast)
         #: which section (a NAV_ITEMS key) was active right before Now
         #: Playing was opened, so its "‹ Back" button can return there - see
@@ -93,6 +97,12 @@ class MainWindow(QMainWindow):
         #: for before that.
         self._current_key: Optional[str] = None
         self._nowplaying_back_key: Optional[str] = None
+        #: same idea as _nowplaying_back_key, for the embedded video
+        #: player's "‹ Back" button now that Videos isn't a sidebar
+        #: destination of its own any more - see navigate() and
+        #: _go_back_from_videos(), and ctx.videosBackRequested's docstring
+        #: for why this exists.
+        self._videos_back_key: Optional[str] = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -356,6 +366,13 @@ class MainWindow(QMainWindow):
         # target with "nowplaying" itself
         if key == "nowplaying" and self._current_key not in (None, "nowplaying"):
             self._nowplaying_back_key = self._current_key
+        # same tracking, for the same reason, now that a video search match
+        # (LibraryView._activate_video/_activate_video_group) routes here
+        # via ctx.navigateRequested.emit("videos") without Videos being a
+        # button of its own to highlight/return to - see
+        # ctx.videosBackRequested's docstring.
+        if key == "videos" and self._current_key not in (None, "videos"):
+            self._videos_back_key = self._current_key
         self._current_key = key
         self.stack.setCurrentWidget(view)
         if key == "library":
@@ -380,6 +397,12 @@ class MainWindow(QMainWindow):
         navigate("library") already runs once at startup before anything
         else can reach Now Playing)."""
         self.navigate(self._nowplaying_back_key or "library")
+
+    def _go_back_from_videos(self) -> None:
+        """The embedded video player's "‹ Back" button (see
+        ctx.videosBackRequested's docstring) - same shape as
+        _go_back_from_nowplaying above, same fallback reasoning."""
+        self.navigate(self._videos_back_key or "library")
 
     def _show_toast(self, message: str) -> None:
         if not message:

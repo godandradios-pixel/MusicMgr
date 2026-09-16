@@ -125,12 +125,19 @@ class VideosView(BaseView):
 
     def _build_player(self):
         self.player_panel = VideoPlayerPanel(self.ctx)
-        # "‹ Back" drops onto this view's own table (2026-09-15, once
-        # Videos got a real sidebar entry - see NAV_ITEMS in ui/app.py).
-        # Doesn't stop playback, same as leaving Now Playing doesn't stop
-        # music - the persistent PlayerBar keeps transport for it either way
-        # (see video_panel.py's docstring).
-        self.player_panel.backRequested.connect(lambda: self.panes.setCurrentIndex(PANE_TABLE))
+        # "‹ Back" asks MainWindow to return to whatever section was active
+        # before a search match routed here (ctx.videosBackRequested - see
+        # its own docstring), rather than dropping onto this view's own
+        # table the way it briefly did while Videos had a real sidebar
+        # entry (2026-09-15 to 2026-09-16): reached by a single-video match
+        # (_open_video, below) that never visited the table at all, "back"
+        # to it would be a step that was never taken - the same "actively
+        # misleading" problem this button's very first design already
+        # ran into once (see video_panel.py's own docstring). Doesn't stop
+        # playback, same as leaving Now Playing doesn't stop music - the
+        # persistent PlayerBar keeps transport for it either way (see
+        # video_panel.py's docstring).
+        self.player_panel.backRequested.connect(self.ctx.videosBackRequested.emit)
         return self.player_panel
 
     # -- data loading -------------------------------------------------------

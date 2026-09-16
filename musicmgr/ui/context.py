@@ -42,6 +42,19 @@ class AppContext(QObject):
     #: and ui/widgets/video_panel.py, which emits these.
     videoPlaybackStarted = Signal(object, str, str)  # VideoController, title, artist
     videoPlaybackEnded = Signal()
+    #: the embedded video player's "‹ Back" button asking to return to
+    #: whatever section was active before Videos was reached - the same
+    #: generic "ask, don't know the target yourself" contract
+    #: nowPlayingBackRequested below already established, and for the same
+    #: reason: 2026-09-16 follow-up (James: "remove the Videos sidebar menu
+    #: option" now that Title Details has its own "Videos only" checkbox -
+    #: see NAV_ITEMS in ui/app.py) took away Videos' own persistent
+    #: destination, so its player's back button can no longer just drop
+    #: onto its own table the way it briefly did while Videos had a real
+    #: sidebar entry (2026-09-15) - see VideosView._build_player and
+    #: MainWindow._go_back_from_videos, which tracks the target the same
+    #: way MainWindow._nowplaying_back_key already does.
+    videosBackRequested = Signal()
     #: Now Playing's "‹ Back" button asking to return to whatever section was
     #: active before Now Playing was opened. NowPlayingView doesn't hold a
     #: MainWindow reference, so it asks generically rather than knowing the
