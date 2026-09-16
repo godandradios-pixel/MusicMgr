@@ -79,6 +79,12 @@ class LyricsPanel(QWidget):
         self._audio_path: Optional[str] = None
         self._track_meta: dict = {}
         self._download_thread: Optional[LyricsDownloadThread] = None
+        #: last position reported via update_position() for whichever track
+        #: is currently loaded - kept so a lyrics download that finishes
+        #: mid-playback can resync to where the song actually is (see
+        #: `_on_download_finished`) instead of always flashing line 0 until
+        #: the next position tick from PlayerController corrects it.
+        self._last_position_ms = 0
 
     def _sync_center_margin(self, _minimum: int, maximum: int) -> None:
         needs_scrollbar = maximum > 0
@@ -92,15 +98,26 @@ class LyricsPanel(QWidget):
         artist: str = "",
         album: str = "",
         duration_ms: int = 0,
+        resume_position_ms: Optional[int] = None,
     ) -> None:
         """`title`/`artist`/`album`/`duration_ms` feed the download button
         when nothing's found locally - optional and keyword-only so every
         existing single-argument call (nothing playing, or a caller that
-        doesn't have this metadata handy) still works unchanged."""
+        doesn't have this metadata handy) still works unchanged.
+
+        `resume_position_ms` is also optional and keyword-only, and is for
+        exactly one caller: `_on_download_finished` reloading the *same*
+        track it just wrote a fresh .lrc for, mid-playback. Every other
+        caller (a real track change, in `nowplaying.py`/`release_panel.py`)
+        leaves it unset, since a track that's actually just started should
+        highlight from the top, not from wherever the *previous* track
+        happened to be sitting."""
         self._audio_path = audio_path
         self._track_meta = dict(title=title, artist=artist, album=album, duration_ms=duration_ms)
         self._result = load_lyrics(audio_path) if audio_path else None
         self._current_index = -1
+        if resume_position_ms is None:
+            self._last_position_ms = 0
         self._list.clear()
         if self._result is None or not self._result.lines:
             if self._empty.detail_label is not None:
@@ -113,9 +130,13 @@ class LyricsPanel(QWidget):
             item.setTextAlignment(Qt.AlignCenter)
             self._list.addItem(item)
         self._stack.setCurrentWidget(self._list)
-        self._apply_highlight(0 if self._result.synced else -1)
+        if self._result.synced and resume_position_ms is not None:
+            self._apply_highlight(current_line_index(self._result.lines, resume_position_ms))
+        else:
+            self._apply_highlight(0 if self._result.synced else -1)
 
     def update_position(self, position_ms: int) -> None:
+        self._last_position_ms = position_ms
         if self._result is None or not self._result.synced or not self._result.lines:
             return
         idx = current_line_index(self._result.lines, position_ms)
@@ -183,7 +204,13 @@ class LyricsPanel(QWidget):
         ):
             return
         if outcome.status == "downloaded":
-            self.load_for_path(self._audio_path, **self._track_meta)
+            # mid-playback download: resync the highlight to wherever the
+            # song actually is right now, instead of flashing line 0 until
+            # the next positionChanged tick from PlayerController corrects
+            # it (see _last_position_ms's docstring in __init__).
+            self.load_for_path(
+                self._audio_path, resume_position_ms=self._last_position_ms, **self._track_meta
+            )
             return
         self._refresh_download_button()
         message = _STATUS_MESSAGES.get(outcome.status)
