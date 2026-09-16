@@ -384,6 +384,22 @@ QPushButton#RowPageArrow:disabled {{
     background: {c['surface']};
     color: {c['text_dim']};
 }}
+QPushButton#CoverflowNavArrow {{
+    background: {c['surface_alt']};
+    border-radius: 28px;
+    min-width: 56px;
+    max-width: 56px;
+    min-height: 56px;
+    max-height: 56px;
+    padding: 0;
+    font-size: 22px;
+    color: {c['text']};
+}}
+QPushButton#CoverflowNavArrow:hover {{ background: {c['surface_hi']}; }}
+QPushButton#CoverflowNavArrow:disabled {{
+    background: {c['surface']};
+    color: {c['text_dim']};
+}}
 QLabel#CrumbLink {{
     background: transparent;
     padding: 6px 2px;

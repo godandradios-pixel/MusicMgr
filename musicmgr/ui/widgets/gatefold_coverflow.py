@@ -27,6 +27,7 @@ from typing import Optional, Sequence
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -340,18 +341,25 @@ class GatefoldCoverflow(QWidget):
     releases - same `set_tiles(list[GridTile])` and `tileActivated(int)`
     surface, so callers swap the class name and constructor kwargs only.
 
-    Own layout is just the canvas plus a caption underneath naming the
-    currently-open release (2026-09-15, James: "move the title of the
-    album below the album" - it used to sit in a header bar above the
-    strip, disconnected from the cover it actually named; centered under
-    the canvas it lines up with the open panel, which the fold math always
-    draws dead-center - see _CoverflowCanvas._panel_geometry). `count_label`/
-    `prev_btn`/`next_btn` are built here (so this class still owns their
-    wiring to the canvas) but deliberately left off `root` - the same
-    follow-up moved the "N releases ‹ ›" bar up onto the artist page's
-    breadcrumb row instead of giving it a row of its own, so the caller
-    places these three widgets wherever it wants rather than this class
-    laying them out itself.
+    Own layout is the canvas flanked by large prev/next arrow buttons, plus
+    a caption underneath naming the currently-open release (2026-09-15,
+    James: "move the title of the album below the album" - it used to sit
+    in a header bar above the strip, disconnected from the cover it
+    actually named; centered under the canvas it lines up with the open
+    panel, which the fold math always draws dead-center - see
+    _CoverflowCanvas._panel_geometry).
+
+    2026-09-16 follow-up (James: the "N releases ‹ ›" pager's arrows, up
+    in the artist page's breadcrumb row, were "too small" - screenshot
+    showed the 32px `RowPageArrow` pair easy to miss next to the count
+    text): `prev_btn`/`next_btn` moved from that small shared style into
+    this widget's own row, sized up to the new 56px `CoverflowNavArrow`
+    style (matching `PlayerBar`'s own `#Transport` touch targets) and
+    docked directly against the canvas's left/right edges instead of
+    living somewhere else on the page. `count_label` is still built here
+    and still deliberately left off `root` - it's plain status text, not a
+    control, so the caller (ArtistDetailPanel) still places it wherever it
+    wants (today: the breadcrumb row, where the pager used to sit).
     """
 
     tileActivated = Signal(int)  # GridTile.key - a release id
@@ -368,7 +376,28 @@ class GatefoldCoverflow(QWidget):
         self.canvas = _CoverflowCanvas(panel_size, parent=self)
         self.canvas.tileOpened.connect(self.tileActivated.emit)
         self.canvas.focusChanged.connect(self._on_focus_changed)
-        root.addWidget(self.canvas, 0)
+
+        # large, easy-to-hit prev/next targets flanking the artwork itself
+        # (see the class docstring's 2026-09-16 follow-up) rather than the
+        # small shared #RowPageArrow style used for other pagers in the
+        # app (cover_grid.py's own horizontal rows, jukebox.py's page
+        # header) - this pair is dedicated to this widget, so restyling
+        # them doesn't affect those other pagers.
+        self.prev_btn = QPushButton("‹")
+        self.prev_btn.setObjectName("CoverflowNavArrow")
+        self.prev_btn.setCursor(Qt.PointingHandCursor)
+        self.next_btn = QPushButton("›")
+        self.next_btn.setObjectName("CoverflowNavArrow")
+        self.next_btn.setCursor(Qt.PointingHandCursor)
+        self.prev_btn.clicked.connect(lambda: self.canvas.step(-1))
+        self.next_btn.clicked.connect(lambda: self.canvas.step(1))
+
+        canvas_row = QHBoxLayout()
+        canvas_row.setSpacing(12)
+        canvas_row.addWidget(self.prev_btn, 0, Qt.AlignVCenter)
+        canvas_row.addWidget(self.canvas, 1)
+        canvas_row.addWidget(self.next_btn, 0, Qt.AlignVCenter)
+        root.addLayout(canvas_row, 0)
 
         self.focus_label = dim_label("")
         self.focus_label.setAlignment(Qt.AlignHCenter)
@@ -376,14 +405,6 @@ class GatefoldCoverflow(QWidget):
 
         self.count_label = QLabel("")
         self.count_label.setObjectName("Dim")
-        self.prev_btn = QPushButton("‹")
-        self.prev_btn.setObjectName("RowPageArrow")
-        self.prev_btn.setCursor(Qt.PointingHandCursor)
-        self.next_btn = QPushButton("›")
-        self.next_btn.setObjectName("RowPageArrow")
-        self.next_btn.setCursor(Qt.PointingHandCursor)
-        self.prev_btn.clicked.connect(lambda: self.canvas.step(-1))
-        self.next_btn.clicked.connect(lambda: self.canvas.step(1))
 
         self._on_focus_changed(-1)
 
