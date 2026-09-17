@@ -180,9 +180,11 @@ COL_TITLE = 4
 COL_TIME = 5
 COL_YEAR = 6
 COL_RATING = 7
+COL_COMMENT = 8
 
 HEADERS = (
     "Genre", "Album Artist", "Album", "Track #", "Title", "Time", "Year", "Rating",
+    "Comment",
 )
 
 #: the only columns with an alphabetical order worth jumping within - Track
@@ -249,6 +251,18 @@ class TrackDetailRow:
     #: rather than a second per-track query. A video row (see `is_video`
     #: below) never sets these; it plays through `videoActivated` instead.
     artist: str = ""
+    #: raw tag comment (2026-09-17 follow-up, James: "add the comment field
+    #: to the title details grid" - added while chasing why a Comment-based
+    #: smart playlist rule was matching nothing; see services/scanner.py's
+    #: `_first_id3_comment` fix). Blank for a video row, same as the other
+    #: track-only fields below. Placed here, after every field with no
+    #: default (`sort_key` above included) - a dataclass field with a
+    #: default can't come before one that has none (2026-09-17, James: "non-
+    #: default argument 'sort_key' follows default argument 'comment'" on a
+    #: real run - Python only caught this at class-definition time, which
+    #: this sandbox's own Qt-less `py_compile`/`ast.parse` checks never
+    #: exercise, since neither actually calls the `@dataclass` decorator).
+    comment: str = ""
     path: Optional[str] = None
     cover_path: Optional[str] = None
     #: True for a video woven in as a search match (2026-09-06, see
@@ -435,6 +449,8 @@ class TrackDetailsModel(QAbstractTableModel):
             return format_duration(row.duration_ms)
         if col == COL_YEAR:
             return str(row.year) if row.year else ""
+        if col == COL_COMMENT:
+            return row.comment
         return None  # Rating - painted by its own delegate, not drawn as text
 
     # -- data ------------------------------------------------------------------
@@ -544,6 +560,8 @@ class TrackDetailsModel(QAbstractTableModel):
             return (row.year if row.year is not None else -1, row.sort_key)
         if col == COL_RATING:
             return (row.rating if row.rating is not None else -1, row.sort_key)
+        if col == COL_COMMENT:
+            return (row.comment.lower(), row.sort_key)
         return row.sort_key  # Title, and the fallback
 
     # -- grouping (2026-09-16 follow-up - see class docstring) -----------------
@@ -949,7 +967,7 @@ class TrackDetailsTable(QWidget):
         self.view.verticalHeader().setDefaultSectionSize(TOUCH["row_height"] - 16)
         header = self.view.horizontalHeader()
         header.setStretchLastSection(False)
-        for col in (COL_GENRE, COL_ALBUM_ARTIST, COL_ALBUM, COL_TITLE):
+        for col in (COL_GENRE, COL_ALBUM_ARTIST, COL_ALBUM, COL_TITLE, COL_COMMENT):
             header.setSectionResizeMode(col, QHeaderView.Stretch)
         for col in (COL_TRACK_NO, COL_TIME, COL_YEAR, COL_RATING):
             header.setSectionResizeMode(col, QHeaderView.Fixed)
@@ -1082,6 +1100,7 @@ class TrackDetailsTable(QWidget):
             or (row.year is not None and needle in str(row.year))
             or (row.rating is not None and needle in str(row.rating))
             or (row.on_jukebox and needle in "jukebox")
+            or needle in row.comment.lower()
         )
 
     def _on_videos_only_toggled(self, checked: bool) -> None:

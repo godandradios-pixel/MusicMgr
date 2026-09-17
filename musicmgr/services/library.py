@@ -493,14 +493,17 @@ def library_stats(session: Session) -> dict:
 
 def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
     """One row per track for the Title Details table (Genre / Album Artist /
-    Album / Track # / Title / Time / Year / Rating - see
+    Album / Track # / Title / Time / Year / Rating / Comment - see
     ui/widgets/track_details_table.py), replacing the old three-pane Genre
     browser (2026-09-05; Album column added 2026-09-06; playback fields
-    added 2026-09-06 follow-up). A Jukebox column also lived there from
-    2026-09-07 until it was removed again 2026-09-13 (see that file's
-    module docstring) - `on_jukebox` is still computed and returned below
-    regardless, since `_row_matches` there still lets a search for the word
-    "jukebox" find these tracks even with no dedicated column to show it.
+    added 2026-09-06 follow-up; Comment column added 2026-09-17, while
+    chasing why a Comment-based smart playlist rule matched nothing - see
+    services/scanner.py's `_first_id3_comment`). A Jukebox column also
+    lived there from 2026-09-07 until it was removed again 2026-09-13 (see
+    that file's module docstring) - `on_jukebox` is still computed and
+    returned below regardless, since `_row_matches` there still lets a
+    search for the word "jukebox" find these tracks even with no dedicated
+    column to show it.
 
     `on_jukebox` is looked up as one batched `jukebox_svc.board_track_ids`
     query up front rather than a per-row membership check - the same "one
@@ -585,6 +588,10 @@ def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
             "path": path,
             "cover_path": cover_path,
             "on_jukebox": track.id in on_jukebox_ids,
+            # 2026-09-17 follow-up (James: "add the comment field to the
+            # title details grid") - Track.comment is already loaded on
+            # `track` itself (no extra join needed), same as `rating`
+            "comment": track.comment or "",
         })
     return rows
 
