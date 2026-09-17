@@ -127,6 +127,7 @@ from PySide6.QtWidgets import (
 from sqlalchemy import select
 
 from ... import config
+from ...version import APP_VERSION
 from ...db.models import WatchedFolder
 from ...db.session import session_scope
 from ...services import artist_bio_downloader as bio_dl
@@ -561,6 +562,21 @@ class SettingsView(BaseView):
         _size_tool_row_buttons(tool_rows)
 
         body.addWidget(tools_card)
+
+        # ---- about ----
+        # James: "is there a way I can put the version of MusicMgr
+        # somewhere in the App. Maybe on the settings screen somewhere" -
+        # there's never been a version number anywhere in this app (no
+        # tags, no version file - see version.py's own docstring for why
+        # it's the commit hash/date instead), so a quiet line at the very
+        # bottom of this page, past every actual setting, is the whole
+        # feature: something to glance at or read off when comparing "is
+        # this the build I just pushed" against another machine, not
+        # something that needs its own Card/row treatment like the
+        # Maintenance tools above.
+        version_label = dim_label(f"{config.APP_NAME} {APP_VERSION}")
+        version_label.setAlignment(Qt.AlignRight)
+        body.addWidget(version_label)
 
         ctx.libraryChanged.connect(self.refresh)
         ctx.videosChanged.connect(self.refresh)
