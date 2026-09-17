@@ -552,7 +552,27 @@ class ArtistDetailPanel(QWidget):
                 session.scalars(
                     select(ArtistTopTrack)
                     .where(ArtistTopTrack.artist_id == artist_id)
-                    .order_by(ArtistTopTrack.rank)
+                    # 2026-09-16 same-day follow-up #5 (James, looking at a
+                    # real chart: "why does it seem like after you fetch
+                    # popularity, the songs are in order of most popular. For
+                    # example, Winner Takes All has 14M plays and the song
+                    # above it Mamma Mia has 10M") - Last.fm's own returned
+                    # order (ArtistTopTrack.rank, see that model's docstring)
+                    # isn't always strictly descending by the playcount
+                    # number it also returns for each track - whatever
+                    # internal weighting produces Last.fm's chart position
+                    # can rank two close tracks in an order that doesn't
+                    # match their displayed playcounts. Sorting by playcount
+                    # itself here instead means the list James sees is
+                    # always in the order of the numbers actually printed on
+                    # it. `func.coalesce(..., -1)` pushes a track with no
+                    # playcount at all (Last.fm returned nothing usable -
+                    # see _fetch_top_tracks) to the bottom rather than the
+                    # top, and `.rank` is still the tiebreaker for equal/
+                    # missing playcounts, so the order stays fully
+                    # deterministic rather than however sqlite happens to
+                    # return ties.
+                    .order_by(func.coalesce(ArtistTopTrack.playcount, -1).desc(), ArtistTopTrack.rank)
                 )
             )
             total_ms = sum(t.duration_ms or 0 for t in self._tracks)
@@ -621,7 +641,10 @@ class ArtistDetailPanel(QWidget):
                     session.scalars(
                         select(ArtistTopTrack)
                         .where(ArtistTopTrack.artist_id == self._artist_id)
-                        .order_by(ArtistTopTrack.rank)
+                        # sorted by playcount, not fetch-order rank - see
+                        # the other ArtistTopTrack query above (set_artist)
+                        # for why
+                        .order_by(func.coalesce(ArtistTopTrack.playcount, -1).desc(), ArtistTopTrack.rank)
                     )
                 )
             self._refresh_top_tracks()
@@ -658,13 +681,16 @@ class ArtistDetailPanel(QWidget):
         Last.fm fetch has ever run for this artist (self._lastfm_top_tracks).
 
         2026-09-16 follow-up #4 (see class docstring) - when it has, the
-        list shows that chart exactly, in Last.fm's own order: every entry
-        appears whether James owns it or not, matched against the library
-        by (normalized) title right now (_owned_by_title) rather than
-        whatever ownership state existed when the fetch ran - so a song
-        bought later is picked up the next time this page opens, no new
-        fetch needed. An unowned entry's row reads "Not in your library"
-        and can't be tapped to play (see _play_top_track).
+        list shows that whole chart: every entry appears whether James owns
+        it or not, matched against the library by (normalized) title right
+        now (_owned_by_title) rather than whatever ownership state existed
+        when the fetch ran - so a song bought later is picked up the next
+        time this page opens, no new fetch needed. An unowned entry's row
+        reads "Not in your library" and can't be tapped to play (see
+        _play_top_track). `chart` below (self._lastfm_top_tracks) already
+        comes back from set_artist/_on_popularity_fetch_finished sorted by
+        playcount descending, not Last.fm's own fetch-order rank - see the
+        2026-09-16 same-day follow-up #5 comment on that query for why.
 
         Falls back to the pre-follow-up-#4 approach - locally-owned tracks
         only, ranked by Track.play_count (denormalized, kept in sync by
