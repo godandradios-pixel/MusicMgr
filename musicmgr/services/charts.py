@@ -43,6 +43,7 @@ from ..db.models import (
     ChartIssue,
     Playlist,
     PlaylistItem,
+    Setting,
     Track,
 )
 from .matching import best_match, normalize
@@ -200,6 +201,95 @@ def rematch_chart(session: Session, chart_id: int, threshold: float = 0.72) -> i
         if match_entry(session, entry, threshold):
             matched += 1
     return matched
+
+
+def search_tracks_for_match(
+    session: Session, artist_query: str = "", track_query: str = "", limit: int = 50
+) -> list[dict]:
+    """Search-by-artist-and-track for the "Fix match..." dialog
+    (ui/views/charts.py:MatchTrackDialog) - manually picking which library
+    track a chart entry matches, for the fraction `match_entry`'s fuzzy
+    title/artist matching gets wrong or leaves unmatched entirely. Same
+    two-box ANDed search `services/jukebox.py:search_addable_tracks`
+    established for its own picker dialog (either box can be blank on its
+    own, both blank returns nothing), but plain library search rather than
+    that function's jukebox-specific one: no album-artist resolution and no
+    exclusion of anything, since a chart legitimately charts
+    various-artists compilation tracks and the same track can already be
+    matched elsewhere (on another chart, or another entry being fixed) -
+    every track in the library is a valid pick here.
+
+    Returns plain dicts (`track_id`, `title`, `artist_name`, `album`), not
+    ORM rows, same reasoning as `search_addable_tracks`: the dialog only
+    ever reads these fields, and the session may close before it does."""
+    artist_query = artist_query.strip()
+    track_query = track_query.strip()
+    if not artist_query and not track_query:
+        return []
+    stmt = (
+        select(Track)
+        .options(selectinload(Track.release))
+        .order_by(Track.title)
+        .limit(limit)
+    )
+    if artist_query:
+        stmt = stmt.where(Track.artist_display.ilike(f"%{artist_query}%"))
+    if track_query:
+        stmt = stmt.where(Track.title_key.like(f"%{normalize(track_query)}%"))
+    return [
+        {
+            "track_id": track.id,
+            "title": track.title,
+            "artist_name": track.artist_display or "",
+            "album": track.release.title if track.release else "",
+        }
+        for track in session.scalars(stmt).unique()
+    ]
+
+
+def set_entry_track(session: Session, entry_id: int, track_id: Optional[int]) -> ChartEntry:
+    """Manually assign (or clear) which library track a chart entry
+    matches - the "Fix match..." dialog's write side. Assigning a track
+    locks the match (`match_locked = True`, `match_score = 1.0`, per the
+    model's own "1.0 when confirmed by hand" comment on that column) so a
+    later "Re-match library" pass never silently overwrites a manual pick -
+    `match_entry` (and therefore `rematch_chart`) already skips any entry
+    with `match_locked` set. Clearing it (`track_id=None`) unlocks the entry
+    rather than leaving it permanently stuck unmatched: the person is
+    saying "not this one," not "never try again," so it goes back into the
+    pool the next automatic re-match considers."""
+    entry = session.get(ChartEntry, entry_id)
+    if entry is None:
+        raise ValueError(f"no chart entry {entry_id}")
+    entry.track_id = track_id
+    entry.match_score = 1.0 if track_id is not None else None
+    entry.match_locked = track_id is not None
+    session.flush()
+    return entry
+
+
+#: Setting.key row this module owns - see db.models.Setting and
+#: services/lastfm_popularity.py's API_KEY_KEY for the pattern this follows
+#: (a generic key/value table, not QSettings - this app has no config file
+#: outside the library database). Remembers where "Browse for file..." in
+#: MatchTrackDialog last found something, so re-opening it for the next
+#: unmatched entry doesn't always dump James back at his home folder when
+#: he's clearly working through one album/box-set folder at a time.
+LAST_BROWSE_DIR_KEY = "charts_last_browse_dir"
+
+
+def get_last_browse_dir(session: Session) -> Optional[str]:
+    row = session.get(Setting, LAST_BROWSE_DIR_KEY)
+    return row.value if row else None
+
+
+def set_last_browse_dir(session: Session, directory: str) -> None:
+    row = session.get(Setting, LAST_BROWSE_DIR_KEY)
+    if row is None:
+        row = Setting(key=LAST_BROWSE_DIR_KEY, value=directory)
+        session.add(row)
+    else:
+        row.value = directory
 
 
 # --------------------------------------------------------------------------
@@ -505,7 +595,21 @@ def issue_entries(session: Session, issue_id: int) -> list[ChartEntry]:
     return list(
         session.scalars(
             select(ChartEntry)
-            .options(selectinload(ChartEntry.track).selectinload(Track.files))
+            .options(
+                selectinload(ChartEntry.track).selectinload(Track.files),
+                # 2026-09-17 fix - missing here (unlike
+                # services/playlists.py:playlist_tracks, which already
+                # loads both) meant `entry.track.release` was never
+                # fetched while the session was still open. ChartsView
+                # keeps its matched tracks around in `self._tracks` past
+                # the `with self.ctx.session()` block that loaded them
+                # (for "Play owned"/"Queue"/"Save as playlist"), and by
+                # then the session is closed - so `QueueItem.from_track`'s
+                # `track.release` access blew up with
+                # sqlalchemy.orm.exc.DetachedInstanceError the moment
+                # anyone actually tried to play a chart.
+                selectinload(ChartEntry.track).selectinload(Track.release),
+            )
             .where(ChartEntry.issue_id == issue_id)
             .order_by(ChartEntry.rank)
         ).unique()

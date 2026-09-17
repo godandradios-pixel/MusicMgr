@@ -559,21 +559,56 @@ class RowDelegate(QStyledItemDelegate):
             painter.drawPixmap(x, rect.top() + 8, side, side, thumb)
             x += side + 14
 
-        # trailing text (duration, play count)
+        # trailing text (duration, play count) - or, when `trail2` is set,
+        # a two-line trailing label mirroring the primary/secondary layout
+        # on the left (added for Charts' file-location column, 2026-09-17 -
+        # James: "list the file location in that space" - the matched
+        # file's own name on top, its full path underneath in smaller,
+        # dimmer text). Capped and elided from the left (rather than the
+        # unbounded exact-fit the single-line case always used) so a long
+        # absolute path can't blow out this column and crush the primary/
+        # secondary text down to its 60px floor - short trailing text (a
+        # duration, a play count) never reaches that cap, so this is a
+        # strict superset of the old behaviour for every existing caller.
         trail = payload.get("trail")
+        trail2 = payload.get("trail2")
         trail_w = 0
-        if trail:
-            painter.setPen(QColor(payload.get("trail_color", COLORS["text_dim"])))
+        if trail or trail2:
             font = painter.font()
             font.setPixelSize(TOUCH["font_base"])
             font.setBold(False)
-            painter.setFont(font)
             metrics = QFontMetrics(font)
-            trail_w = max(70, metrics.horizontalAdvance(str(trail)) + 16)
-            painter.drawText(
-                right - trail_w, rect.top(), trail_w, rect.height(),
-                Qt.AlignVCenter | Qt.AlignRight, str(trail),
+            max_trail_w = 260
+            natural_w = max(
+                metrics.horizontalAdvance(str(trail)) if trail else 0,
+                metrics.horizontalAdvance(str(trail2)) if trail2 else 0,
             )
+            trail_w = max(70, min(max_trail_w, natural_w + 16))
+            painter.setFont(font)
+            if trail2:
+                painter.setPen(QColor(payload.get("trail_color", COLORS["text_dim"])))
+                painter.drawText(
+                    right - trail_w, rect.top() + 12, trail_w, rect.height() // 2,
+                    Qt.AlignVCenter | Qt.AlignRight,
+                    metrics.elidedText(str(trail or ""), Qt.ElideLeft, trail_w),
+                )
+                font2 = painter.font()
+                font2.setPixelSize(TOUCH["font_base"] - 2)
+                painter.setFont(font2)
+                painter.setPen(QColor(payload.get("trail2_color", COLORS["text_dim"])))
+                metrics2 = QFontMetrics(font2)
+                painter.drawText(
+                    right - trail_w, rect.center().y(), trail_w, rect.height() // 2 - 6,
+                    Qt.AlignVCenter | Qt.AlignRight,
+                    metrics2.elidedText(str(trail2), Qt.ElideLeft, trail_w),
+                )
+            elif trail:
+                painter.setPen(QColor(payload.get("trail_color", COLORS["text_dim"])))
+                painter.drawText(
+                    right - trail_w, rect.top(), trail_w, rect.height(),
+                    Qt.AlignVCenter | Qt.AlignRight,
+                    metrics.elidedText(str(trail), Qt.ElideLeft, trail_w),
+                )
 
         text_w = max(60, right - trail_w - x - 12)
         primary = str(payload.get("primary", fallback_text))
