@@ -111,6 +111,7 @@ from typing import Optional
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -214,9 +215,17 @@ class ScanThread(QThread):
     progress = Signal(int, int, str, str)
     finished_with = Signal(str)
 
-    def __init__(self, folders: list[str], parent=None) -> None:
+    def __init__(self, folders: list[str], force: bool = False, parent=None) -> None:
         super().__init__(parent)
         self.folders = folders
+        # 2026-09-17 follow-up (James: "still blank after a rescan", chasing
+        # the MP3 Comment-tag fix - see scanner.py's `import_file` docstring
+        # for why an ordinary rescan alone could never have picked it up) -
+        # the "Force full re-read" checkbox below sets this. Only threaded
+        # through to the audio pass (`scanner.scan_folder`); video files
+        # have no equivalent tag-reading bugfix to chase yet, so
+        # `video_scanner.scan_video_folder` below is untouched.
+        self.force = force
 
     def run(self) -> None:  # pragma: no cover - exercised interactively
         audio_result = scanner.ScanResult()
@@ -231,6 +240,7 @@ class ScanThread(QThread):
                             done, total, folder, f"Audio: {name}"
                         ),
                         result=audio_result,
+                        force=self.force,
                     )
                 audio_result.missing = scanner.mark_missing_files(session)
                 audio_result.removed = scanner.purge_orphaned_tracks(session)
@@ -449,6 +459,26 @@ class SettingsView(BaseView):
         for b in (add_btn, remove_btn, scan_selected_btn, scan_btn):
             folder_head.addWidget(b)
         body.addLayout(folder_head)
+
+        # 2026-09-17 follow-up (James: "still blank after a rescan", after
+        # a Comment-tag reading fix landed in services/scanner.py) - an
+        # ordinary scan only reads tags from a file whose mtime/size on
+        # disk actually changed, so fixing a tag-reading bug does nothing
+        # for a library that's already been scanned; every file in it
+        # still looks "unchanged" to the scanner. This checkbox is the
+        # escape hatch: checked, "Scan selected"/"Scan now" re-read every
+        # file's tags regardless (see scanner.py's `import_file` `force`
+        # docstring) - slower on a big library, so it defaults off and
+        # stays off after each scan rather than becoming the new normal.
+        self.force_rescan_cb = QCheckBox("Force full re-read (slow)")
+        self.force_rescan_cb.setToolTip(
+            "Re-reads every file's tags even if it hasn't changed on disk.\n"
+            "Use this once after a tag-reading fix; leave it off otherwise."
+        )
+        force_row = QHBoxLayout()
+        force_row.addWidget(self.force_rescan_cb)
+        force_row.addStretch(1)
+        body.addLayout(force_row)
 
         self.folder_list = TouchList()
         body.addWidget(self.folder_list, 1)
@@ -733,16 +763,16 @@ class SettingsView(BaseView):
                 self, "No folders", "Add a folder first, then scan."
             )
             return
-        self.scan_paths(paths)
+        self.scan_paths(paths, force=self.force_rescan_cb.isChecked())
 
     def scan_selected(self) -> None:
         payload = self.folder_list.current_payload()
         if not payload:
             self.ctx.notify("Select a folder in the list first, then Scan selected")
             return
-        self.scan_paths([payload["path"]])
+        self.scan_paths([payload["path"]], force=self.force_rescan_cb.isChecked())
 
-    def scan_paths(self, paths: list[str]) -> None:
+    def scan_paths(self, paths: list[str], force: bool = False) -> None:
         if self._thread is not None and self._thread.isRunning():
             self.ctx.notify("A scan is already running")
             return
@@ -768,7 +798,7 @@ class SettingsView(BaseView):
             self.folder_list.update_row(
                 path, "path", secondary="Waiting to scan…", progress=0.0
             )
-        self._thread = ScanThread(paths, self)
+        self._thread = ScanThread(paths, force=force, parent=self)
         self._thread.progress.connect(self._on_progress)
         self._thread.finished_with.connect(self._on_scan_done)
         self._thread.start()

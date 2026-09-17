@@ -48,6 +48,27 @@ def make_silent_wav(path: Path, seconds: float = 0.2) -> None:
         w.writeframes(b"\x00\x00" * int(8000 * seconds))
 
 
+def make_mp3_with_comment(path: Path, comment: str) -> None:
+    """A tiny, real MP3 (silence) carrying a single ID3 COMM frame - the
+    fixture for the 2026-09-17 fix: `read_tags()` used to never see an
+    MP3's comment tag at all, no matter what was in it (see
+    `TestReadTagsComment` below)."""
+    from mutagen.id3 import COMM
+    from mutagen.mp3 import MP3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = bytes([0xFF, 0xFB, 0x90, 0x00])
+    frame = header + bytes(417 - len(header))
+    with open(path, "wb") as f:
+        for _ in range(5):
+            f.write(frame)
+
+    audio = MP3(str(path))
+    audio.add_tags()
+    audio.tags.add(COMM(encoding=3, lang="eng", desc="", text=[comment]))
+    audio.save()
+
+
 class TestIterAudioFiles:
     def test_finds_only_recognized_audio_extensions(self, tmp_path):
         make_silent_wav(tmp_path / "song.wav")
@@ -74,6 +95,63 @@ class TestIterAudioFiles:
         found = list(scanner.iter_audio_files(tmp_path))
 
         assert found == [nested]
+
+
+class TestReadTagsComment:
+    """Covers the 2026-09-17 fix: an MP3's ID3 COMM ("comment") frame was
+    never read by `read_tags()`, regardless of what was tagged. `src` in
+    `read_tags()` is mutagen's *easy* wrapper whenever one loads (true for
+    virtually every MP3), and EasyID3 has no "comment" key at all - and
+    "COMM::eng" is a raw-ID3 HashKey, not a valid EasyID3 key, so the old
+    `_first(src, "comment", "COMM::eng", ...)` call could never find it
+    through the easy wrapper. This silently broke every comment-based smart
+    playlist rule for MP3s, which is the vast majority of a typical library.
+    """
+
+    def test_reads_a_comment_frame_from_a_real_mp3(self, tmp_path):
+        path = tmp_path / "song.mp3"
+        make_mp3_with_comment(path, "[Billboard] #001# [2020][Pop][2020]")
+
+        tags = scanner.read_tags(path)
+
+        assert tags.comment == "[Billboard] #001# [2020][Pop][2020]"
+
+    def test_matches_regardless_of_the_frames_language_or_description(self, tmp_path):
+        # Real-world taggers are inconsistent about the COMM frame's
+        # language/description sub-fields, so the fallback must not
+        # hardcode "eng" or an empty description.
+        from mutagen.id3 import COMM
+        from mutagen.mp3 import MP3
+
+        path = tmp_path / "song.mp3"
+        make_mp3_with_comment(path, "placeholder")
+        audio = MP3(str(path))
+        audio.tags.delall("COMM")
+        audio.tags.add(
+            COMM(encoding=3, lang="XXX", desc="iTunNORM", text=["not this one"])
+        )
+        audio.tags.add(
+            COMM(encoding=3, lang="deu", desc="", text=["[Billboard] #045#"])
+        )
+        audio.save()
+
+        tags = scanner.read_tags(path)
+
+        assert tags.comment in ("not this one", "[Billboard] #045#")
+
+    def test_an_untagged_mp3_still_has_no_comment(self, tmp_path):
+        path = tmp_path / "song.mp3"
+        make_mp3_with_comment(path, "")
+        # Strip the COMM frame entirely rather than leaving it empty.
+        from mutagen.mp3 import MP3
+
+        audio = MP3(str(path))
+        audio.tags.delall("COMM")
+        audio.save()
+
+        tags = scanner.read_tags(path)
+
+        assert tags.comment == ""
 
 
 class TestFallbackFromPath:
@@ -232,6 +310,54 @@ class TestScanFolder:
 
         assert result.updated == 1
         assert result.added == 0
+        assert len(session.scalars(select(MediaFile)).all()) == 1
+
+    def test_an_unchanged_files_tags_are_never_reread_on_an_ordinary_rescan(
+        self, session, tmp_path
+    ):
+        # Regression pin for the 2026-09-17 bug James actually hit: fixing
+        # a `read_tags()` bug (the MP3 Comment-frame fix) does nothing at
+        # all for an already-scanned library on its own, because an
+        # ordinary rescan skips reading tags for any file whose mtime/size
+        # on disk hasn't moved - see import_file's `force` docstring.
+        mp3 = tmp_path / "Some Band" / "song.mp3"
+        make_mp3_with_comment(mp3, "[Billboard] #001# [2020][Pop][2020]")
+        scanner.scan_folder(session, tmp_path)
+        track = session.scalar(select(Track))
+        track.comment = None  # simulate having been imported before the fix existed
+
+        result = scanner.scan_folder(session, tmp_path)
+
+        assert result.unchanged == 1
+        session.refresh(track)
+        assert track.comment is None
+
+    def test_force_rereads_an_unchanged_files_tags(self, session, tmp_path):
+        mp3 = tmp_path / "Some Band" / "song.mp3"
+        make_mp3_with_comment(mp3, "[Billboard] #001# [2020][Pop][2020]")
+        scanner.scan_folder(session, tmp_path)
+        track = session.scalar(select(Track))
+        track.comment = None  # simulate having been imported before the fix existed
+
+        result = scanner.scan_folder(session, tmp_path, force=True)
+
+        assert result.unchanged == 0
+        assert result.updated == 1
+        session.refresh(track)
+        assert track.comment == "[Billboard] #001# [2020][Pop][2020]"
+
+    def test_forcing_a_rescan_does_not_duplicate_anything(self, session, tmp_path):
+        # force=True re-runs the whole import_file body for every file,
+        # including the get_or_create_*/add_credit calls further down -
+        # confirms those stay idempotent rather than creating a second
+        # release/track/credit each time.
+        make_silent_wav(tmp_path / "Test Artist" / "Test Album" / "01 Test Song.wav")
+        scanner.scan_folder(session, tmp_path)
+
+        result = scanner.scan_folder(session, tmp_path, force=True)
+
+        assert result.updated == 1
+        assert len(session.scalars(select(Track)).all()) == 1
         assert len(session.scalars(select(MediaFile)).all()) == 1
 
     def test_a_folder_that_does_not_exist_reports_an_error_and_does_not_crash(self, session, tmp_path):

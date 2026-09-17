@@ -130,6 +130,43 @@ def _first(mapping, *keys) -> str:
     return ""
 
 
+def _first_id3_comment(raw) -> str:
+    """Read a COMM (comment) frame straight off the raw ID3 tags.
+
+    `_first(src, "comment", "COMM::eng", ...)` above never finds a comment on
+    an MP3, no matter what is actually tagged. `src` is the *easy* wrapper
+    whenever one loads (true for virtually every MP3), and EasyID3 simply
+    has no "comment" key at all - and "COMM::eng" is a raw-ID3 HashKey, which
+    isn't a valid EasyID3 key either, so it can't be found through the easy
+    wrapper. FLAC/Vorbis and MP4 comments work fine (both expose "comment"
+    natively through their easy wrappers); only ID3/MP3 needed this.
+
+    Falls back to the raw (non-easy) tags object and matches any COMM frame
+    regardless of language or description, since real-world taggers are
+    inconsistent about both.
+    """
+    id3_tags = getattr(raw, "tags", None)
+    if id3_tags is None:
+        return ""
+    try:
+        keys = list(id3_tags.keys())
+    except Exception:
+        return ""
+    for key in keys:
+        if not str(key).startswith("COMM"):
+            continue
+        try:
+            text = id3_tags[key].text
+        except Exception:
+            continue
+        if not text:
+            continue
+        val = text[0] if isinstance(text, (list, tuple)) else text
+        if val:
+            return str(val).strip()
+    return ""
+
+
 def _int_of(text: str) -> Optional[int]:
     if not text:
         return None
@@ -218,7 +255,7 @@ def read_tags(path: Path) -> TrackTags:
     bpm = _first(src, "bpm", "TBPM")
     tags.bpm = float(_int_of(bpm)) if _int_of(bpm) else None
     tags.musical_key = _first(src, "initialkey", "TKEY", "KEY")
-    tags.comment = _first(src, "comment", "COMM::eng", "\xa9cmt")
+    tags.comment = _first(src, "comment", "COMM::eng", "\xa9cmt") or _first_id3_comment(raw)
     comp = _first(src, "compilation", "TCMP", "cpil")
     tags.compilation = comp in ("1", "True", "true", "yes")
 
@@ -345,13 +382,21 @@ def _folder_album_artist(tags_by_path: dict[Path, TrackTags]) -> tuple[str, bool
     return "Various Artists", True
 
 
-def _needs_import(session: Session, path: Path) -> bool:
+def _needs_import(session: Session, path: Path, force: bool = False) -> bool:
     """Cheap pre-check mirroring `import_file`'s own unchanged-file
     shortcut, used to decide which files are worth reading tags for at all
     before grouping them by folder. An unchanged file keeps whatever release
     it was already filed under - both for scan speed on a large library, and
     because it already went through this same folder logic the first time
-    it was imported."""
+    it was imported.
+
+    `force=True` (2026-09-17, chasing why a Comment-tag fix in `read_tags`
+    didn't do anything for James's real library - see `import_file`'s own
+    `force` docstring) always says yes, regardless of mtime/size: it's the
+    only way to make an existing, on-disk-unchanged file's tags ever get
+    re-read at all."""
+    if force:
+        return True
     stat = path.stat()
     existing = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
     if existing is None:
@@ -378,6 +423,7 @@ def import_file(
     tags: Optional[TrackTags] = None,
     album_artist_override: Optional[str] = None,
     is_compilation_override: Optional[bool] = None,
+    force: bool = False,
 ) -> Optional[Track]:
     """Import or refresh a single audio file. Returns the Track.
 
@@ -389,11 +435,27 @@ def import_file(
     (`_folder_album_artist`) in; without them this file decides alone from
     its own tags, exactly as before - which is what a direct call (as the
     tests and a single-file CLI import do) still gets.
+
+    `force=True` (2026-09-17, James: "still blank after a rescan") skips
+    the unchanged-file shortcut below even when the file's mtime/size on
+    disk haven't moved. Fixing a tag-reading bug in `read_tags` (like the
+    MP3 Comment-frame fix earlier this session) does nothing at all for a
+    library that's already been scanned - every file everywhere is
+    "unchanged" from the scanner's point of view, since nothing touched
+    the files themselves - so there was previously no way to make an
+    already-imported library pick up a tag-reading fix short of deleting
+    and reimporting the whole thing. `force` re-runs this whole function
+    for a file even when its `MediaFile` row already matches, re-deriving
+    every tag-sourced field (including `track.comment`) from a fresh
+    `read_tags()` call. Every write below this point (`get_or_create_*`,
+    `add_credit`) is already idempotent - the same "changed file" path
+    already re-runs them on every real edit - so forcing an unchanged file
+    through is safe, just slower than skipping it.
     """
     stat = path.stat()
     existing = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
     if existing is not None:
-        if existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size:
+        if not force and existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size:
             existing.is_missing = False
             existing.last_seen_at = dt.datetime.now(dt.timezone.utc)
             result.unchanged += 1
@@ -514,6 +576,7 @@ def scan_folder(
     root: Path | str,
     progress: Optional[ProgressFn] = None,
     result: Optional[ScanResult] = None,
+    force: bool = False,
 ) -> ScanResult:
     root = Path(root).expanduser()
     result = result or ScanResult()
@@ -529,7 +592,11 @@ def scan_folder(
     # before any of them turn into a Release - see _folder_album_artist.
     # An unchanged file is left exactly alone: cheap on a big rescan, and it
     # already went through this same folder logic the first time around.
-    to_process = [p for p in files if _needs_import(session, p)]
+    # `force=True` (see import_file's docstring) makes every file "need"
+    # import regardless, which is the only way an existing library ever
+    # picks up a `read_tags()` bugfix - it has no other reason to re-read a
+    # file whose mtime/size on disk never changed.
+    to_process = [p for p in files if force or _needs_import(session, p)]
     by_folder: dict[Path, list[Path]] = {}
     for path in to_process:
         by_folder.setdefault(path.parent, []).append(path)
@@ -554,9 +621,10 @@ def scan_folder(
                     tags=tags_cache[path],
                     album_artist_override=album_artist,
                     is_compilation_override=is_compilation,
+                    force=force,
                 )
             else:
-                import_file(session, path, result)
+                import_file(session, path, result, force=force)
         except Exception as exc:  # keep going on one bad file
             log.exception("failed to import %s", path)
             result.errors.append(f"{path.name}: {exc}")
@@ -597,14 +665,14 @@ def scan_folder(
 
 
 def rescan_all(
-    session: Session, progress: Optional[ProgressFn] = None
+    session: Session, progress: Optional[ProgressFn] = None, force: bool = False
 ) -> ScanResult:
     result = ScanResult()
     folders = list(
         session.scalars(select(WatchedFolder).where(WatchedFolder.enabled.is_(True)))
     )
     for folder in folders:
-        scan_folder(session, folder.path, progress, result)
+        scan_folder(session, folder.path, progress, result, force=force)
     result.missing = mark_missing_files(session)
     result.removed = purge_orphaned_tracks(session)
     return result
