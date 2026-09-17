@@ -327,6 +327,142 @@ class TestSmartPlaylistRules:
 
         assert len(results) == 2
 
+    def test_omitting_limit_means_unlimited_not_a_hidden_default(self, session):
+        """2026-09-17 - SmartPlaylistDialog's "limit to" checkbox is
+        unchecked by default (mirroring MusicBee's own auto-playlist
+        editor), which omits the "limit" key entirely - that has to mean
+        "every match", not silently fall back to some old built-in cap."""
+        for i in range(5):
+            make_track(session, f"Track {i}", album=f"Album {i}")
+
+        spec = {"rules": []}
+        results = lib_pl.resolve_smart(session, json.dumps(spec))
+
+        assert len(results) == 5
+
+
+class TestChartRankOrdering:
+    """2026-09-17 - "chart_rank" order-by, sorting a smart playlist by the
+    rank number tagged directly into Track.comment rather than by joining
+    through ChartEntry - see resolve_smart's own docstring for the two
+    real-data problems (same-named charts, mismatched track_id) that made
+    the ChartEntry approach unworkable."""
+
+    def test_sorts_by_the_rank_embedded_in_the_hint_rank_year_format(self, session):
+        # "[Billboard] #NNN# [YEAR]" - the format James's Billboard-tagged
+        # library actually uses.
+        make_track(session, "Third", comment="[Billboard] #003# [2020]")
+        make_track(session, "First", comment="[Billboard] #001# [2020]")
+        make_track(session, "Second", comment="[Billboard] #002# [2020]")
+
+        spec = {
+            "order_by": "chart_rank",
+            "rules": [
+                {"field": "comment", "op": "contains", "value": "[Billboard]"},
+                {"field": "comment", "op": "contains", "value": "[2020]"},
+            ],
+        }
+        results = lib_pl.resolve_smart(session, json.dumps(spec))
+
+        assert [t.title for t in results] == ["First", "Second", "Third"]
+
+    def test_sorts_by_the_rank_embedded_in_the_hint_year_rank_format(self, session):
+        # "[Genre][YEAR] #NNN#" - the other tagging convention seen in
+        # James's library (non-Billboard genre charts).
+        make_track(session, "Third", comment="[Hot Country][2023] #096#")
+        make_track(session, "First", comment="[Hot Country][2023] #039#")
+        make_track(session, "Second", comment="[Hot Country][2023] #050#")
+
+        spec = {
+            "order_by": "chart_rank",
+            "rules": [
+                {"field": "comment", "op": "contains", "value": "[Hot Country]"},
+                {"field": "comment", "op": "contains", "value": "[2023]"},
+            ],
+        }
+        results = lib_pl.resolve_smart(session, json.dumps(spec))
+
+        assert [t.title for t in results] == ["First", "Second", "Third"]
+
+    def test_a_weekly_peak_never_outranks_the_tagged_year_end_position(self, session):
+        # Regression pin for the actual bug James hit: a much better
+        # (lower) number elsewhere in the comment, or on a completely
+        # unrelated chart tag, must never win over the one tagged rank
+        # that actually matches this playlist's own hint/year.
+        make_track(
+            session, "RealFirst",
+            comment="[Billboard] #001# [2020]\r\n[Pop][2020] #050#",
+        )
+        make_track(session, "RealSecond", comment="[Billboard] #002# [2020]")
+
+        spec = {
+            "order_by": "chart_rank",
+            "rules": [
+                {"field": "comment", "op": "contains", "value": "[Billboard]"},
+                {"field": "comment", "op": "contains", "value": "[2020]"},
+            ],
+        }
+        results = lib_pl.resolve_smart(session, json.dumps(spec))
+
+        assert [t.title for t in results] == ["RealFirst", "RealSecond"]
+
+    def test_a_track_with_no_matching_tag_sorts_after_every_ranked_one(self, session):
+        make_track(session, "Ranked", comment="[Billboard] #001# [2020]")
+        # Both of these satisfy the *rules* below (their comment really
+        # does contain the literal substrings "[Billboard]" and "[2020]"),
+        # but neither is shaped like either rank pattern
+        # (_comment_rank_patterns) - a garbled/incomplete tag, and both
+        # tags present but nowhere near each other, respectively.
+        make_track(session, "Malformed", comment="[Billboard][2020] no rank here")
+        make_track(session, "SeparateTags", comment="[2020] some other text [Billboard]")
+
+        spec = {
+            "order_by": "chart_rank",
+            "rules": [
+                {"field": "comment", "op": "contains", "value": "[Billboard]"},
+                {"field": "comment", "op": "contains", "value": "[2020]"},
+            ],
+        }
+        results = lib_pl.resolve_smart(session, json.dumps(spec))
+
+        # Both fall into the untagged (unranked) bucket, alphabetical
+        # between themselves, after the one real ranked track.
+        assert [t.title for t in results] == ["Ranked", "Malformed", "SeparateTags"]
+
+    def test_no_comment_rules_at_all_falls_back_to_alphabetical_rather_than_erroring(
+        self, session
+    ):
+        make_track(session, "Bravo", album="Bravo Album")
+        lib.get_or_create_release(session, "Bravo Album", "Artist").year = 2020
+        make_track(session, "Alpha", album="Alpha Album")
+        lib.get_or_create_release(session, "Alpha Album", "Artist").year = 2020
+        session.flush()
+
+        spec = {
+            "order_by": "chart_rank",
+            "rules": [{"field": "year", "op": "is", "value": 2020}],
+        }
+        results = lib_pl.resolve_smart(session, json.dumps(spec))
+
+        assert [t.title for t in results] == ["Alpha", "Bravo"]
+
+    def test_limit_still_applies_after_the_chart_rank_sort(self, session):
+        make_track(session, "Third", comment="[Billboard] #003# [2020]")
+        make_track(session, "First", comment="[Billboard] #001# [2020]")
+        make_track(session, "Second", comment="[Billboard] #002# [2020]")
+
+        spec = {
+            "order_by": "chart_rank",
+            "limit": 2,
+            "rules": [
+                {"field": "comment", "op": "contains", "value": "[Billboard]"},
+                {"field": "comment", "op": "contains", "value": "[2020]"},
+            ],
+        }
+        results = lib_pl.resolve_smart(session, json.dumps(spec))
+
+        assert [t.title for t in results] == ["First", "Second"]
+
 
 class TestCreateSmartPlaylist:
     def test_creates_and_stores_the_json_rules(self, session):

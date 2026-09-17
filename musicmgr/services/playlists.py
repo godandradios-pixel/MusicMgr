@@ -19,12 +19,14 @@ from __future__ import annotations
 import datetime as dt
 import json
 import random
+import re
 from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..db.models import (
+    Chart,
     Credit,
     Genre,
     MediaFile,
@@ -287,6 +289,13 @@ def _rule_clause(field: str, op: str, value: Any):
         "title": Track.title_key,
         "artist": Track.artist_display,
         "album": Release.title_key,
+        #: 2026-09-17 (James: matching MusicBee's own "Comment contains
+        #: [Billboard]" auto-playlist rules) - Track.comment already
+        #: exists and gets populated from the file's own tag on scan (see
+        #: services/scanner.py's `track.comment = tags.comment or None`);
+        #: it just had no smart-playlist field to reach it through until
+        #: now.
+        "comment": Track.comment,
     }
 
     if field in numeric_fields:
@@ -307,7 +316,13 @@ def _rule_clause(field: str, op: str, value: Any):
 
     if field in text_fields:
         col = text_fields[field]
-        needle = normalize(value) if field != "artist" else str(value)
+        # "artist"/"comment" skip normalize() - normalize() strips
+        # punctuation entirely (see services/matching.py), which would
+        # mangle a bracketed tag like "[Billboard][1946]" into unmatchable
+        # mush before it ever reaches the ILIKE below; title/album go
+        # through it because those columns (*_key) are themselves
+        # normalized, so the search term has to match that same shape.
+        needle = normalize(value) if field not in ("artist", "comment") else str(value)
         if op in ("is", "eq"):
             return func.lower(col) == needle.lower()
         if op == "contains":
@@ -345,6 +360,30 @@ def _rule_clause(field: str, op: str, value: Any):
     raise ValueError(f"unknown smart-playlist field {field!r}")
 
 
+def _comment_rank_patterns(hint: Optional[str], year: Optional[str]) -> list[str]:
+    """Regex source strings matching a chart rank tagged into `Track.comment`
+    for the "chart_rank" smart-playlist ordering - see resolve_smart's own
+    docstring for why this reads the comment text directly rather than
+    joining through `ChartEntry`. James's library uses (at least) two
+    conventions for this, both observed directly in his own data:
+
+        "[Billboard] #002# [2020]"      - hint, then rank, then year
+        "[Hot Country][2023] #096#"     - hint and year together, then rank
+
+    `hint`/`year` are each optional (a playlist's rules might supply only
+    one, or neither) - `None` becomes a permissive `.+?` placeholder rather
+    than omitting that half of the pattern, since either convention above
+    always has *something* in both positions. Every hint is regex-escaped;
+    nothing here should ever be treated as a literal engine pattern from
+    playlist rule text."""
+    h = re.escape(hint) if hint else r"[^\[\]]+"
+    y = re.escape(year) if year else r"\d{4}"
+    return [
+        rf"\[{h}\]\s*#(\d+)#\s*\[{y}\]",  # "[Billboard] #002# [2020]"
+        rf"\[{h}\]\s*\[{y}\]\s*#(\d+)#",  # "[Hot Country][2023] #096#"
+    ]
+
+
 def resolve_smart(session: Session, rules_json: str) -> list[Track]:
     spec = json.loads(rules_json) if isinstance(rules_json, str) else rules_json
     clauses = [
@@ -360,8 +399,112 @@ def resolve_smart(session: Session, rules_json: str) -> list[Track]:
     )
     if clauses:
         stmt = stmt.where(combiner(*clauses))
-    order = ORDERINGS.get(spec.get("order_by", "title"), Track.title)
-    stmt = stmt.order_by(order).limit(int(spec.get("limit", 500)))
+    order_by = spec.get("order_by", "title")
+    # 2026-09-17 follow-up - the new form-based SmartPlaylistDialog
+    # (ui/views/playlists.py) has an unchecked-by-default "limit to N
+    # tracks" checkbox, same as MusicBee's own Auto-Playlist editor - so
+    # omitting "limit" now means genuinely unlimited rather than the old
+    # silent 500 cap, which nothing that already sets an explicit limit
+    # (the three built-in smart playlists, and any spec saved through the
+    # old JSON box) ever relied on.
+    limit = spec.get("limit")
+    if order_by == "chart_rank":
+        # 2026-09-17 (James: "I need an option where it can be manual so
+        # that I can sort them by ranking of the chart") - for a smart
+        # playlist built around a chart-tagged Comment (e.g. "Comment
+        # contains [Billboard]" + "Comment contains [2020]"), James wants
+        # the list to read in the chart's own countdown order, not by
+        # title/date/play count.
+        #
+        # 2026-09-17 same-day follow-up #1 (James: "the Playlist is out
+        # of order") - the first version of this took MIN(rank) across
+        # *every* `ChartEntry` a track has anywhere, with no notion of
+        # "which chart, which edition" - so a track's *weekly* Hot 100
+        # peak (which most Billboard #1s reach eventually) beat its
+        # actual year-end position, and ties beyond that had no tiebreak
+        # at all.
+        #
+        # 2026-09-17 same-day follow-up #2, chasing #1's fix - narrowing
+        # to "the YE edition of a chart named like the rules' own
+        # `[Billboard]` hint" ran straight into two more problems that
+        # make `ChartEntry` fundamentally the wrong table for this:
+        #   1. James's `charts` table has *three* separate chart rows all
+        #      literally named "Billboard YE" (Hot 100, Country, and
+        #      Christian, distinguished only by `Chart.slug` - a detail
+        #      the smart-playlist rules have no way to reference), so
+        #      "name the chart, then find its YE issue" still can't tell
+        #      the Hot 100 list apart from the Country one; "The Bones"
+        #      (a country song) was outranking Circles because its
+        #      Country-chart YE rank of 2 was getting merged in.
+        #   2. Worse: the *same song* sometimes exists as two separate
+        #      `Track` rows (two different files/imports - confirmed for
+        #      Circles: track 26171 with an unrelated 2019 tag, track
+        #      26268 with the real `[Billboard] #002# [2020]` one), and
+        #      `ChartEntry.track_id` - populated by the Charts page's own
+        #      independent title/artist fuzzy-matcher ("Re-match
+        #      library") - had linked to the *other* one. No amount of
+        #      narrowing which chart/issue to look at fixes a rank stored
+        #      against a different row than the one this query is
+        #      actually sorting.
+        #
+        # The comment text itself sidesteps both: it's the exact same
+        # field the rules already matched on, already carries the rank
+        # number, and needs no cross-referencing to any other table at
+        # all. `[Billboard] #002# [2020]` and `[Hot Country][2023] #096#`
+        # are the two tagging conventions actually seen in James's
+        # library - hint-then-rank-then-year, and hint-and-year-then-rank
+        # - so both are tried. A non-numeric rule value like "[Billboard]"
+        # or "[Hot Country]" is a chart-name hint; a 4-digit one like
+        # "[2020]" is a year. A track whose comment doesn't actually
+        # contain a matching "#rank#" for any hint/year combination (or a
+        # playlist with no such rules at all) sorts after every ranked
+        # one instead of raising or vanishing; `Track.title` breaks any
+        # remaining tie deterministically.
+        comment_values = [
+            r.get("value", "")
+            for r in spec.get("rules", [])
+            if r.get("field") == "comment" and r.get("op") == "contains" and r.get("value")
+        ]
+        years = [
+            m
+            for v in comment_values
+            for m in re.findall(r"(?:19|20)\d{2}", v)
+        ]
+        chart_hints = [
+            v.strip("[]").strip()
+            for v in comment_values
+            if not re.fullmatch(r"(?:19|20)\d{2}", v.strip("[]").strip())
+            and v.strip("[]").strip()
+        ]
+        # No hint/year at all (a playlist with no "Comment contains [...]"
+        # rule) leaves `rank_patterns` empty rather than matching a wildcard
+        # "any tag" pattern against every track's comment - safer than
+        # guessing, and it still degrades gracefully: every track falls
+        # through to the untagged (2**31-1) bucket below and the whole list
+        # sorts alphabetically by title instead.
+        rank_patterns = [
+            re.compile(pattern)
+            for hint in (chart_hints or [None])
+            for year in (years or [None])
+            for pattern in _comment_rank_patterns(hint, year)
+        ] if (chart_hints or years) else []
+
+        def _tagged_rank(track: Track) -> int:
+            comment = track.comment or ""
+            for pattern in rank_patterns:
+                m = pattern.search(comment)
+                if m:
+                    return int(m.group(1))
+            return 2**31 - 1
+
+        tracks = list(session.scalars(stmt).unique())
+        tracks.sort(key=lambda t: (_tagged_rank(t), t.title))
+        return tracks[: int(limit)] if limit is not None else tracks
+
+    order = ORDERINGS.get(order_by, Track.title)
+    stmt = stmt.order_by(order)
+    if limit is not None:
+        stmt = stmt.limit(int(limit))
     return list(session.scalars(stmt).unique())
 
 
