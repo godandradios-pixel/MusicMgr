@@ -177,7 +177,26 @@ class PlaylistsView(BaseView):
         self.track_list.itemActivatedPayload.connect(self._on_track_tapped)
         rl.addWidget(self.track_list, 1)
         splitter.addWidget(right)
-        splitter.setSizes([340, 900])
+        # James: give the "Your playlists" column more room - the built-in
+        # "Most Played - This Week"/"Most Played - This Month" names (see
+        # services/playlists.py's MOST_PLAYED_DEFS) were the longest
+        # leaves in this tree and didn't fit 340px next to TouchTree's own
+        # fixed 56px count column, eliding down to "Most Played - T..."
+        # for both.
+        #
+        # 2026-09-17 follow-up (James: still truncated at 420px) - "Most
+        # Played - All Time" (23 chars) fit there, but the two-chars-
+        # longer "This Week"/"This Month" variants didn't quite, by a
+        # handful of pixels this sandbox can't measure directly (no way
+        # to run the real Qt layout here - see the module's other verify-
+        # by-in-memory-DB workarounds). Rather than nudge the number again
+        # and risk the same near-miss, 500px leaves real headroom past the
+        # longest current name instead of just clearing it. Kept the same
+        # 1240 total so the right-hand track list doesn't end up any
+        # narrower than before - just a differently split QSplitter
+        # (still user-draggable further either way, via the handle
+        # between the two panes).
+        splitter.setSizes([500, 740])
         self.body().addWidget(splitter, 1)
 
         ctx.playlistsChanged.connect(self.refresh)

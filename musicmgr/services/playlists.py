@@ -402,7 +402,7 @@ DEFAULT_SMART_PLAYLISTS = [
         "Anything you have played three times or more",
     ),
     (
-        "Forgotten Favourites",
+        "Forgotten Favorites",
         {
             "match": "all",
             "rules": [
@@ -416,8 +416,21 @@ DEFAULT_SMART_PLAYLISTS = [
     ),
 ]
 
+#: Renamed 2026-09-17 (James: "remove any british english words. For
+#: example, Forgotten Favourites") - anyone who already has the old
+#: spelling gets it renamed in place the next time this runs, rather than
+#: the exists-check loop below (which only matches by exact name, so it
+#: has no way to know the old and new spellings are the same playlist)
+#: leaving that old row orphaned next to a freshly created duplicate.
+_RENAMED_DEFAULTS = {"Forgotten Favourites": "Forgotten Favorites"}
+
 
 def ensure_default_playlists(session: Session) -> None:
+    for old_name, new_name in _RENAMED_DEFAULTS.items():
+        old = session.scalar(select(Playlist).where(Playlist.name == old_name))
+        already_exists = session.scalar(select(Playlist).where(Playlist.name == new_name))
+        if old is not None and already_exists is None:
+            old.name = new_name
     for name, spec, desc in DEFAULT_SMART_PLAYLISTS:
         exists = session.scalar(select(Playlist).where(Playlist.name == name))
         if exists is None:

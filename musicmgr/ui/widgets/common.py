@@ -803,7 +803,49 @@ class TouchTree(QTreeWidget):
         self.setMouseTracking(True)
         self.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.header().setSectionResizeMode(1, QHeaderView.Fixed)
-        self.setColumnWidth(1, 56)
+        # QHeaderView.stretchLastSection defaults to True, and column 1
+        # (the count) is the last column - so without turning it off here,
+        # Qt keeps forcing that column to eat up the header's leftover
+        # space regardless of the Fixed resize mode/setColumnWidth call
+        # right below, which is exactly the "still way too much space
+        # given to the 4-digit count" James saw even after that call was
+        # already sizing it down: the call was having no effect at all,
+        # overridden by this default on every relayout.
+        self.header().setStretchLastSection(False)
+        # 2026-09-17 follow-up (James, on the Playlists sidebar: "trim the
+        # fixed-width count column ... it currently reserves more space
+        # than a 3-digit number needs") - this column only ever holds a
+        # plain right-aligned integer (playlist track counts, see
+        # ui/views/playlists.py's `meta=str(track_counts...)`; always
+        # empty in FolderPickerDialog's use of this same tree below, so
+        # trimming it there costs nothing). Built as an explicit
+        # QFont(family, size) from theme.py's own constants rather than
+        # read off self.font(): this runs in __init__, before the app's
+        # QSS (theme.stylesheet(), which is what actually sets this size
+        # - see its own `* { font-size: ...}` rule) has ever been
+        # polished onto this specific widget, so self.font() here would
+        # just be Qt's platform default, not the size that's actually
+        # going to render.
+        #
+        # Same-day follow-up - the first cut of this (+12px over the raw
+        # glyph width) clipped ordinary 3-digit counts ("100" -> "1...")
+        # once `setStretchLastSection(False)` above started actually
+        # honoring this width for the first time (see that flag's own
+        # comment - before it was added, no fixed width here had ever
+        # really been in effect, which is also why plain 56px used to
+        # read as "fine"). The +12 was only ever covering the glyph
+        # itself; it left out this column's OWN chrome from theme.py's
+        # shared QTreeWidget::item rules - `padding: 0 6px` (12px) plus
+        # `margin: 2px 4px` (8px), 20px of horizontal space per item that
+        # was never available for text to begin with - so the real
+        # minimum is glyph width + that 20px, plus a few px of slack for
+        # whatever this sandbox's lack of a real Qt/font backend still
+        # can't measure (font substitution among the "Inter"/"Segoe UI"/
+        # "Helvetica Neue" stack, subpixel rounding, ...).
+        count_font = QFont("Segoe UI", -1)
+        count_font.setPixelSize(TOUCH["font_base"])
+        glyph_w = QFontMetrics(count_font).horizontalAdvance("9999")
+        self.setColumnWidth(1, glyph_w + 20 + 8)  # + item chrome + safety margin
         QScroller.grabGesture(self.viewport(), QScroller.LeftMouseButtonGesture)
         self.itemClicked.connect(self._on_clicked)
         self.itemExpanded.connect(self._sync_glyph)

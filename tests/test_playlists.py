@@ -356,7 +356,7 @@ class TestDefaultSmartPlaylists:
         lib_pl.ensure_default_playlists(session)
 
         names = {p.name for p in lib_pl.list_playlists(session)}
-        assert {"Recently Added", "Heavy Rotation", "Forgotten Favourites"} <= names
+        assert {"Recently Added", "Heavy Rotation", "Forgotten Favorites"} <= names
 
     def test_running_it_twice_does_not_duplicate_them(self, session):
         lib_pl.ensure_default_playlists(session)
@@ -366,6 +366,23 @@ class TestDefaultSmartPlaylists:
             select(func.count(Playlist.id)).where(Playlist.kind == Playlist.KIND_SMART)
         )
         assert count == 3
+
+    def test_renames_an_existing_playlist_with_the_old_british_spelling(self, session):
+        """"Forgotten Favourites" -> "Forgotten Favorites" (2026-09-17).
+        Someone who already has the old-spelled playlist - with whatever
+        track history/position it's built up - keeps that same row, just
+        renamed, rather than getting a second, freshly-created "Forgotten
+        Favorites" alongside an orphaned old one."""
+        old = lib_pl.create_smart_playlist(
+            session, "Forgotten Favourites", {"match": "all", "rules": []}
+        )
+
+        lib_pl.ensure_default_playlists(session)
+
+        names = [p.name for p in lib_pl.list_playlists(session)]
+        assert names.count("Forgotten Favorites") == 1
+        assert "Forgotten Favourites" not in names
+        assert session.get(Playlist, old.id).name == "Forgotten Favorites"
 
 
 class TestPlaybackTopTracks:
