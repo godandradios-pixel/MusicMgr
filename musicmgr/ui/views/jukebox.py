@@ -409,6 +409,25 @@ class JukeboxPickerDialog(QDialog):
     `self._picks`) because the edit dialog needs the picked title to show
     in its own side-by-side summary, which plain `selected_picks()`
     doesn't carry.
+
+    2026-09-18 follow-up - James, on a large library: "when I go back to
+    enter another track, it seems I can enter one letter but then it
+    bounces back to the artist." Both search boxes used to call
+    `search_tracks` straight from `textChanged`, so every keystroke ran a
+    real query against the whole library - long enough on a big collection
+    to visibly freeze the dialog, which is exactly the kind of pause that
+    gets a person to re-click the field they think stopped responding; a
+    stray click made mid-freeze doesn't get delivered until the query
+    finally returns, and it's *that* click - not anything this dialog does
+    on purpose - that was moving focus. `_search_timer` now debounces
+    `_run_search` by 220ms of no further typing (`_schedule_search`,
+    mirroring `ui/views/search.py`'s own `SearchView._schedule`/
+    `_run_search`), so a query only fires once someone's actually paused.
+    `_render_results` also now disposes of each search's checkbox widgets
+    before clearing the list, rather than leaking them as invisible
+    orphans of `track_list`'s viewport - the more searches a session ran,
+    the larger and slower `track_list` silently got, which only made the
+    freeze-and-mis-click above worse the longer the dialog stayed open.
     """
 
     def __init__(
@@ -444,19 +463,41 @@ class JukeboxPickerDialog(QDialog):
         #: of the original two call sites, which only ever read
         #: `selected_picks()`.
         self._pick_titles: dict[int, str] = {}
+        #: debounces `_run_search` off of raw keystrokes (2026-09-18
+        #: follow-up) - James: "when I go back to enter another track, it
+        #: seems I can enter one letter but then it bounces back to the
+        #: artist." `_search_tracks` runs a real, synchronous query
+        #: against the whole library (no index-friendly prefix on either
+        #: `ilike`/`like` pattern - see `search_addable_tracks`'s own
+        #: docstring), and this dialog used to call it on every single
+        #: keystroke in either box - fine on a small library, but on a
+        #: large one each keystroke could visibly freeze the dialog for a
+        #: few hundred ms. A frozen dialog is exactly what makes a person
+        #: re-click the field they think lost focus - that stray click
+        #: just queues up behind the frozen keystroke and lands the moment
+        #: the query finally returns, which is what actually moves focus;
+        #: nothing here was deliberately sending it to `artist_search`.
+        #: Same 220ms-after-the-last-keystroke debounce `ui/views/
+        #: search.py`'s own `SearchView` already uses for the same reason
+        #: - `_schedule_search`/`_run_search` mirror its `_schedule`/
+        #: `_run_search` naming for that reason.
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(220)
+        self._search_timer.timeout.connect(self._run_search)
 
         layout = QVBoxLayout(self)
 
         layout.addWidget(dim_label("Search by artist"))
         self.artist_search = QLineEdit()
         self.artist_search.setPlaceholderText("Artist name…")
-        self.artist_search.textChanged.connect(self._on_search_changed)
+        self.artist_search.textChanged.connect(self._schedule_search)
         layout.addWidget(self.artist_search)
 
         layout.addWidget(dim_label("Search by track"))
         self.track_search = QLineEdit()
         self.track_search.setPlaceholderText("Track name…")
-        self.track_search.textChanged.connect(self._on_search_changed)
+        self.track_search.textChanged.connect(self._schedule_search)
         layout.addWidget(self.track_search)
 
         self.genre_label = dim_label("Genre page")
@@ -505,9 +546,22 @@ class JukeboxPickerDialog(QDialog):
             self.track_search.setText(initial_track_query)
             self.artist_search.blockSignals(False)
             self.track_search.blockSignals(False)
-            self._on_search_changed()
+            # a pre-filled query (from a track-level Jukebox toggle - see
+            # the class docstring) searches immediately rather than
+            # waiting out the debounce below, the same way `SearchView.
+            # refresh()` runs its own `_run_search()` straight away for a
+            # query that's already sitting in the box.
+            self._run_search()
 
-    def _on_search_changed(self, _text: str = "") -> None:
+    def _schedule_search(self, _text: str = "") -> None:
+        """`textChanged` handler for both search boxes (2026-09-18
+        follow-up - see `self._search_timer`'s own comment). Restarts the
+        debounce timer on every keystroke rather than searching directly;
+        `_run_search` is what actually queries and re-renders, once
+        typing has paused for `_search_timer`'s interval."""
+        self._search_timer.start()
+
+    def _run_search(self) -> None:
         artist_query = self.artist_search.text().strip()
         track_query = self.track_search.text().strip()
         results = (
@@ -518,6 +572,20 @@ class JukeboxPickerDialog(QDialog):
         self._render_results(results)
 
     def _render_results(self, results: list[dict]) -> None:
+        # QListWidget.clear() deletes the QListWidgetItems but - a known
+        # Qt quirk - leaves any widget set via setItemWidget() behind as
+        # an orphaned, invisible child of the list's viewport rather than
+        # deleting it too. Every search used to leak that render's whole
+        # batch of checkboxes this way; explicitly detaching and disposing
+        # of each one first is the documented way to avoid it (Qt's own
+        # QListWidget::removeItemWidget() docs: "the ownership of the
+        # widget is passed to the caller").
+        for row_index in range(self.track_list.count()):
+            item = self.track_list.item(row_index)
+            widget = self.track_list.itemWidget(item)
+            if widget is not None:
+                self.track_list.removeItemWidget(item)
+                widget.deleteLater()
         self.track_list.clear()
         for row in results:
             track_id = row["track_id"]
@@ -1428,10 +1496,10 @@ class JukeboxView(BaseView):
         self.refresh()
 
     def _search_addable_tracks(self, artist_query: str, track_query: str) -> list[dict]:
-        """`JukeboxPickerDialog`'s `search_tracks` callback - one query
-        per keystroke straight to `services/jukebox.py:search_addable_tracks`,
-        matching how Library's own search box queries live too (see
-        `ui/views/library.py:_on_search_changed`), rather than the old
+        """`JukeboxPickerDialog`'s `search_tracks` callback - straight to
+        `services/jukebox.py:search_addable_tracks`, debounced by the
+        dialog's own `_search_timer` (2026-09-18 follow-up) rather than
+        firing on every keystroke, and still nothing like the old
         artist-first dialog's "load one artist's whole discography up
         front" approach."""
         with self.ctx.session() as session:
