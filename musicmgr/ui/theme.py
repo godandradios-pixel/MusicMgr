@@ -384,6 +384,33 @@ QPushButton#RowPageArrow:disabled {{
     background: {c['surface']};
     color: {c['text_dim']};
 }}
+/* 2026-09-18 follow-up (James: "let's make those < and > bigger" -
+   Jukebox's own pager, next to "+ Add to jukebox" in the page header).
+   Not a #RowPageArrow size change: that shared style also backs
+   cover_grid.py's horizontal-row pagers, and the 2026-09-16 precedent
+   above (GatefoldCoverflow's own #CoverflowNavArrow) already established
+   that a "too small" complaint about one pager gets its own dedicated
+   object name rather than resizing every pager in the app at once. Sized
+   to 48px - between #RowPageArrow's 32px and #CoverflowNavArrow's 56px -
+   to line up with the 52px-tall "+ Add to jukebox" TouchButton sitting
+   right next to it in the same header row, rather than either of those
+   other two pagers' own unrelated neighbors. */
+QPushButton#JukeboxPageArrow {{
+    background: {c['surface_alt']};
+    border-radius: 24px;
+    min-width: 48px;
+    max-width: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    padding: 0;
+    font-size: 20px;
+    color: {c['text']};
+}}
+QPushButton#JukeboxPageArrow:hover {{ background: {c['surface_hi']}; }}
+QPushButton#JukeboxPageArrow:disabled {{
+    background: {c['surface']};
+    color: {c['text_dim']};
+}}
 QPushButton#CoverflowNavArrow {{
     background: {c['surface_alt']};
     border-radius: 28px;
@@ -647,6 +674,16 @@ QFrame#JukeboxStrip {{
         stop:1 {c['jukebox_chrome_light']});
     border: 2px solid #5b5f66;
     border-radius: 16px;
+}}
+/* 2026-09-18 follow-up (drag-and-drop reordering, ui/widgets/
+   jukebox_strip.py): a card being dragged over highlights its border in
+   the same walnut-brown jukebox_key_hi used for the currently-playing
+   banner elsewhere on this page, so a valid drop target reads clearly
+   without needing a second, unrelated color. JukeboxStripWidget toggles
+   this dynamic property on `card` (not on itself) via unpolish/polish -
+   see `_set_drop_highlight`. */
+QFrame#JukeboxStrip[dropTarget="true"] {{
+    border: 3px solid {c['jukebox_key_hi']};
 }}
 /* 2026-09-07 redesign (match James's reference mockup): the card's inside
    is the two painted _ChevronBanner buttons plus the artist badge/line

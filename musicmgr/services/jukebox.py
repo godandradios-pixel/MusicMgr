@@ -301,6 +301,111 @@ def swap_slots(session: Session, slot_number_a: int, slot_number_b: int) -> bool
     return True
 
 
+def reorder_slot(session: Session, source_slot_number: int, target_slot_number: int) -> bool:
+    """Drag-and-drop reordering (2026-09-18 follow-up, `ui/widgets/
+    jukebox_strip.py:reorderRequested`) - unlike `swap_slots` above, which
+    trades exactly two cards' positions and leaves every other slot
+    untouched (still what "Organize card…" does, unchanged), this inserts
+    the dragged card at the target's rank and shifts every card from there
+    on over by one - the same "list reordering" an ordinary playlist drag
+    does, not an operator physically swapping two 45s. James, after trying
+    the swap-based version of the drag: "If the page is full, it doesn't
+    seem to allow the drop and have it automatically shift the last one to
+    the next page." A card landing on the next page isn't anything this
+    function (or the view) arranges specially - `list_slots`/
+    `list_slot_rows` already render exactly `per_page` cards per page in
+    slot_number order, so whichever card ends up ranked past the end of a
+    page is already on the next page the moment its rank here changes.
+
+    Reassigns `slot_number` *by rank*, not by inventing new numbers: both
+    slots have to share a genre (a drag today only ever happens between
+    cards visible on the same page, so this should never actually fire
+    cross-genre in practice - checked here rather than assumed, same
+    defensive spirit as everything else in this module that can no-op
+    rather than trust the caller). Every slot on that genre's board is
+    pulled in ascending slot_number order; the dragged slot is spliced out
+    and reinserted at the target's *original* rank (`target_rank`, read
+    before the splice - see the comment on it below for why the post-
+    splice rank would give the wrong answer half the time), the same
+    "pop from index i, insert at index j" most drag-reorder lists use.
+    That single rule ends up direction-dependent in a way that reads as
+    natural once dropped, even though it isn't spelled out anywhere on the
+    card itself: dragging a card *forward* past its target lands it
+    immediately *after* the target (everything that was between them
+    shifts back to fill the gap it left), while dragging one *backward*
+    onto a target lands it immediately *before* the target. Dropping a
+    card on its immediate neighbor - either direction - is a plain
+    two-item swap, same as `swap_slots` would give: see
+    `TestReorderSlot.test_moving_a_card_onto_its_immediate_next_neighbor_
+    is_the_same_as_a_swap`/`..._previous_neighbor_...` in
+    tests/test_jukebox.py. The *same set* of
+    already-active numbers is then redealt across the new rank order - no
+    number is invented and no retired number (one freed by a slot that
+    was fully removed - see `_next_slot_number`) is ever reused; only
+    numbers already live on this genre's board change hands, the same
+    thing a plain two-way `swap_slots` already does, just generalized
+    past two.
+
+    Routed through temporary negative placeholders first, the same trick
+    `swap_slots` uses and for the same reason: SQLite checks the unique
+    constraint on `slot_number` per statement, not at transaction end, so
+    writing final numbers directly could collide with a row that hasn't
+    been reassigned yet. Every slot on the board gets touched here rather
+    than only the ones whose number actually changes - genre boards are
+    small (the same "fetch everything, filter in memory" trade-off
+    `_on_organize_requested` already makes for the whole board), so the
+    extra writes aren't worth the bookkeeping to avoid.
+
+    Returns False as a no-op for the same slot picked twice, either slot
+    number no longer existing, or the two slots not sharing a genre; True
+    once committed via `session.flush()`."""
+    if source_slot_number == target_slot_number:
+        return False
+    source = session.scalar(
+        select(JukeboxSlot).where(JukeboxSlot.slot_number == source_slot_number)
+    )
+    target = session.scalar(
+        select(JukeboxSlot).where(JukeboxSlot.slot_number == target_slot_number)
+    )
+    if source is None or target is None or source.genre != target.genre:
+        return False
+
+    ordered = list(
+        session.scalars(
+            select(JukeboxSlot)
+            .where(JukeboxSlot.genre == source.genre)
+            .order_by(JukeboxSlot.slot_number)
+        )
+    )
+    numbers = [slot.slot_number for slot in ordered]  # already ascending
+
+    # target's rank *before* source is removed - splicing source back in at
+    # this same index is standard "move array item to index N" semantics:
+    # dragging forward (source was earlier than target) lands source right
+    # after target, since removing source shifts everything from target on
+    # back by one before the insert; dragging backward (source was later)
+    # lands source right before target, since target's own index isn't
+    # touched by removing something that came after it. Using the
+    # *post-removal* index of target here instead (i.e. looking it up in
+    # `without_source`) would only get the backward case right - the
+    # forward case would insert source one slot too early every time,
+    # which is exactly the bug that made "drop card A onto its very next
+    # neighbor B" a silent no-op during development (A was already
+    # sitting where that math would place it).
+    target_rank = ordered.index(target)
+    without_source = [slot for slot in ordered if slot is not source]
+    without_source.insert(target_rank, source)
+    new_order = without_source
+
+    for i, slot in enumerate(new_order):
+        slot.slot_number = -(i + 1)
+    session.flush()
+    for slot, number in zip(new_order, numbers):
+        slot.slot_number = number
+    session.flush()
+    return True
+
+
 def remove_track(session: Session, track_id: int) -> None:
     """Pull a track off whichever slot it's on - a 5-star rating lifted, or
     the track deleted outright. Clears just that side; once both sides are

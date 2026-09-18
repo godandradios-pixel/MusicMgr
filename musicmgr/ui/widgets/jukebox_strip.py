@@ -182,16 +182,80 @@ as `fillRequested` - `JukeboxView._on_edit_requested` opens a
 `JukeboxEditSongsDialog` (in `ui/views/jukebox.py`) showing both sides at
 once with Change/Clear controls, and applies whatever changed via the new
 `services.jukebox.set_slot_side`.
+
+2026-09-18 follow-up - James asked for drag-and-drop reordering again,
+after asking for it removed back on 2026-09-07 (see `moveRequested`'s own
+docstring, and `ui/views/jukebox.py`'s module docstring, for why: a card
+on page 2 had nowhere to be dropped onto a target still sitting back on
+page 1, since `JukeboxView` only ever builds enough strip widgets for one
+page at a time). This time the drag survives that problem instead of
+sidestepping it, rather than replacing `moveRequested`/`JukeboxOrganize
+Dialog` outright - both stay on the right-click menu for a move that
+doesn't need a drag at all, or one that crosses genre boards (a drag never
+does - see below).
+
+A strip is now both a drag source and a drop target. `SLOT_MIME_TYPE`
+carries the dragged card's own `slot_number` as plain text; dropping one
+card onto another emits `reorderRequested(source_slot, target_slot)` for
+`JukeboxView` to turn into a database call - the same "widget reports the
+gesture, view owns the database" split every other signal on this class
+already follows (see this signal's own docstring, and the same-day
+follow-up below, for exactly which call - it changed once). Only the cover art and the artist
+badge row are wired as drag handles (`installEventFilter` in `__init__`)
+rather than the whole card: the two chevron banners are already their own
+tap targets (`sideActivated`/`fillRequested`), and starting a drag from a
+press on one of them would fight that existing click rather than add a
+second gesture alongside it. A card only accepts a drop while it actually
+has a `slot_number` (an unused page-filler strip, or dropping a card onto
+itself, both refuse in `dragEnterEvent`) - `JukeboxStrip`'s border
+highlights via a `dropTarget` dynamic property (`ui/theme.py`) while a
+valid drag hovers over it, the same "toggle a property, unpolish/polish"
+technique Qt expects for state that plain QSS selectors can't reach on
+their own (the chevron banners are custom-painted instead and don't need
+this - see the 2026-09-07 redesign note above).
+
+What actually solves the page-1/page-2 problem is `JukeboxView`'s pager,
+not this widget: hovering a dragged card over the "‹"/"›" arrows for half
+a second pages the board underneath the still-active drag (repeating for
+as long as the hover continues and there's another page in that
+direction), so a card can now be walked from any page onto any other
+page's slot without both ever needing to be on screen together - see that
+view's own module docstring for the page-flip side of this.
+
+Same day, a follow-up: dropping a card originally did a plain two-way
+`swap_slots` (unchanged, and still what "Organize card…"/`moveRequested`
+does) - James, after trying that: "If the page is full, it doesn't seem
+to allow the drop and have it automatically shift the last one to the
+next page." A swap was never actually *refusing* a full-page drop - every
+visible card on a full page already has a `slot_number`, so any of them
+is a valid drop target - but a two-way trade isn't the same thing as
+inserting the dragged card at a spot and having the board shift to make
+room for it, which is what he meant. `JukeboxView._on_reorder_requested`
+now calls `services.jukebox.reorder_slot` instead of `swap_slots` -
+this widget's own signal and event handling are completely unchanged;
+only which database call the view makes moved. See `reorder_slot`'s own
+docstring for the rank-based reassignment, and why a card ending up on
+the next page needs nothing special done for it here.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QRectF, Qt, QSize, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QRectF, Qt, QSize, Signal
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QDrag,
+    QFont,
+    QFontMetrics,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -206,6 +270,26 @@ from ..theme import COLORS
 from .common import cover_pixmap
 
 _SIDES = ("A", "B")
+
+#: custom MIME type carrying a dragged card's slot_number as plain decimal
+#: text - see JukeboxStripWidget's class docstring, 2026-09-18 follow-up.
+#: Shared with ui/views/jukebox.py, which watches for the same type
+#: hovering its page-arrow buttons to flip pages mid-drag.
+SLOT_MIME_TYPE = "application/x-musicmgr-jukebox-slot"
+
+
+def _decode_slot(mime: QMimeData) -> Optional[int]:
+    """The dragged card's slot_number out of `mime`, or None if `mime`
+    doesn't carry this type at all, or carries something unparseable -
+    defensive against a drag started by something other than this widget
+    ever finding its way here (nothing in this app does that today, but a
+    silent no-op is cheaper than a crash if that ever changes)."""
+    if not mime.hasFormat(SLOT_MIME_TYPE):
+        return None
+    try:
+        return int(bytes(mime.data(SLOT_MIME_TYPE)).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
 
 
 class _CardCover(QWidget):
@@ -408,6 +492,13 @@ class JukeboxStripWidget(QFrame):
     #: both of this slot's current songs and lets either be replaced or
     #: cleared, writing changes through `services.jukebox.set_slot_side`.
     editRequested = Signal(int)
+    #: source_slot_number, target_slot_number - emitted when a card is
+    #: dropped onto a different card (2026-09-18 follow-up - see the class
+    #: docstring). `JukeboxView` turns this into a `services.jukebox.
+    #: reorder_slot` call - the dragged card takes the target's rank and
+    #: everything from there shifts over by one, *not* a two-way trade
+    #: (that's still `moveRequested`/"Organize card…"'s own `swap_slots`).
+    reorderRequested = Signal(int, int)
 
     #: fixed width of the artist-name badge, whatever the artist's name is -
     #: see the module docstring's third 2026-09-07 follow-up for why this
@@ -440,8 +531,12 @@ class JukeboxStripWidget(QFrame):
 
         card = QFrame()
         card.setObjectName("JukeboxStrip")
-        card.setToolTip("Right-click for options (organize or remove this card)")
+        card.setToolTip(
+            "Drag the cover to reorder · right-click for more options "
+            "(organize or remove this card)"
+        )
         outer.addWidget(card)
+        self.card = card
         card_layout = QHBoxLayout(card)
         card_layout.setContentsMargins(10, 10, 10, 10)
         card_layout.setSpacing(10)
@@ -459,7 +554,8 @@ class JukeboxStripWidget(QFrame):
         right_col.addWidget(top_banner)
         self._rows["A"] = {"banner": top_banner, "track_id": None}
 
-        right_col.addWidget(self._build_artist_row())
+        self._artist_row = self._build_artist_row()
+        right_col.addWidget(self._artist_row)
 
         bottom_banner = _ChevronBanner()
         bottom_banner.clicked.connect(lambda _=False: self._on_key_clicked("B"))
@@ -476,6 +572,17 @@ class JukeboxStripWidget(QFrame):
         # resize this card again. See the module docstring's third
         # 2026-09-07 follow-up.
         self.setFixedSize(self.sizeHint())
+
+        # drag-and-drop reordering (2026-09-18 follow-up - see the class
+        # docstring): only the cover and the artist badge row are drag
+        # handles, watched via an event filter rather than overriding
+        # their own mouse handlers directly, so this widget - not its
+        # plain QWidget/QLabel children - stays the one place all of this
+        # card's interaction logic lives.
+        self._drag_start_pos: Optional[QPoint] = None
+        self.cover.installEventFilter(self)
+        self._artist_row.installEventFilter(self)
+        self.setAcceptDrops(True)
 
     def _build_artist_row(self) -> QWidget:
         row = QWidget()
@@ -623,3 +730,79 @@ class JukeboxStripWidget(QFrame):
     def _on_remove_clicked(self) -> None:
         if self._slot_number is not None:
             self.removeRequested.emit(self._slot_number)
+
+    # -- drag-and-drop reordering (2026-09-18 follow-up) ---------------------
+
+    def eventFilter(self, obj, event):  # noqa: D102 - Qt override
+        """Watches `self.cover`/`self._artist_row` (installed on them in
+        `__init__`) for a press-and-drag gesture, rather than overriding
+        their own mouse handlers - see the class docstring for why those
+        two are the drag handles and the chevron banners aren't."""
+        if obj is self.cover or obj is self._artist_row:
+            etype = event.type()
+            if etype == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._drag_start_pos = event.position().toPoint()
+            elif etype == QEvent.MouseMove and event.buttons() & Qt.LeftButton:
+                if self._drag_start_pos is not None and self._slot_number is not None:
+                    moved = (event.position().toPoint() - self._drag_start_pos).manhattanLength()
+                    if moved >= QApplication.startDragDistance():
+                        self._drag_start_pos = None
+                        self._start_drag()
+            elif etype in (QEvent.MouseButtonRelease, QEvent.Leave):
+                self._drag_start_pos = None
+        return super().eventFilter(obj, event)
+
+    def _start_drag(self) -> None:
+        """Picks the card up - only ever called once `_slot_number` is
+        known to be set (the `eventFilter` guard above), so an unused
+        page-filler strip can never start one. `QDrag.exec()` runs its own
+        nested event loop until the mouse is released somewhere, which is
+        also what lets `JukeboxView`'s page-arrow hover timer keep firing
+        (and its own `refresh()` keep repainting the grid underneath the
+        still-active drag) while this call is on the stack."""
+        mime = QMimeData()
+        mime.setData(SLOT_MIME_TYPE, str(self._slot_number).encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(self.mapFromGlobal(QCursor.pos()))
+        drag.exec(Qt.MoveAction)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: D102 - Qt override
+        source_slot = _decode_slot(event.mimeData())
+        if (
+            self._slot_number is not None
+            and source_slot is not None
+            and source_slot != self._slot_number
+        ):
+            event.acceptProposedAction()
+            self._set_drop_highlight(True)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: D102 - Qt override
+        if _decode_slot(event.mimeData()) is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: D102 - Qt override
+        self._set_drop_highlight(False)
+
+    def dropEvent(self, event) -> None:  # noqa: D102 - Qt override
+        self._set_drop_highlight(False)
+        source_slot = _decode_slot(event.mimeData())
+        if source_slot is None or self._slot_number is None or source_slot == self._slot_number:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self.reorderRequested.emit(source_slot, self._slot_number)
+
+    def _set_drop_highlight(self, on: bool) -> None:
+        """Toggles the `dropTarget` dynamic property `ui/theme.py`'s
+        `QFrame#JukeboxStrip[dropTarget="true"]` rule reads -
+        unpolish/polish is what makes Qt's style engine actually re-read a
+        dynamic property after it's already painted the widget once."""
+        self.card.setProperty("dropTarget", on)
+        self.card.style().unpolish(self.card)
+        self.card.style().polish(self.card)

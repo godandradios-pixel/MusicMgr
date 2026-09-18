@@ -227,13 +227,60 @@ and `_on_edit_requested` applies it in one pass via the new
 `services/jukebox.py:set_slot_side` - the first place any of the three
 jukebox entry points can *replace* an already-filled side, not just fill
 an open one.
+
+2026-09-18 follow-up - James asked for drag-and-drop card reordering
+again, after asking for it pulled back out the first time (see this
+docstring's own 2026-09-07 note above): the reason it didn't work out
+then - a card on page 2 had nowhere on-screen to be dropped onto a target
+still sitting on page 1 - gets solved this time instead of sidestepped.
+`JukeboxStripWidget` is now a drag source and drop target on its own (see
+its own module docstring); dropping one card onto another emits
+`reorderRequested(source_slot, target_slot)`, wired here to
+`_on_reorder_requested`. Both stay on the board side-by-side: a drag only
+ever reorders within the genre page currently showing (there's nothing
+else visible to drop onto), so "Organize card…" is still how a card gets
+moved across genre boards.
+
+Same day, a follow-up: `_on_reorder_requested` first called
+`services.jukebox.swap_slots` - the exact same two-way trade
+`_on_organize_requested`'s dialog already makes, just reached by a drag
+instead of picking a slot number from a dropdown. James, after trying it:
+"If the page is full, it doesn't seem to allow the drop and have it
+automatically shift the last one to the next page." A swap was never
+actually refusing anything - every card on a full page already has a
+slot_number, so any of them is a valid drop target - but trading exactly
+two cards' positions isn't the same as inserting the dragged card where
+it was dropped and having everything after it shift down to make room,
+which is what "shift the last one to the next page" was asking for.
+`_on_reorder_requested` now calls `services.jukebox.reorder_slot` instead
+- see that function's own docstring for how the rank-based reassignment
+works. Nothing here had to change to make an overflowing card land on the
+next page: `refresh()` re-renders whichever `per_page` cards now fall on
+the current page in slot_number order, exactly like it already does for
+any other change to the board.
+
+What actually closes the old page-1/page-2 gap is `prev_btn`/`next_btn`:
+both get `setAcceptDrops(True)` and an installed event filter here, so
+hovering a dragged card over either arrow starts `_page_flip_timer`
+(`PAGE_FLIP_HOVER_MS`); if the hover is still there when it fires,
+`_flip_page_during_drag` calls the same `_change_page`/`refresh()` the
+arrow's own click handler uses and restarts the timer, so holding a card
+over "›" keeps walking forward one page at a time for as long as there's
+another page in that direction (`next_btn`/`prev_btn.isEnabled()` is the
+same bound the visible arrows already respect). Qt's `QDrag.exec()` runs
+its own nested event loop while a drag is active, which is what lets this
+timer keep firing - and `refresh()` keep repainting the grid underneath
+the cursor - without the drag itself being interrupted. Neither arrow is
+ever a real *drop* target for a card (`QEvent.Drop` is explicitly
+ignored in the filter below) - releasing over one just ends the drag with
+nothing swapped, same as releasing over any other empty space.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Optional, Sequence
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -258,7 +305,7 @@ from ...db.models import Track
 from ...services import jukebox as jkb_svc
 from ..context import AppContext
 from ..widgets.common import ChipButton, EmptyState, TouchButton, dim_label
-from ..widgets.jukebox_strip import JukeboxStripWidget
+from ..widgets.jukebox_strip import SLOT_MIME_TYPE, JukeboxStripWidget
 from .base import BaseView
 
 #: 3-6 columns and 3-4 rows, both decided at runtime from how much space
@@ -284,6 +331,14 @@ MAX_COLUMNS = 6
 #: than silently bumping one back off, so the person always sees exactly
 #: what they're about to add.
 MAX_PICKS = 2
+
+#: how long a card has to hover over a page-arrow button, mid-drag, before
+#: that direction's page flips underneath it (2026-09-18 follow-up - see
+#: the module docstring's drag-and-drop note). Long enough that passing
+#: over the arrow on the way to a normal in-page drop doesn't flip a page
+#: by accident; short enough that walking a card several pages over by
+#: holding it there doesn't feel like waiting.
+PAGE_FLIP_HOVER_MS = 600
 
 
 class JukeboxPickerDialog(QDialog):
@@ -835,6 +890,16 @@ class JukeboxView(BaseView):
         # shipped) shows up on whichever page is already open at launch.
         self._genre = jkb_svc.DEFAULT_JUKEBOX_GENRE
 
+        # drag-and-drop page-flip (2026-09-18 follow-up - see the module
+        # docstring): fires _flip_page_during_drag once a dragged card has
+        # hovered a page arrow for PAGE_FLIP_HOVER_MS; _page_flip_delta is
+        # which direction that hover was over (-1/prev_btn, +1/next_btn),
+        # set fresh on every DragEnter in eventFilter below.
+        self._page_flip_timer = QTimer(self)
+        self._page_flip_timer.setSingleShot(True)
+        self._page_flip_timer.timeout.connect(self._flip_page_during_drag)
+        self._page_flip_delta = 0
+
         self.now_playing_label = QLabel("NOW PLAYING — —")
         self.now_playing_label.setObjectName("JukeboxNowPlayingText")
         self.header.addWidget(self.now_playing_label)
@@ -847,13 +912,28 @@ class JukeboxView(BaseView):
         # (see refresh()'s page_label.setText below, unchanged); moving it
         # into the header next to "+ Add to jukebox" gives that whole row
         # back to the grid instead.
+        # "JukeboxPageArrow", not the shared "RowPageArrow" every other
+        # pager in the app uses (cover_grid.py's own horizontal rows) -
+        # 2026-09-18 follow-up, James: "let's make those < and > bigger."
+        # A dedicated object name (see ui/theme.py's own note on it) keeps
+        # this page's arrows resizable on their own without also growing
+        # Library's pager, the same "give it its own style" fix
+        # GatefoldCoverflow's #CoverflowNavArrow already set the precedent
+        # for (2026-09-16 follow-up - see that widget's own docstring).
         self.prev_btn = TouchButton("‹")
-        self.prev_btn.setObjectName("RowPageArrow")
+        self.prev_btn.setObjectName("JukeboxPageArrow")
         self.prev_btn.clicked.connect(lambda: self._change_page(-1))
         self.page_label = dim_label("")
         self.next_btn = TouchButton("›")
-        self.next_btn.setObjectName("RowPageArrow")
+        self.next_btn.setObjectName("JukeboxPageArrow")
         self.next_btn.clicked.connect(lambda: self._change_page(1))
+        # 2026-09-18 follow-up: lets a dragged jukebox card flip the page
+        # by hovering over either arrow - see the module docstring and
+        # eventFilter/_flip_page_during_drag below.
+        self.prev_btn.setAcceptDrops(True)
+        self.next_btn.setAcceptDrops(True)
+        self.prev_btn.installEventFilter(self)
+        self.next_btn.installEventFilter(self)
         self.header.addWidget(self.prev_btn)
         self.header.addWidget(self.page_label)
         self.header.addWidget(self.next_btn)
@@ -962,6 +1042,7 @@ class JukeboxView(BaseView):
             strip.editRequested.connect(self._on_edit_requested)
             strip.moveRequested.connect(self._on_organize_requested)
             strip.removeRequested.connect(self._on_remove_requested)
+            strip.reorderRequested.connect(self._on_reorder_requested)
             self.strips.append(strip)
 
         self.ctx.player.trackChanged.connect(self._on_track_changed)
@@ -1112,6 +1193,54 @@ class JukeboxView(BaseView):
         self._page += delta
         self.refresh()
 
+    # -- drag-and-drop page-flip (2026-09-18 follow-up) ----------------------
+
+    def eventFilter(self, obj, event):  # noqa: D102 - Qt override
+        """Watches `prev_btn`/`next_btn` (installed on them in `__init__`)
+        for a jukebox card hovering during a drag - see the module
+        docstring. Every branch here returns True: neither arrow has any
+        other event-filtered behavior of its own to fall through to, and
+        swallowing a non-jukebox drag's events here (rather than letting
+        Qt fall back to `QWidget`'s defaults) keeps an unrelated drag from
+        ever landing on a page arrow as if it were a real drop target."""
+        if obj is self.prev_btn or obj is self.next_btn:
+            etype = event.type()
+            if etype == QEvent.DragEnter:
+                if event.mimeData().hasFormat(SLOT_MIME_TYPE):
+                    event.acceptProposedAction()
+                    self._page_flip_delta = -1 if obj is self.prev_btn else 1
+                    self._maybe_start_page_flip_timer()
+                else:
+                    event.ignore()
+                return True
+            if etype == QEvent.DragMove:
+                if event.mimeData().hasFormat(SLOT_MIME_TYPE):
+                    event.acceptProposedAction()
+                else:
+                    event.ignore()
+                return True
+            if etype == QEvent.DragLeave:
+                self._page_flip_timer.stop()
+                return True
+            if etype == QEvent.Drop:
+                # neither arrow is a real drop target for a card - see the
+                # module docstring's closing paragraph.
+                event.ignore()
+                self._page_flip_timer.stop()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _maybe_start_page_flip_timer(self) -> None:
+        can_flip = (
+            self._page_flip_delta < 0 and self.prev_btn.isEnabled()
+        ) or (self._page_flip_delta > 0 and self.next_btn.isEnabled())
+        if can_flip:
+            self._page_flip_timer.start(PAGE_FLIP_HOVER_MS)
+
+    def _flip_page_during_drag(self) -> None:
+        self._change_page(self._page_flip_delta)
+        self._maybe_start_page_flip_timer()
+
     # -- playing ------------------------------------------------------------
 
     def _on_side_activated(self, side: str, track_id: int) -> None:
@@ -1234,6 +1363,27 @@ class JukeboxView(BaseView):
             if target is not None:
                 jkb_svc.swap_slots(session, slot_number, target)
         self.refresh()
+
+    def _on_reorder_requested(self, source_slot: int, target_slot: int) -> None:
+        """A card dropped onto a different card (2026-09-18 follow-up - see
+        the module docstring). Unlike `_on_organize_requested`'s dialog,
+        which does a pure two-way `swap_slots`, this calls
+        `services.jukebox.reorder_slot`: the dragged card takes the
+        target's rank and every card from there on shifts over by one -
+        real list reordering, not a swap - which is also what makes a card
+        landing on the next page "just happen" rather than needing
+        anything special here: `refresh()` re-renders whichever `per_page`
+        cards now fall on the current page, in the new slot_number order,
+        same as any other change to the board. `reorder_slot` returning
+        False (the board changed out from under the drag, or - shouldn't
+        happen given a drop only ever lands on a currently-visible, same-
+        genre card - a genre mismatch) is a silent no-op, matching every
+        other "board changed while a gesture was in flight" guard on this
+        view."""
+        with self.ctx.session() as session:
+            reordered = jkb_svc.reorder_slot(session, source_slot, target_slot)
+        if reordered:
+            self.refresh()
 
     def _on_remove_requested(self, slot_number: int) -> None:
         """James, 2026-09-07: "I would like to right click on the jukebox

@@ -232,6 +232,119 @@ class TestSwapSlots:
         assert slot.slot_number == 1  # untouched by either failed attempt
 
 
+def make_slots(session, count, *, genre=jb.DEFAULT_JUKEBOX_GENRE):
+    """`count` slots, each a different artist (so `place_track` never pairs
+    two songs onto one shared slot - see TestSwapSlots' own two-artist
+    setup above for the same reason), in the same `genre` board, returned
+    in the order they were created - which is also slot_number order,
+    since nothing else has touched the counter yet."""
+    slots = []
+    for i in range(count):
+        artist = lib.get_or_create_artist(session, f"Artist {i}")
+        track = make_track(session, f"Song {i}", artist=f"Artist {i}")
+        slots.append(jb.place_track(session, artist.id, track.id, genre=genre))
+    return slots
+
+
+class TestReorderSlot:
+    """Drag-and-drop reordering (2026-09-18 follow-up) - see the function's
+    own docstring for why this exists alongside `swap_slots` rather than
+    replacing it: a straight two-way trade doesn't "shift the rest of the
+    board over to make room," which is what James asked drag-and-drop to
+    do after trying the swap-based version first."""
+
+    def test_moving_the_first_card_onto_the_last_shifts_everyone_else_back_one(self, session):
+        a, b, c, d = make_slots(session, 4)
+        assert [s.slot_number for s in (a, b, c, d)] == [1, 2, 3, 4]
+
+        assert jb.reorder_slot(session, a.slot_number, d.slot_number) is True
+
+        # a was dragged *forward* past d, so it lands right after d (see
+        # reorder_slot's own docstring on target_rank/without_source for
+        # why a forward move lands after its target and a backward move
+        # lands before it) - everyone in between shifts back one
+        assert (b.slot_number, c.slot_number, d.slot_number, a.slot_number) == (1, 2, 3, 4)
+
+    def test_moving_the_last_card_onto_the_first_shifts_everyone_else_forward_one(self, session):
+        a, b, c, d = make_slots(session, 4)
+
+        assert jb.reorder_slot(session, d.slot_number, a.slot_number) is True
+
+        # d takes a's old rank (first); everyone else shifts forward one
+        assert (d.slot_number, a.slot_number, b.slot_number, c.slot_number) == (1, 2, 3, 4)
+
+    def test_moving_a_card_onto_its_immediate_next_neighbor_is_the_same_as_a_swap(self, session):
+        a, b, c = make_slots(session, 3)
+
+        assert jb.reorder_slot(session, a.slot_number, b.slot_number) is True
+
+        assert (b.slot_number, a.slot_number, c.slot_number) == (1, 2, 3)
+
+    def test_moving_a_card_onto_its_immediate_previous_neighbor_is_the_same_as_a_swap(self, session):
+        a, b, c = make_slots(session, 3)
+
+        assert jb.reorder_slot(session, b.slot_number, a.slot_number) is True
+
+        assert (b.slot_number, a.slot_number, c.slot_number) == (1, 2, 3)
+
+    def test_cards_outside_the_moved_range_keep_their_number(self, session):
+        a, b, c, d, e = make_slots(session, 5)
+
+        # drop c onto e - only c/d/e's ranks are between the old and new
+        # position; a and b never move
+        assert jb.reorder_slot(session, c.slot_number, e.slot_number) is True
+
+        assert a.slot_number == 1
+        assert b.slot_number == 2
+
+    def test_the_same_slot_picked_twice_is_a_no_op(self, session):
+        artist = lib.get_or_create_artist(session, "Artist")
+        track = make_track(session, "Song")
+        slot = jb.place_track(session, artist.id, track.id)
+
+        assert jb.reorder_slot(session, slot.slot_number, slot.slot_number) is False
+
+    def test_a_nonexistent_slot_number_on_either_side_is_a_no_op(self, session):
+        artist = lib.get_or_create_artist(session, "Artist")
+        track = make_track(session, "Song")
+        slot = jb.place_track(session, artist.id, track.id)
+
+        assert jb.reorder_slot(session, slot.slot_number, 999) is False
+        assert jb.reorder_slot(session, 999, slot.slot_number) is False
+        assert slot.slot_number == 1
+
+    def test_slots_on_different_genre_boards_are_a_no_op(self, session):
+        rock = make_slots(session, 2, genre="Rock")
+        country = make_slots(session, 1, genre="Country")
+
+        assert jb.reorder_slot(session, rock[0].slot_number, country[0].slot_number) is False
+        # untouched by the failed attempt
+        assert [s.slot_number for s in rock] == [1, 2]
+        assert country[0].slot_number == 3
+
+    def test_the_full_set_of_active_numbers_is_preserved_not_reinvented(self, session):
+        slots = make_slots(session, 5)
+        before = sorted(s.slot_number for s in slots)
+
+        jb.reorder_slot(session, slots[1].slot_number, slots[4].slot_number)
+
+        after = sorted(s.slot_number for s in slots)
+        assert after == before  # same five numbers, just redealt
+
+    def test_nothing_else_about_a_moved_card_changes(self, session):
+        a1 = lib.get_or_create_artist(session, "Artist One")
+        a2 = lib.get_or_create_artist(session, "Artist Two")
+        t1 = make_track(session, "Song", artist="Artist One")
+        t2 = make_track(session, "Song", artist="Artist Two")
+        slot1 = jb.place_track(session, a1.id, t1.id)
+        slot2 = jb.place_track(session, a2.id, t2.id)
+
+        jb.reorder_slot(session, slot1.slot_number, slot2.slot_number)
+
+        assert slot1.artist_id == a1.id
+        assert slot1.side_a_track_id == t1.id
+
+
 class TestRemoveTrack:
     def test_clears_just_that_side_and_leaves_the_other_side_loaded(self, session):
         artist = lib.get_or_create_artist(session, "Artist")
