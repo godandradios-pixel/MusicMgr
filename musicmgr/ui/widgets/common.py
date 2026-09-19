@@ -5,11 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from musicmgr import config
+
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QThread, Signal, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QIcon,
     QPainter,
     QPainterPath,
     QPen,
@@ -42,6 +45,7 @@ from PySide6.QtWidgets import (
 
 from ...config import TOUCH
 from ...services import artist_bio_downloader as bio_dl
+from ...services import artwork_downloader as artwork_dl
 from ...services import lyrics_downloader as lyrics_dl
 from ...services import lastfm_popularity as popularity_dl
 from ..theme import COLORS
@@ -254,6 +258,32 @@ _ART_CACHE: dict[tuple, QPixmap] = {}
 _ART_CACHE_LIMIT = 600
 
 
+def _resolve_art_path(path: Optional[str]) -> Optional[str]:
+    """Resolve a stored cover/portrait path, tolerating a moved data folder.
+
+    `cover_path`/`image_path` are absolute paths baked in at scan/import
+    time (see scanner.py's `_save_cover` and artist_images.py's `_store`),
+    computed from wherever ART_DIR/ARTIST_IMG_DIR pointed on that machine
+    at that moment. Portable mode's whole point is that you can later copy
+    the entire `data/` folder next to the exe on a different PC or drive
+    letter - when you do, those old absolute paths stop resolving even
+    though the actual file is sitting right there under the *current*
+    data folder, because only the drive/parent directory changed, not the
+    filename. Fall back to the current ART_DIR/ARTIST_IMG_DIR by filename
+    before giving up and showing a placeholder.
+    """
+    if not path:
+        return None
+    if Path(path).exists():
+        return path
+    name = Path(path).name
+    for base in (config.ART_DIR, config.ARTIST_IMG_DIR):
+        candidate = base / name
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 def cover_pixmap(
     path: Optional[str], size: int, seed_text: str = "", crop: bool = True
 ) -> QPixmap:
@@ -272,8 +302,9 @@ def cover_pixmap(
     if cached is not None:
         return cached
     pix: Optional[QPixmap] = None
-    if path and Path(path).exists():
-        loaded = QPixmap(path)
+    resolved = _resolve_art_path(path)
+    if resolved:
+        loaded = QPixmap(resolved)
         if not loaded.isNull():
             if crop:
                 scaled = loaded.scaled(
@@ -1091,6 +1122,124 @@ class PopularityDownloadThread(QThread):
             progress=lambda done, total, name: self.progress.emit(done, total, name),
         )
         self.finished_with.emit(result)
+
+
+class ArtworkSearchThread(QThread):
+    """Runs `services.artwork_downloader.search_and_fetch_thumbnails` off
+    the UI thread for one release - the release page's "Search artwork"
+    button (ui/widgets/release_panel.py). Unlike BioDownloadThread/
+    PopularityDownloadThread, this never writes to the database itself:
+    it only fetches candidates and their thumbnails for ArtworkPickerDialog
+    to show, so nothing is saved until James actually picks one (see
+    artwork_downloader.py's module docstring for why the per-release flow
+    is deliberately a review-then-apply step rather than an auto-apply).
+
+    2026-09-18 - James: "Ability to search for album artwork"."""
+
+    finished_with = Signal(object)  # artwork_dl.ArtworkSearchOutcome
+
+    def __init__(self, release_id: int, parent=None) -> None:
+        super().__init__(parent)
+        self.release_id = release_id
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        outcome = artwork_dl.search_and_fetch_thumbnails(self.release_id)
+        self.finished_with.emit(outcome)
+
+
+class ArtworkBulkThread(QThread):
+    """Runs `services.artwork_downloader.search_artwork_for_releases` off
+    the UI thread - Settings' bulk "Search for missing album artwork…"
+    button, the same QThread-with-a-progress-signal shape as
+    BioDownloadThread/PopularityDownloadThread just above. Unlike
+    ArtworkSearchThread, this one *does* write to the database - it
+    auto-applies the top match for every release given (see
+    artwork_downloader.py's module docstring for why bulk mode skips the
+    per-release picker)."""
+
+    progress = Signal(int, int, str)
+    finished_with = Signal(object)  # artwork_dl.ArtworkSearchResult
+
+    def __init__(self, release_ids: list, overwrite: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.release_ids = release_ids
+        self.overwrite = overwrite
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        result = artwork_dl.search_artwork_for_releases(
+            self.release_ids,
+            overwrite=self.overwrite,
+            progress=lambda done, total, name: self.progress.emit(done, total, name),
+        )
+        self.finished_with.emit(result)
+
+
+class ArtworkPickerDialog(QDialog):
+    """Lets James pick one Discogs search result as a release's cover -
+    a touch-friendly icon grid (QListWidget in IconMode, large tiles
+    rather than a text list) rather than FolderPickerDialog's TouchTree
+    above, since the whole point here is judging images by eye.
+
+    Takes an `ArtworkSearchOutcome` whose `thumbnails` are already
+    downloaded (see ArtworkSearchThread) - this dialog makes no network
+    calls of its own, the same "widget just renders what it's handed"
+    convention FolderPickerDialog/EmptyState already follow.
+    """
+
+    def __init__(self, outcome: artwork_dl.ArtworkSearchOutcome, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Choose a cover")
+        self.setMinimumSize(560, 480)
+        self._candidates = outcome.candidates
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"{len(self._candidates)} result(s) from Discogs — pick one:")
+        intro.setObjectName("Dim")
+        layout.addWidget(intro)
+
+        self.list = QListWidget()
+        self.list.setViewMode(QListWidget.IconMode)
+        self.list.setIconSize(QSize(160, 160))
+        self.list.setGridSize(QSize(190, 210))
+        self.list.setResizeMode(QListWidget.Adjust)
+        self.list.setMovement(QListWidget.Static)
+        self.list.setSpacing(10)
+        self.list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list.itemDoubleClicked.connect(lambda _item: self.accept())
+
+        for i, candidate in enumerate(self._candidates):
+            pix = QPixmap()
+            data = outcome.thumbnails.get(i)
+            if data:
+                pix.loadFromData(data)
+            if pix.isNull():
+                pix = placeholder_pixmap(160, candidate.title)
+            label_lines = [candidate.title]
+            meta = " · ".join(x for x in (candidate.year, candidate.format) if x)
+            if meta:
+                label_lines.append(meta)
+            item = QListWidgetItem(QIcon(pix), "\n".join(label_lines))
+            item.setData(ROLE_PAYLOAD, i)
+            item.setTextAlignment(Qt.AlignCenter)
+            self.list.addItem(item)
+
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        layout.addWidget(self.list, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_candidate(self) -> Optional["artwork_dl.ArtworkCandidate"]:
+        items = self.list.selectedItems()
+        if not items:
+            return None
+        index = items[0].data(ROLE_PAYLOAD)
+        if index is None or not (0 <= index < len(self._candidates)):
+            return None
+        return self._candidates[index]
 
 
 # --------------------------------------------------------------------------

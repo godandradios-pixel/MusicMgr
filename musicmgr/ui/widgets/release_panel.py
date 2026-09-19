@@ -11,6 +11,7 @@ from typing import Optional, Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -22,13 +23,29 @@ from PySide6.QtWidgets import (
 )
 
 from ...db.models import Release
+from ...services import artwork_downloader as artwork_dl
 from ...services import library as lib
 from ...services import lyrics_downloader as lyrics_dl
 from ...services.library import format_duration
 from ..theme import COLORS
-from .common import Breadcrumb, CoverArt, LyricsDownloadThread, TouchButton, TouchList, dim_label
+from .common import (
+    ArtworkPickerDialog,
+    ArtworkSearchThread,
+    Breadcrumb,
+    CoverArt,
+    LyricsDownloadThread,
+    TouchButton,
+    TouchList,
+    dim_label,
+)
 
 FIELDS = ["Label", "Catalog #", "Country", "Released", "Format", "Genre", "Style", "Files"]
+
+_ARTWORK_STATUS_MESSAGES = {
+    "not_configured": 'Add a Discogs API token in Settings first ("Discogs API token…")',
+    "not_found": "Couldn't find this release on Discogs.",
+    "error": "Couldn't reach Discogs just now - try again in a bit.",
+}
 
 
 class ReleaseDetailPanel(QWidget):
@@ -39,6 +56,7 @@ class ReleaseDetailPanel(QWidget):
         self._tracks: list = []
         self._breadcrumb_ancestors: list[str] = []
         self._lyrics_thread: Optional[LyricsDownloadThread] = None
+        self._artwork_thread: Optional[ArtworkSearchThread] = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -114,7 +132,13 @@ class ReleaseDetailPanel(QWidget):
         queue.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
         self.lyrics_btn = TouchButton("Download lyrics")
         self.lyrics_btn.clicked.connect(self.download_lyrics)
-        for b in (shuffle, queue, self.lyrics_btn):
+        # 2026-09-18 - James: "Ability to search for album artwork" - see
+        # search_artwork below and services/artwork_downloader.py's module
+        # docstring for why this is a search-then-pick flow rather than an
+        # auto-apply, unlike the bulk Settings action for the same feature.
+        self.artwork_btn = TouchButton("Search artwork")
+        self.artwork_btn.clicked.connect(self.search_artwork)
+        for b in (shuffle, queue, self.lyrics_btn, self.artwork_btn):
             actions.addWidget(b)
         actions.addStretch(1)
         self.track_count = dim_label("")
@@ -165,6 +189,14 @@ class ReleaseDetailPanel(QWidget):
     def set_release(self, release_id: Optional[int]) -> None:
         self._release_id = release_id
         self._tracks = []
+        # a search still in flight for whichever release was showing before
+        # is left to finish quietly in the background - _on_artwork_ready
+        # discards its result once release_id no longer matches - but this
+        # page's own button must not keep reading "Searching…" for a
+        # different release in the meantime (same pattern BioPanel.set_artist
+        # uses for its own fetch button).
+        self._artwork_thread = None
+        self.artwork_btn.setText("Search artwork")
         if release_id is None:
             self.rel_title.setText("Select a release")
             self.rel_artist.setText("")
@@ -174,6 +206,7 @@ class ReleaseDetailPanel(QWidget):
             self.track_list.set_rows([])
             self.track_count.setText("")
             self.lyrics_btn.setEnabled(False)
+            self.artwork_btn.setEnabled(False)
             self._refresh_breadcrumb()
             return
 
@@ -223,6 +256,7 @@ class ReleaseDetailPanel(QWidget):
             self._fields["Files"].setText(f"{playable} of {len(tracks)} playable")
             self.track_count.setText(f"{len(tracks)} tracks · {format_duration(total_ms)}")
             self.lyrics_btn.setEnabled(playable > 0)
+            self.artwork_btn.setEnabled(True)
         self.track_list.set_rows(rows)
         self._refresh_breadcrumb()
         # lets the persistent PlayerBar's play button start this release
@@ -311,3 +345,62 @@ class ReleaseDetailPanel(QWidget):
         self.lyrics_progress_label.setVisible(False)
         self.lyrics_btn.setEnabled(True)
         QMessageBox.information(self, "Download lyrics", result.summary())
+
+    def search_artwork(self) -> None:
+        """Search Discogs for this release's cover and let James pick one
+        before anything is saved - see artwork_downloader.py's module
+        docstring for why this is a search-then-pick flow rather than the
+        bulk Settings action's auto-apply. Mirrors download_lyrics's shape
+        (guard against a run already in flight, disable the button while
+        it works) but ends in a picker dialog instead of a progress bar,
+        since a single-release search finishes in one round trip rather
+        than a whole album's worth of per-track lookups."""
+        if self._release_id is None or self._artwork_thread is not None:
+            return
+        if not artwork_dl.has_api_token():
+            self.ctx.notify(
+                'Add a Discogs API token in Settings first ("Discogs API token…")'
+            )
+            return
+
+        self.artwork_btn.setEnabled(False)
+        self.artwork_btn.setText("Searching…")
+        self._artwork_thread = ArtworkSearchThread(self._release_id, parent=self)
+        self._artwork_thread.finished_with.connect(self._on_artwork_ready)
+        self._artwork_thread.start()
+
+    def _on_artwork_ready(self, outcome: artwork_dl.ArtworkSearchOutcome) -> None:
+        # James may have navigated to a different release while this was in
+        # flight - set_release already reset _artwork_thread and the button
+        # for whatever's showing now, so there's nothing to reconcile.
+        if self._artwork_thread is None or self.sender() is not self._artwork_thread:
+            return
+        self._artwork_thread = None
+        self.artwork_btn.setEnabled(True)
+        self.artwork_btn.setText("Search artwork")
+
+        if outcome.error:
+            message = _ARTWORK_STATUS_MESSAGES.get(
+                outcome.error, "Couldn't search for artwork just now."
+            )
+            self.ctx.notify(message)
+            return
+
+        release_id = self._release_id
+        dialog = ArtworkPickerDialog(outcome, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        candidate = dialog.selected_candidate()
+        if candidate is None or release_id is None:
+            return
+
+        apply_outcome = artwork_dl.apply_artwork_to_release(release_id, candidate)
+        if apply_outcome.status != "applied":
+            self.ctx.notify(f"Couldn't save that cover: {apply_outcome.detail or apply_outcome.status}")
+            return
+
+        # only worth reloading the cover if James hasn't already navigated
+        # away from this release while the picker was open
+        if self._release_id == release_id:
+            self.set_release(release_id)
+        self.ctx.libraryChanged.emit()
