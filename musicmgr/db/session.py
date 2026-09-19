@@ -176,6 +176,40 @@ def new_session() -> Session:
     return get_sessionmaker()()
 
 
+def reset_database() -> None:
+    """Permanently erase the current library database and recreate a
+    completely empty one in its place.
+
+    2026-09-19 - James: "Create for me a 'nuke' option. Where you
+    completely wipe out library.db and start with a fresh database."
+    Asked whether to keep a timestamped backup first (the same
+    never-touch-the-original habit "Move data location…" in
+    ui/views/settings.py already follows) or delete outright with no way
+    back, James chose outright deletion - this keeps no copy of anything.
+    `NukeConfirmDialog`/`SettingsView.nuke_library` (ui/views/settings.py)
+    are what stand between an accidental tap and this being permanent;
+    this function itself does no confirming of its own.
+
+    Disposes the current engine first so its pooled connection releases
+    the file - SQLite's WAL mode (see the `_sqlite_pragmas` connect hook
+    above) otherwise leaves the `-wal`/`-shm` sidecar files (and
+    sometimes the main file itself) locked, which would make the delete
+    fail outright on Windows, this app's actual platform.
+    """
+    global _engine, _Session
+    if _engine is not None:
+        _engine.dispose()
+    _engine = None
+    _Session = None
+
+    for suffix in ("", "-wal", "-shm"):
+        sidecar = Path(str(config.DB_PATH) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+
+    init_engine()
+
+
 @contextmanager
 def session_scope() -> Iterator[Session]:
     """Transactional scope. Commits on success, rolls back on error."""

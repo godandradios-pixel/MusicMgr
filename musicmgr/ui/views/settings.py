@@ -130,8 +130,9 @@ from sqlalchemy import select
 from ... import config
 from ...version import APP_VERSION
 from ...db.models import WatchedFolder
-from ...db.session import session_scope
+from ...db.session import reset_database, session_scope
 from ...services import artist_bio_downloader as bio_dl
+from ...services import artwork_downloader as artwork_dl
 from ...services import data_migration
 from ...services import library as lib
 from ...services import scanner
@@ -140,7 +141,9 @@ from ...services import video_scanner
 from ...services import videos as vid_svc
 from ...services.library import format_duration
 from ..context import AppContext
+from ..theme import COLORS
 from ..widgets.common import (
+    ArtworkBulkThread,
     BioDownloadThread,
     PopularityDownloadThread,
     SearchBar,
@@ -194,6 +197,94 @@ class LastfmCredentialsDialog(QDialog):
         return self.api_key_field.text().strip()
 
 
+class DiscogsCredentialsDialog(QDialog):
+    """A free Discogs personal access token - see
+    services/artwork_downloader.py's module docstring for why the "Search
+    for missing album artwork…" button below needs this. Same one-field
+    shape as LastfmCredentialsDialog just above, for the same reason
+    (Discogs' token-only auth needs just the one value, no OAuth flow)."""
+
+    def __init__(self, token: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Discogs API token")
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        intro = QLabel(
+            "Create a free account and generate a personal access token at "
+            "discogs.com/settings/developers - no app review or OAuth flow "
+            "needed, just a token."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        layout.addWidget(QLabel("API token"))
+        self.token_field = SearchBar(placeholder="API token", password=True)
+        self.token_field.setText(token)
+        layout.addWidget(self.token_field)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def token(self) -> str:
+        return self.token_field.text().strip()
+
+
+class NukeConfirmDialog(QDialog):
+    """A stronger-than-usual confirmation for `SettingsView.nuke_library`
+    below. Every other destructive action in this app (see
+    purge_missing_files' own docstring) is one Yes/No QMessageBox, but
+    none of those permanently destroy the *entire* library with no way
+    back the way this does - James was asked whether to keep a
+    timestamped backup first and explicitly chose not to (see
+    db.session.reset_database's own docstring). Requiring the exact word
+    NUKE typed out before Ok even enables is deliberate extra friction
+    against a mis-tap on a touchscreen kiosk, on top of that choice, not
+    instead of it.
+    """
+
+    CONFIRM_WORD = "NUKE"
+
+    def __init__(self, stats: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Nuke library")
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        warning = QLabel(
+            "⚠ This permanently deletes your entire library database: "
+            f"{stats['artists']:,} artists, {stats['releases']:,} releases, "
+            f"{stats['tracks']:,} tracks, {stats['playlists']:,} playlists, "
+            f"and {stats['charts']:,} charts, plus every rating, play "
+            "history entry, watched folder, and saved Discogs/Last.fm "
+            "setting.\n\n"
+            "Nothing on disk is touched - your actual music and video "
+            "files are safe - but MusicMgr's own record of all of it is "
+            "gone for good, with no backup kept. You'll need to re-add "
+            "your watched folders and scan from scratch afterward.\n\n"
+            f"Type {self.CONFIRM_WORD} below to confirm."
+        )
+        warning.setWordWrap(True)
+        layout.addWidget(warning)
+
+        self.confirm_field = SearchBar(placeholder=f"Type {self.CONFIRM_WORD} to confirm")
+        self.confirm_field.textChanged.connect(self._on_text_changed)
+        layout.addWidget(self.confirm_field)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.ok_button = buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setText("Nuke library")
+        self.ok_button.setEnabled(False)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_text_changed(self, text: str) -> None:
+        self.ok_button.setEnabled(text.strip().upper() == self.CONFIRM_WORD)
+
+
 class ScanThread(QThread):
     """Scans every given folder for *both* music and videos, one after the
     other, and reports one combined summary - see the module docstring for
@@ -210,7 +301,21 @@ class ScanThread(QThread):
     ui/widgets/common.py's TouchList.update_row. Only one folder is ever
     "current" at a time either way (both passes scan self.folders one at a
     time, never concurrently), so a per-row readout is never ambiguous
-    about which row it belongs to."""
+    about which row it belongs to.
+
+    2026-09-18 follow-up (James: "The orginal scan was not pulling the
+    comments field from a file tag and putting that into the database") -
+    an ordinary scan only reads tags for a file it hasn't seen before, or
+    one whose size/mtime changed (see scanner.py:_needs_import), so fixing
+    a tag-reading bug (like the comment one just above) never touches a
+    file already sitting in the library. `force` (surfaced as the "Re-read
+    all tags (takes more time)" checkbox in SettingsView, next to the
+    folder buttons) threads a `force=True` into both scan calls below,
+    which makes every watched file's tags get re-read regardless of
+    whether the file itself has changed - the only way to back-fill a tag
+    fix onto an already-scanned library. Off by default since re-reading
+    every file on every routine scan would make scanning a large library
+    far slower for no normal benefit."""
 
     progress = Signal(int, int, str, str)
     finished_with = Signal(str)
@@ -253,6 +358,7 @@ class ScanThread(QThread):
                             done, total, folder, f"Video: {name}"
                         ),
                         result=video_result,
+                        force=self.force,
                     )
                 video_result.missing = video_scanner.mark_missing_videos(session)
             self.finished_with.emit(
@@ -380,6 +486,7 @@ class SettingsView(BaseView):
         self._migration_thread: Optional[MigrationThread] = None
         self._bio_thread: Optional[BioDownloadThread] = None
         self._popularity_thread: Optional[PopularityDownloadThread] = None
+        self._artwork_thread: Optional[ArtworkBulkThread] = None
 
         # 2026-09-16 follow-up (same one that added the row-per-tool
         # Maintenance table below) - this page's content used to fit
@@ -559,6 +666,23 @@ class SettingsView(BaseView):
             "Update…",
             self.update_track_popularity,
         )
+        # 2026-09-18 - James: "Ability to search for album artwork" - see
+        # services/artwork_downloader.py's module docstring for the full
+        # story and why this bulk button auto-applies the top match rather
+        # than reviewing each one (unlike the release page's own per-release
+        # "Search artwork" button, which always shows a picker first).
+        add_tool_row(
+            "Discogs API token",
+            "Set the free personal access token album artwork search needs.",
+            "Set token…",
+            self.open_discogs_credentials,
+        )
+        add_tool_row(
+            "Album artwork",
+            "Search Discogs for a cover for every release that doesn't have one yet.",
+            "Search…",
+            self.search_missing_artwork,
+        )
         add_tool_row(
             "Verify files",
             "Check that every track's file can still be found on disk.",
@@ -588,6 +712,16 @@ class SettingsView(BaseView):
             "Remove tracks whose files can no longer be found.",
             "Purge…",
             self.purge_missing_files,
+        )
+        # 2026-09-19 - James: "Create for me a 'nuke' option. Where you
+        # completely wipe out library.db and start with a fresh database."
+        # Deliberately last in this list - the most destructive action
+        # here by a wide margin, see NukeConfirmDialog/nuke_library below.
+        add_tool_row(
+            "Nuke library",
+            "Permanently erase your entire library database and start completely fresh.",
+            "Nuke…",
+            self.nuke_library,
         )
         _size_tool_row_buttons(tool_rows)
 
@@ -750,6 +884,65 @@ class SettingsView(BaseView):
         )
         self.refresh()
 
+    def nuke_library(self) -> None:
+        """Permanently erase the entire library database and start over -
+        see NukeConfirmDialog's own docstring for why this needs more
+        than the usual single Yes/No tap, and db.session.reset_database's
+        for why no backup is kept.
+
+        Guards against every other long-running job the same way
+        download_artist_profiles/update_track_popularity/
+        search_missing_artwork above do, but for the opposite reason:
+        this action itself is fast enough to need no progress bar of its
+        own - what matters is making sure nothing else is mid-write to
+        the database it's about to erase out from under it.
+        """
+        if self._thread is not None and self._thread.isRunning():
+            self.ctx.notify("A scan is running — wait for it to finish before nuking the library")
+            return
+        if self._migration_thread is not None and self._migration_thread.isRunning():
+            self.ctx.notify("A data move is running — wait for it to finish before nuking the library")
+            return
+        if self._bio_thread is not None and self._bio_thread.isRunning():
+            self.ctx.notify(
+                "Artist profiles are downloading — wait for it to finish before nuking the library"
+            )
+            return
+        if self._popularity_thread is not None and self._popularity_thread.isRunning():
+            self.ctx.notify(
+                "Track popularity is updating — wait for it to finish before nuking the library"
+            )
+            return
+        if self._artwork_thread is not None and self._artwork_thread.isRunning():
+            self.ctx.notify(
+                "Album artwork is downloading — wait for it to finish before nuking the library"
+            )
+            return
+
+        with self.ctx.session() as session:
+            stats = lib.library_stats(session)
+
+        dialog = NukeConfirmDialog(stats, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        # a stale queue/now-playing pointed at rows that are about to stop
+        # existing is worse than just stopping playback outright
+        self.ctx.player.stop()
+        self.ctx.player.clear_queue()
+
+        reset_database()
+
+        self.refresh()
+        self.ctx.libraryChanged.emit()
+        self.ctx.videosChanged.emit()
+        QMessageBox.information(
+            self,
+            "Nuke library",
+            "Your library database has been permanently erased.\n\n"
+            "Add a watched folder and scan to rebuild it from your files.",
+        )
+
     def scan_all(self) -> None:
         with self.ctx.session() as session:
             paths = [
@@ -787,6 +980,11 @@ class SettingsView(BaseView):
         if self._popularity_thread is not None and self._popularity_thread.isRunning():
             self.ctx.notify(
                 "Track popularity is updating — wait for it to finish before scanning"
+            )
+            return
+        if self._artwork_thread is not None and self._artwork_thread.isRunning():
+            self.ctx.notify(
+                "Album artwork is downloading — wait for it to finish before scanning"
             )
             return
         # 2026-09-08 follow-up - James: "have the progress bar appear on
@@ -871,6 +1069,9 @@ class SettingsView(BaseView):
         if self._popularity_thread is not None and self._popularity_thread.isRunning():
             self.ctx.notify("Track popularity is updating — wait for it to finish first")
             return
+        if self._artwork_thread is not None and self._artwork_thread.isRunning():
+            self.ctx.notify("Album artwork is downloading — wait for it to finish first")
+            return
 
         artist_ids = bio_dl.artists_missing_bio()
         if not artist_ids:
@@ -953,6 +1154,9 @@ class SettingsView(BaseView):
         if self._bio_thread is not None and self._bio_thread.isRunning():
             self.ctx.notify("Artist profiles are downloading — wait for it to finish first")
             return
+        if self._artwork_thread is not None and self._artwork_thread.isRunning():
+            self.ctx.notify("Album artwork is downloading — wait for it to finish first")
+            return
 
         if not popularity_dl.has_api_key():
             confirm = QMessageBox.question(
@@ -1011,6 +1215,105 @@ class SettingsView(BaseView):
         QMessageBox.information(self, "Track popularity", "\n".join(lines))
         self.ctx.libraryChanged.emit()
 
+    def open_discogs_credentials(self) -> None:
+        """Opens `DiscogsCredentialsDialog` pre-filled with whatever's
+        already saved (empty the first time) and persists whatever comes
+        back on Ok - see that dialog's own docstring and
+        `services.artwork_downloader.get_api_token`/`set_api_token` for why
+        this lives in the `Setting` table, the same precedent
+        `open_lastfm_credentials` above already set for its own key."""
+        with self.ctx.session() as session:
+            token = artwork_dl.get_api_token(session)
+        dialog = DiscogsCredentialsDialog(token or "", parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        new_token = dialog.token()
+        with self.ctx.session() as session:
+            artwork_dl.set_api_token(session, new_token)
+        self.ctx.notify("Discogs API token saved")
+
+    def search_missing_artwork(self) -> None:
+        """Bulk "like lyrics/profiles" album artwork search (see
+        services/artwork_downloader.py's module docstring) - every release
+        with no cover yet, one Discogs lookup each, auto-applying the top
+        match rather than reviewing each one (unlike the release page's own
+        "Search artwork" button, which always shows a picker). Same
+        background-thread-plus-page-wide-progress-bar shape as
+        download_artist_profiles/update_track_popularity above, since like
+        those jobs this isn't scoped to any one row in self.folder_list."""
+        if self._artwork_thread is not None and self._artwork_thread.isRunning():
+            self.ctx.notify("Already searching for album artwork")
+            return
+        if self._thread is not None and self._thread.isRunning():
+            self.ctx.notify("A scan is running — wait for it to finish first")
+            return
+        if self._migration_thread is not None and self._migration_thread.isRunning():
+            self.ctx.notify("A data move is running — wait for it to finish first")
+            return
+        if self._bio_thread is not None and self._bio_thread.isRunning():
+            self.ctx.notify("Artist profiles are downloading — wait for it to finish first")
+            return
+        if self._popularity_thread is not None and self._popularity_thread.isRunning():
+            self.ctx.notify("Track popularity is updating — wait for it to finish first")
+            return
+
+        if not artwork_dl.has_api_token():
+            confirm = QMessageBox.question(
+                self,
+                "Discogs API token needed",
+                "Album artwork search needs a free Discogs API token, which "
+                "isn't saved yet.\n\n"
+                "Open \"Discogs API token…\" now?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if confirm == QMessageBox.Yes:
+                self.open_discogs_credentials()
+            return
+
+        release_ids = artwork_dl.releases_missing_cover()
+        if not release_ids:
+            QMessageBox.information(
+                self, "Album artwork", "Every release already has a cover."
+            )
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Search for missing album artwork",
+            f"Look up a cover on Discogs for {len(release_ids)} release"
+            f"{'s' if len(release_ids) != 1 else ''} with none saved yet, "
+            "applying the best match automatically?\n\n"
+            "This needs an internet connection and, being rate-limited to be "
+            "polite to Discogs' API, can take a while for a large library. "
+            "Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self.progress.setVisible(True)
+        self.progress.setRange(0, len(release_ids))
+        self.progress_label.setText("Starting…")
+        self._artwork_thread = ArtworkBulkThread(release_ids, parent=self)
+        self._artwork_thread.progress.connect(self._on_artwork_progress)
+        self._artwork_thread.finished_with.connect(self._on_artwork_done)
+        self._artwork_thread.start()
+
+    def _on_artwork_progress(self, done: int, total: int, name: str) -> None:
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.progress_label.setText(f"{done}/{total} — {name}" if name else f"{done}/{total}")
+
+    def _on_artwork_done(self, result: artwork_dl.ArtworkSearchResult) -> None:
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
+        lines = [result.summary()]
+        if result.errors:
+            lines.append("")
+            lines += [f"  ! {err}" for err in result.errors[:8]]
+        QMessageBox.information(self, "Album artwork", "\n".join(lines))
+        self.ctx.libraryChanged.emit()
+
     def verify_files(self) -> None:
         # 2026-09-07 follow-up: checks video files too now, not just audio -
         # the same "one unified thing" this whole view's folder merge is
@@ -1060,6 +1363,11 @@ class SettingsView(BaseView):
         if self._popularity_thread is not None and self._popularity_thread.isRunning():
             self.ctx.notify(
                 "Track popularity is updating — wait for it to finish before moving data"
+            )
+            return
+        if self._artwork_thread is not None and self._artwork_thread.isRunning():
+            self.ctx.notify(
+                "Album artwork is downloading — wait for it to finish before moving data"
             )
             return
 
