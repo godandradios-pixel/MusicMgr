@@ -108,13 +108,10 @@ try {
     # default utf8 encoding adds a BOM that would show up as a stray
     # character at the start of the string.
     Write-Step "Writing version file"
-    # [char]0x00B7 (rather than a literal "·" in this file) so the
-    # separator doesn't depend on this script being read back as UTF-8 -
-    # Windows PowerShell 5.1 assumes the system codepage for a .ps1 with
-    # no BOM, and a literal multibyte character in source is exactly the
-    # kind of thing that mangles under that assumption.
-    $dot = [char]0x00B7
-    $versionText = (git -C $RepoRoot log -1 --format="%h $dot %cd" --date=short 2>$null)
+    # Plain ASCII "-" separator (previously a middle-dot character) so
+    # the version string never depends on codepage/locale decoding lining
+    # up between git, PowerShell, and the Qt UI that ends up displaying it.
+    $versionText = (git -C $RepoRoot log -1 --format="%h - %cd" --date=short 2>$null)
     if (-not $versionText) {
         Write-Host "Could not read git commit info - VERSION will read 'unknown'" -ForegroundColor Yellow
         $versionText = "unknown"

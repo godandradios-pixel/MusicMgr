@@ -20,7 +20,7 @@ Two sources, tried in order:
    *only* source available once frozen into the PyInstaller .exe - a
    packaged build has no .git folder to ask (git -C <exe's temp extract
    dir> fails harmlessly and falls through to here). build.ps1 writes
-   this file, in the same "%h . %cd" format as source 1 above, right
+   this file, in the same "%h - %cd" format as source 1 above, right
    before invoking PyInstaller, so it always names the commit that was
    actually packaged. Not committed to git itself (see .gitignore) since
    it's a build artifact that goes stale the moment another commit
@@ -47,7 +47,7 @@ def _from_git() -> Optional[str]:
         result = subprocess.run(
             [
                 "git", "-C", str(config.PROJECT_ROOT),
-                "log", "-1", "--format=%h · %cd", "--date=short",
+                "log", "-1", "--format=%h - %cd", "--date=short",
             ],
             capture_output=True, text=True, timeout=2,
         )
