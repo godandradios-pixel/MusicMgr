@@ -79,12 +79,20 @@ def read_video_duration(path: Path) -> Optional[int]:
     return None
 
 
-def import_video_file(session: Session, path: Path, result: ScanResult) -> Optional[Video]:
-    """Import or refresh a single video file. Returns the Video."""
+def import_video_file(
+    session: Session, path: Path, result: ScanResult, *, force: bool = False
+) -> Optional[Video]:
+    """Import or refresh a single video file. Returns the Video.
+
+    `force=True` (2026-09-18, "Re-read all tags" scan option in
+    ui/views/settings.py - audio and video scan together under one
+    `ScanThread`) bypasses the unchanged-file shortcut below, mirroring
+    services/scanner.py:import_file's own `force` flag.
+    """
     stat = path.stat()
     existing = session.scalar(select(Video).where(Video.path == str(path)))
     if existing is not None:
-        if existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size:
+        if not force and existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size:
             existing.is_missing = False
             existing.last_seen_at = _now()
             result.unchanged += 1
@@ -118,6 +126,8 @@ def scan_video_folder(
     root: Path | str,
     progress: Optional[ProgressFn] = None,
     result: Optional[ScanResult] = None,
+    *,
+    force: bool = False,
 ) -> ScanResult:
     root = Path(root).expanduser()
     result = result or ScanResult()
@@ -129,7 +139,7 @@ def scan_video_folder(
     total = len(files)
     for idx, path in enumerate(files, start=1):
         try:
-            import_video_file(session, path, result)
+            import_video_file(session, path, result, force=force)
         except Exception as exc:  # keep going on one bad file
             log.exception("failed to import %s", path)
             result.errors.append(f"{path.name}: {exc}")
@@ -152,13 +162,15 @@ def scan_video_folder(
     return result
 
 
-def rescan_all_videos(session: Session, progress: Optional[ProgressFn] = None) -> ScanResult:
+def rescan_all_videos(
+    session: Session, progress: Optional[ProgressFn] = None, *, force: bool = False
+) -> ScanResult:
     result = ScanResult()
     folders = list(
         session.scalars(select(WatchedFolder).where(WatchedFolder.enabled.is_(True)))
     )
     for folder in folders:
-        scan_video_folder(session, folder.path, progress, result)
+        scan_video_folder(session, folder.path, progress, result, force=force)
     result.missing = mark_missing_videos(session)
     return result
 

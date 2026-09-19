@@ -326,10 +326,9 @@ class ScanThread(QThread):
         # 2026-09-17 follow-up (James: "still blank after a rescan", chasing
         # the MP3 Comment-tag fix - see scanner.py's `import_file` docstring
         # for why an ordinary rescan alone could never have picked it up) -
-        # the "Force full re-read" checkbox below sets this. Only threaded
-        # through to the audio pass (`scanner.scan_folder`); video files
-        # have no equivalent tag-reading bugfix to chase yet, so
-        # `video_scanner.scan_video_folder` below is untouched.
+        # the "Force full re-read" checkbox below sets this, threaded
+        # through both the audio pass (`scanner.scan_folder`) and the video
+        # pass (`video_scanner.scan_video_folder`) below.
         self.force = force
 
     def run(self) -> None:  # pragma: no cover - exercised interactively

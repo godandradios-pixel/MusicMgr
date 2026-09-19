@@ -229,10 +229,10 @@ class TestScanVideoFolder:
 
         real_import = video_scanner.import_video_file
 
-        def flaky_import(session, path, result):
+        def flaky_import(session, path, result, **kwargs):
             if path.name == "Bad Video.mp4":
                 raise RuntimeError("simulated import failure")
-            return real_import(session, path, result)
+            return real_import(session, path, result, **kwargs)
 
         monkeypatch.setattr(video_scanner, "import_video_file", flaky_import)
 
@@ -323,3 +323,43 @@ class TestRescanAllVideos:
 
         assert result.added == 0
         assert session.scalar(select(func.count(Video.id))) == 0
+
+
+class TestForceRescan:
+    """Covers the 2026-09-18 "Re-read all tags (takes more time)" scan
+    option (see services/scanner.py's matching TestForceRescan and
+    ui/views/settings.py's ScanThread/force_rescan_checkbox) - an unchanged
+    video file is ordinarily left alone entirely; force=True makes
+    import_video_file/scan_video_folder re-import it anyway."""
+
+    def test_an_unchanged_file_is_left_alone_without_force(self, session, tmp_path):
+        make_placeholder_video(tmp_path / "Artist" / "One.mp4")
+        video_scanner.scan_video_folder(session, tmp_path)
+
+        result = video_scanner.scan_video_folder(session, tmp_path)
+
+        assert result.unchanged == 1
+        assert result.updated == 0
+
+    def test_force_reimports_an_unchanged_file_anyway(self, session, tmp_path):
+        make_placeholder_video(tmp_path / "Artist" / "One.mp4")
+        video_scanner.scan_video_folder(session, tmp_path)
+
+        result = video_scanner.scan_video_folder(session, tmp_path, force=True)
+
+        assert result.updated == 1
+        assert result.unchanged == 0
+        # still exactly one Video row - force re-reads, it doesn't duplicate
+        assert session.scalar(select(func.count(Video.id))) == 1
+
+    def test_force_threads_through_rescan_all_videos(self, session, tmp_path):
+        folder = tmp_path / "watched"
+        make_placeholder_video(folder / "Artist" / "One.mp4")
+        session.add(WatchedFolder(path=str(folder)))
+        session.flush()
+        video_scanner.rescan_all_videos(session)
+
+        result = video_scanner.rescan_all_videos(session, force=True)
+
+        assert result.updated == 1
+        assert result.unchanged == 0
