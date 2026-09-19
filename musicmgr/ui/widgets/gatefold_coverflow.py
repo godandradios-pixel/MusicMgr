@@ -49,13 +49,26 @@ from .cover_grid import GridTile
 #: (see _FOLD_RATE), so there's nothing gained by laying out more of them.
 _MAX_VISIBLE_DELTA = 4
 
-#: how far apart panel centers sit, as a fraction of one panel's width.
-#: Tuned so even the least-folded neighbor's near edge just clears the
-#: fully-open focused panel's edge instead of overlapping it - see the
-#: geometry note on _FOLD_RATE below. Slowing the fold down (below) means
-#: neighbors stay wider for longer, so this had to grow to match, or a
-#: half-open neighbor would bleed into the focused cover.
-_SPACING_RATIO = 0.92
+#: fixed breathing room, in pixels, between one panel's folded edge and
+#: the next - independent of panel_size so it reads as a thin sliver of
+#: background, not a proportionally bigger gap on a bigger cover.
+#:
+#: 2026-09-16 (James: "reduce the blank space between the albums"):
+#: replaced the previous fixed-ratio spacing (panel centers a flat 0.92 *
+#: panel_size apart, regardless of how folded either neighbor was). A
+#: folded panel's visible width shrinks by scale*cos_t - both of which
+#: fall off faster than linearly with distance from focus (see _FOLD_RATE)
+#: - so a *constant* center-to-center step left a small, correct-looking
+#: gap next to the focused panel but a rapidly ballooning one further out
+#: (measured: ~5px between focus and its immediate neighbor, but ~120-160px
+#: between the more-folded panels beyond that, at panel_size=190 - the
+#: "blank space" actually being reported). `_CoverflowCanvas` now spaces
+#: panels by the *sum of their actual visible half-widths* plus this one
+#: fixed gap (see `_half_width_at`/`_offset_table`), so consecutive panels
+#: sit this same small distance apart everywhere in the row, however far
+#: folded - never overlapping (that was the old ratio's other job), and
+#: never drifting apart either.
+_EDGE_GAP = 8.0
 
 #: foldT (0 = flat/open, 1= fully closed sliver) reaches 1.0 a bit past
 #: three releases away from focus, not two - slowed down from the first
@@ -81,7 +94,25 @@ class _CoverflowCanvas(QWidget):
     def __init__(self, panel_size: int, parent=None) -> None:
         super().__init__(parent)
         self._panel_size = panel_size
-        self._spacing = panel_size * _SPACING_RATIO
+        # Precomputed once (panel_size and the fold constants above never
+        # change after construction): _offset_table[n] is how far panel n's
+        # CENTER sits from the focused panel's center, built by walking
+        # outward and adding each consecutive pair's actual visible
+        # half-widths plus _EDGE_GAP - see that constant's docstring. Only
+        # needs entries out to _MAX_VISIBLE_DELTA; anything past that is
+        # culled in _panel_geometry before a center is ever looked up.
+        self._offset_table = [0.0]
+        for n in range(1, _MAX_VISIBLE_DELTA + 1):
+            self._offset_table.append(
+                self._offset_table[-1]
+                + self._half_width_at(n - 1)
+                + self._half_width_at(n)
+                + _EDGE_GAP
+            )
+        # used to turn a drag's pixel delta into a scroll_pos delta (see
+        # mouseMoveEvent/wheelEvent) - the step size right at focus, where
+        # dragging starts and matters most for feel.
+        self._drag_step = self._offset_table[1] - self._offset_table[0]
         self._tiles: list[GridTile] = []
         self._scroll_pos = 0.0
         self._target_pos = 0.0
@@ -162,6 +193,35 @@ class _CoverflowCanvas(QWidget):
 
     # -- layout math, shared by paintEvent and hit-testing -----------------
 
+    def _shape_at(self, ad: float) -> tuple[float, float, float]:
+        """(scale, cos_theta, fold_t) for a panel `ad` release-units (an
+        absolute, possibly fractional distance) from the focused one."""
+        scale = max(0.35, 1 - min(ad, 3) * 0.12)
+        fold_t = max(0.0, min(1.0, ad * _FOLD_RATE))
+        cos_t = max(0.02, math.cos(math.radians(fold_t * _FOLD_MAX_DEG)))
+        return scale, cos_t, fold_t
+
+    def _half_width_at(self, ad: float) -> float:
+        """How far a panel `ad` units from focus actually extends from its
+        own center once folded and scaled - half of its visible width."""
+        scale, cos_t, _fold_t = self._shape_at(ad)
+        return (self._panel_size / 2) * scale * cos_t
+
+    def _center_offset(self, d: float) -> float:
+        """Signed pixel offset of panel `d` units from focus (d can be
+        fractional mid-animation), by walking `_offset_table` and linearly
+        interpolating between its two nearest whole-unit entries."""
+        ad = min(abs(d), float(_MAX_VISIBLE_DELTA))
+        lo = int(ad)
+        if lo >= _MAX_VISIBLE_DELTA:
+            base = self._offset_table[_MAX_VISIBLE_DELTA]
+        else:
+            frac = ad - lo
+            base = self._offset_table[lo] + frac * (
+                self._offset_table[lo + 1] - self._offset_table[lo]
+            )
+        return base if d >= 0 else -base
+
     def _panel_geometry(self, index: int):
         """(center_x, center_y, scale, cos_theta, fold_t) for panel
         `index` at the current scroll position, or None once it's past
@@ -170,11 +230,8 @@ class _CoverflowCanvas(QWidget):
         ad = abs(d)
         if ad > _MAX_VISIBLE_DELTA:
             return None
-        half = self._panel_size / 2
-        scale = max(0.35, 1 - min(ad, 3) * 0.12)
-        fold_t = max(0.0, min(1.0, ad * _FOLD_RATE))
-        cos_t = max(0.02, math.cos(math.radians(fold_t * _FOLD_MAX_DEG)))
-        cx = self.width() / 2 + d * self._spacing
+        scale, cos_t, fold_t = self._shape_at(ad)
+        cx = self.width() / 2 + self._center_offset(d)
         cy = self.height() / 2 - 4
         return cx, cy, scale, cos_t, fold_t
 
@@ -296,7 +353,7 @@ class _CoverflowCanvas(QWidget):
         if abs(dx) > 4:
             self._dragged = True
         self._target_pos = max(
-            0.0, min(len(self._tiles) - 1, self._press_target - dx / self._spacing)
+            0.0, min(len(self._tiles) - 1, self._press_target - dx / self._drag_step)
         )
         self._timer.start()
 
