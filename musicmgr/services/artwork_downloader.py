@@ -51,6 +51,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 import requests
@@ -284,18 +285,29 @@ def search_artwork_candidates(
     return candidates
 
 
-def _save_cover(data: bytes, release_id: int) -> Optional[str]:
-    """Save downloaded cover bytes under config.ART_DIR, deliberately the
-    same digest-named scheme scanner.py's own `_save_cover` uses for a
+def _save_cover(data: bytes, release_id: int, ext_hint: Optional[str] = None) -> Optional[str]:
+    """Save cover bytes under config.ART_DIR, deliberately the same
+    digest-named scheme scanner.py's own `_save_cover` uses for a
     tag-embedded cover - so a moved/portable data\\ folder still resolves
-    a Discogs-fetched cover by filename the same way (see
-    ui/widgets/common.py's `_resolve_art_path`)."""
+    a saved cover by filename the same way (see ui/widgets/common.py's
+    `_resolve_art_path`).
+
+    `ext_hint` (added for `apply_local_image_to_release` - a file James
+    picked from his own disk) preserves the source file's own real
+    extension when it's a recognised image type, rather than forcing
+    everything through the jpg/png sniff below - that sniff still covers
+    the Discogs-download path (always jpg or png in practice) and is the
+    fallback if the hint isn't usable."""
     if not data:
         return None
     try:
         config.ensure_dirs()
         digest = hashlib.sha1(data).hexdigest()[:16]
-        ext = ".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
+        hint = (ext_hint or "").lower()
+        if hint in config.IMAGE_EXTENSIONS:
+            ext = hint
+        else:
+            ext = ".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
         out = config.ART_DIR / f"release_{release_id}_{digest}{ext}"
         if not out.exists():
             out.write_bytes(data)
@@ -369,6 +381,38 @@ def apply_artwork_to_release(release_id: int, candidate: ArtworkCandidate) -> Ar
         outcome = apply_artwork_candidate(http, db, release, candidate)
         db.commit()
         return outcome
+
+
+# -- manual "choose from file" flow (release page's "Choose from file…") ---
+
+
+def apply_local_image_to_release(release_id: int, file_path: str) -> ArtworkOutcome:
+    """Save an image James picked from his own filesystem as this
+    release's cover - the manual counterpart to apply_artwork_to_release,
+    for a release Discogs has nothing for (or one he'd rather point at his
+    own scan/photo than accept an online match for). Same "open a short-
+    lived session, save, commit" shape as the Discogs picker's own apply
+    step; the only real difference is the bytes come from disk instead of
+    a download, and `_save_cover` gets the file's own extension as a hint
+    so a webp/bmp/gif James picks isn't silently forced into a .jpg."""
+    src = Path(file_path)
+    try:
+        data = src.read_bytes()
+    except OSError as exc:
+        return ArtworkOutcome(release_id, "", "error", f"couldn't read that file: {exc}")
+    if not data:
+        return ArtworkOutcome(release_id, "", "error", "that file is empty")
+
+    with session_scope() as db:
+        release = db.get(Release, release_id)
+        if release is None:
+            return ArtworkOutcome(release_id, "", "error", "release no longer exists")
+        path = _save_cover(data, release.id, ext_hint=src.suffix)
+        if not path:
+            return ArtworkOutcome(release.id, release.title, "error", "couldn't save the image")
+        release.cover_path = path
+        db.commit()
+        return ArtworkOutcome(release.id, release.title, "applied")
 
 
 # -- bulk flow (Settings' "Search for missing album artwork…") -------------

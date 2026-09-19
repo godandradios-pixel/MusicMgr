@@ -12,6 +12,7 @@ from typing import Optional, Sequence
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ... import config
 from ...db.models import Release
 from ...services import artwork_downloader as artwork_dl
 from ...services import library as lib
@@ -138,7 +140,16 @@ class ReleaseDetailPanel(QWidget):
         # auto-apply, unlike the bulk Settings action for the same feature.
         self.artwork_btn = TouchButton("Search artwork")
         self.artwork_btn.clicked.connect(self.search_artwork)
-        for b in (shuffle, queue, self.lyrics_btn, self.artwork_btn):
+        # 2026-09-19 - James: "I need the ability to select an album art
+        # from a file location ... if it can't find album art I have no
+        # way of getting one added" - the manual counterpart to Search
+        # artwork above, for a release Discogs comes up empty on (or one
+        # James would rather point at his own scan/photo for). See
+        # choose_artwork_file below and artwork_downloader.
+        # apply_local_image_to_release.
+        self.artwork_file_btn = TouchButton("Choose from file…")
+        self.artwork_file_btn.clicked.connect(self.choose_artwork_file)
+        for b in (shuffle, queue, self.lyrics_btn, self.artwork_btn, self.artwork_file_btn):
             actions.addWidget(b)
         actions.addStretch(1)
         self.track_count = dim_label("")
@@ -207,6 +218,7 @@ class ReleaseDetailPanel(QWidget):
             self.track_count.setText("")
             self.lyrics_btn.setEnabled(False)
             self.artwork_btn.setEnabled(False)
+            self.artwork_file_btn.setEnabled(False)
             self._refresh_breadcrumb()
             return
 
@@ -257,6 +269,7 @@ class ReleaseDetailPanel(QWidget):
             self.track_count.setText(f"{len(tracks)} tracks · {format_duration(total_ms)}")
             self.lyrics_btn.setEnabled(playable > 0)
             self.artwork_btn.setEnabled(True)
+            self.artwork_file_btn.setEnabled(True)
         self.track_list.set_rows(rows)
         self._refresh_breadcrumb()
         # lets the persistent PlayerBar's play button start this release
@@ -401,6 +414,34 @@ class ReleaseDetailPanel(QWidget):
 
         # only worth reloading the cover if James hasn't already navigated
         # away from this release while the picker was open
+        if self._release_id == release_id:
+            self.set_release(release_id)
+        self.ctx.libraryChanged.emit()
+
+    def choose_artwork_file(self) -> None:
+        """Pick an image straight from disk and set it as this release's
+        cover - no search, no picker, just James's own file. Synchronous
+        (no QThread the way search_artwork needs one): a local file read
+        plus a digest/write under config.ART_DIR is fast enough not to
+        need off-UI-thread handling, unlike a network round trip."""
+        if self._release_id is None:
+            return
+        release_id = self._release_id
+        patterns = " ".join(f"*{ext}" for ext in sorted(config.IMAGE_EXTENSIONS))
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Choose album artwork", "", f"Images ({patterns})"
+        )
+        if not file_path:
+            return
+
+        outcome = artwork_dl.apply_local_image_to_release(release_id, file_path)
+        if outcome.status != "applied":
+            self.ctx.notify(f"Couldn't use that image: {outcome.detail or outcome.status}")
+            return
+
+        # James may have navigated to a different release while the native
+        # file dialog was open (it's modal, but belt-and-braces to match
+        # the same guard _on_artwork_ready uses)
         if self._release_id == release_id:
             self.set_release(release_id)
         self.ctx.libraryChanged.emit()
