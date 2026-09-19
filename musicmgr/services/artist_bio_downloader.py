@@ -246,6 +246,27 @@ def download_bio_for_artist(
     return ArtistBioOutcome(artist.id, artist.name, "downloaded", source_url or "")
 
 
+def set_bio(artist_id: int, text: str) -> ArtistBioOutcome:
+    """Save `text` as this artist's biography directly - the manual
+    counterpart to download_bio_for_artist, for when a fetch matches the
+    wrong band (Wikipedia name collisions - see the module docstring -
+    mean a plain "Rush"/"Queen"/"Kiss" search can and does land on the
+    wrong page) or when James would rather write one by hand than accept
+    whatever Wikipedia has. An empty/whitespace-only `text` clears the
+    saved biography (stored as NULL, same as an artist that's never had
+    one) rather than saving an empty string. Unlike a fetch, this never
+    touches Artist.urls - a hand-written or corrected bio has no
+    Wikipedia page to cite as its source."""
+    cleaned = text.strip()
+    with session_scope() as db:
+        artist = db.get(Artist, artist_id)
+        if artist is None:
+            return ArtistBioOutcome(artist_id, "", "error", "artist no longer exists")
+        artist.profile = cleaned or None
+        db.commit()
+        return ArtistBioOutcome(artist.id, artist.name, "saved")
+
+
 def download_bios_for_artists(
     artist_ids: Sequence[int],
     *,

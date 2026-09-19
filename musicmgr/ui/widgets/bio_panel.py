@@ -30,11 +30,21 @@ from __future__ import annotations
 from typing import Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QScrollArea, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QScrollArea,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...db.models import Artist
 from ...services import artist_bio_downloader as bio_dl
-from .common import BioDownloadThread, EmptyState
+from .common import BioDownloadThread, EmptyState, TouchButton
 
 #: restored after a failed/negative fetch attempt, since that leaves a
 #: status message (_STATUS_MESSAGES below) sitting in the same label
@@ -44,6 +54,43 @@ _STATUS_MESSAGES = {
     "not_found": "Couldn't find a biography for this artist on Wikipedia.",
     "error": "Couldn't reach Wikipedia just now - try again in a bit.",
 }
+
+
+class EditBioDialog(QDialog):
+    """A plain multi-line editor for Artist.profile - the manual
+    counterpart to "Fetch bio" for correcting a Wikipedia mismatch (see
+    services/artist_bio_downloader.py's module docstring: a band's plain
+    name is often a disambiguation page, so the wrong "Rush"/"Queen"/
+    whatever can and does get fetched) or writing a bio by hand when
+    nothing's found online at all. Same QDialogButtonBox(Ok|Cancel) shape
+    as LastfmCredentialsDialog/DiscogsCredentialsDialog
+    (ui/views/settings.py) - just a QPlainTextEdit instead of their single
+    masked field, since a bio is paragraphs, not one secret string."""
+
+    def __init__(self, artist_name: str, text: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Edit bio — {artist_name}" if artist_name else "Edit bio")
+        self.resize(560, 440)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        layout.addWidget(QLabel("Biography"))
+        self.text_field = QPlainTextEdit()
+        self.text_field.setPlainText(text)
+        layout.addWidget(self.text_field, 1)
+
+        hint = QLabel("Leave this empty to remove the saved biography.")
+        hint.setObjectName("Dim")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def text(self) -> str:
+        return self.text_field.toPlainText().strip()
 
 
 class BioPanel(QWidget):
@@ -56,6 +103,21 @@ class BioPanel(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+
+        # 2026-09-19 follow-up - James: "I need a way to adjust the artist
+        # bio. The automatic Get Bio got the wrong band" - Wikipedia name
+        # collisions (see artist_bio_downloader's module docstring) mean a
+        # fetch can land on a same-named but wrong artist. Unlike "Fetch
+        # bio" (only shown in the empty state, via EmptyState's own action
+        # button), "Edit bio" sits in its own row above the stack so it's
+        # reachable whether or not a bio is already showing - fixing a
+        # wrong one and writing one from scratch are the same dialog.
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self._edit_btn = TouchButton("Edit bio")
+        self._edit_btn.clicked.connect(self._on_edit_clicked)
+        actions.addWidget(self._edit_btn)
+        layout.addLayout(actions)
 
         self._empty = EmptyState(
             "No biography on file",
@@ -111,10 +173,13 @@ class BioPanel(QWidget):
         self._refresh_fetch_button()
 
     def _refresh_fetch_button(self) -> None:
+        downloading = self._download_thread is not None
+        self._edit_btn.setVisible(bool(self._artist_id))
+        self._edit_btn.setEnabled(bool(self._artist_id) and not downloading)
+
         btn = self._empty.action_button
         if btn is None:
             return
-        downloading = self._download_thread is not None
         btn.setVisible(bool(self._artist_id))
         btn.setEnabled(bool(self._artist_id) and not downloading)
         btn.setText("Fetching…" if downloading else "Fetch bio")
@@ -146,3 +211,24 @@ class BioPanel(QWidget):
         message = _STATUS_MESSAGES.get(outcome.status)
         if message and self._empty.detail_label is not None:
             self._empty.detail_label.setText(message)
+
+    def _on_edit_clicked(self) -> None:
+        if not self._artist_id:
+            return
+        with self.ctx.session() as session:
+            artist = session.get(Artist, self._artist_id)
+            current = artist.profile if artist else ""
+        dialog = EditBioDialog(self._artist_name, current or "", parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        artist_id = self._artist_id
+        outcome = bio_dl.set_bio(artist_id, dialog.text())
+        if outcome.status != "saved":
+            self.ctx.notify(f"Couldn't save that biography: {outcome.detail or outcome.status}")
+            return
+
+        # James may have navigated to a different artist while the (modal)
+        # dialog was open - same guard _on_fetch_finished already uses
+        if self._artist_id == artist_id:
+            self.set_bio(dialog.text())
