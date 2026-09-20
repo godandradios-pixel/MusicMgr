@@ -90,6 +90,11 @@ class AlbumLyricsResult:
     instrumental: int = 0
     not_found: int = 0
     no_artist: int = 0
+    #: LRCLIB had a match, but only plain (unsynced) text, and the caller
+    #: passed save_plain=False - distinct from not_found so a synced-only
+    #: run can report "we found it, it just isn't synced" instead of a
+    #: plain miss (2026-09-20, James: force synced-only downloads)
+    plain_only: int = 0
     errors: list[str] = field(default_factory=list)
     outcomes: list[TrackLyricsOutcome] = field(default_factory=list)
 
@@ -101,6 +106,8 @@ class AlbumLyricsResult:
             parts.append(f"{self.already_exists} already had lyrics")
         if self.instrumental:
             parts.append(f"{self.instrumental} instrumental")
+        if self.plain_only:
+            parts.append(f"{self.plain_only} synced unavailable (plain only)")
         if self.not_found:
             parts.append(f"{self.not_found} not found")
         if self.no_artist:
@@ -251,10 +258,17 @@ def download_lyrics_for_track(
     reads from - that's the entire integration point with the rest of the
     lyrics feature, nothing else needs to change to pick this up.
 
-    `save_plain=True` saves unsynced lyrics when no synced version exists,
-    unlike the original script's opt-in `--plain` flag - LyricsPanel already
-    displays unsynced lyrics just fine (plain scrolling text, no highlight),
-    so there's no reason to leave a found-but-unsynced lyric on the table.
+    `save_plain=True` (the default) saves unsynced lyrics when no synced
+    version exists, unlike the original script's opt-in `--plain` flag -
+    LyricsPanel already displays unsynced lyrics just fine (plain scrolling
+    text, no highlight), so there's no reason to leave a found-but-unsynced
+    lyric on the table.
+
+    `save_plain=False` is the synced-only mode (2026-09-20, James: "force
+    LRCLIB to get only Synced lyrics"): a track where LRCLIB only has plain
+    text is left alone rather than getting a plain sidecar, and comes back
+    as `status="plain_only"` - not `"not_found"` - so callers can tell
+    "nothing on LRCLIB at all" apart from "found it, it's just not synced".
     """
     audio_path = Path(audio_path)
     lrc_path = audio_path.with_suffix(".lrc")
@@ -284,8 +298,17 @@ def download_lyrics_for_track(
     if result.get("instrumental") is True:
         return TrackLyricsOutcome(audio_path, "instrumental")
 
-    text = result.get("syncedLyrics") or (result.get("plainLyrics") if save_plain else None)
-    if not text:
+    synced_text = result.get("syncedLyrics")
+    plain_text = result.get("plainLyrics")
+
+    if synced_text:
+        text = synced_text
+    elif plain_text and save_plain:
+        text = plain_text
+    elif plain_text:
+        # matched, but only plain text, and the caller asked synced-only
+        return TrackLyricsOutcome(audio_path, "plain_only")
+    else:
         return TrackLyricsOutcome(audio_path, "not_found")
 
     try:
@@ -336,6 +359,8 @@ def download_lyrics_for_album(
             result.already_exists += 1
         elif outcome.status == "instrumental":
             result.instrumental += 1
+        elif outcome.status == "plain_only":
+            result.plain_only += 1
         elif outcome.status == "not_found":
             result.not_found += 1
         elif outcome.status == "no_artist":

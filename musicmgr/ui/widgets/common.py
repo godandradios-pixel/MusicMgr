@@ -1002,7 +1002,11 @@ class EmptyState(QWidget):
     """`action_text`/`on_action` are optional - added for the lyrics panel's
     "Download lyrics" button (nothing found locally, offer to go get it),
     and left unused by this widget's two other callers (jukebox.py,
-    bio_panel.py), which still only pass headline/detail."""
+    bio_panel.py), which still only pass headline/detail.
+
+    `extra_widget` is likewise optional (2026-09-20) - added so LyricsPanel
+    can sit its "Synced lyrics only" checkbox right under the download
+    button without this widget needing to know anything about lyrics."""
 
     def __init__(
         self,
@@ -1010,6 +1014,7 @@ class EmptyState(QWidget):
         detail: str = "",
         action_text: str = "",
         on_action: Optional[Callable[[], None]] = None,
+        extra_widget: Optional[QWidget] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -1035,6 +1040,8 @@ class EmptyState(QWidget):
                 btn.clicked.connect(on_action)
             layout.addWidget(btn, 0, Qt.AlignCenter)
             self.action_button = btn
+        if extra_widget is not None:
+            layout.addWidget(extra_widget, 0, Qt.AlignCenter)
 
 
 class LyricsDownloadThread(QThread):
@@ -1051,15 +1058,26 @@ class LyricsDownloadThread(QThread):
     progress = Signal(int, int, str)
     finished_with = Signal(object)  # AlbumLyricsResult
 
-    def __init__(self, tracks: list, overwrite: bool = False, parent=None) -> None:
+    def __init__(
+        self,
+        tracks: list,
+        overwrite: bool = False,
+        save_plain: bool = True,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.tracks = tracks
         self.overwrite = overwrite
+        #: False = synced-only (2026-09-20) - see lyrics_downloader.py's
+        #: download_lyrics_for_track docstring for the plain_only outcome
+        #: this produces instead of a silent plain-text save.
+        self.save_plain = save_plain
 
     def run(self) -> None:  # pragma: no cover - exercised interactively
         result = lyrics_dl.download_lyrics_for_album(
             self.tracks,
             overwrite=self.overwrite,
+            save_plain=self.save_plain,
             progress=lambda done, total, name: self.progress.emit(done, total, name),
         )
         self.finished_with.emit(result)

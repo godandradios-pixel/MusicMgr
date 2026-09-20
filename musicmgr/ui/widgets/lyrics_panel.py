@@ -19,7 +19,14 @@ from typing import Optional, Union
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QListWidget, QListWidgetItem, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QListWidget,
+    QListWidgetItem,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...config import TOUCH
 from ...services import lyrics_downloader as lyrics_dl
@@ -35,6 +42,7 @@ _STATUS_MESSAGES = {
     "no_artist": "This track has no artist tag on file, so lyrics can't be looked up.",
     "not_found": "No lyrics found on LRCLIB for this track.",
     "instrumental": "LRCLIB lists this as an instrumental - no lyrics to show.",
+    "plain_only": 'LRCLIB only has plain (unsynced) lyrics for this track - skipped since "Synced lyrics only" is checked.',
     "error": "Couldn't reach LRCLIB just now - try again in a bit.",
 }
 
@@ -45,11 +53,23 @@ class LyricsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # 2026-09-20 - James: "is there anyway we can force LRCLIB to get
+        # only Synced lyrics" - a checkbox rather than a Settings-page
+        # global, so it's a per-download choice like everything else here;
+        # defaults on, matching what he actually asked for. Read at click
+        # time in _on_download_clicked and threaded straight through as
+        # LyricsDownloadThread's save_plain (inverted - checked means
+        # save_plain=False). See release_panel.py's matching checkbox for
+        # the per-album button's copy of this.
+        self._synced_only_checkbox = QCheckBox("Synced lyrics only")
+        self._synced_only_checkbox.setChecked(True)
+
         self._empty = EmptyState(
             "No lyrics found",
             _DEFAULT_EMPTY_DETAIL,
             action_text="Download lyrics",
             on_action=self._on_download_clicked,
+            extra_widget=self._synced_only_checkbox,
         )
 
         self._list = QListWidget()
@@ -177,6 +197,8 @@ class LyricsPanel(QWidget):
         btn.setVisible(bool(self._audio_path))
         btn.setEnabled(bool(self._audio_path) and not downloading)
         btn.setText("Downloading…" if downloading else "Download lyrics")
+        self._synced_only_checkbox.setVisible(bool(self._audio_path))
+        self._synced_only_checkbox.setEnabled(not downloading)
 
     def _on_download_clicked(self) -> None:
         if not self._audio_path or self._download_thread is not None:
@@ -188,7 +210,9 @@ class LyricsPanel(QWidget):
             album=self._track_meta.get("album") or "",
             duration_ms=self._track_meta.get("duration_ms") or 0,
         )
-        self._download_thread = LyricsDownloadThread([track], parent=self)
+        self._download_thread = LyricsDownloadThread(
+            [track], save_plain=not self._synced_only_checkbox.isChecked(), parent=self
+        )
         self._download_thread.finished_with.connect(self._on_download_finished)
         self._refresh_download_button()
         self._download_thread.start()

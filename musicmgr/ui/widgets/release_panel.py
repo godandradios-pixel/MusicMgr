@@ -11,6 +11,7 @@ from typing import Optional, Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -134,6 +135,14 @@ class ReleaseDetailPanel(QWidget):
         queue.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
         self.lyrics_btn = TouchButton("Download lyrics")
         self.lyrics_btn.clicked.connect(self.download_lyrics)
+        # 2026-09-20 - James: "is there anyway we can force LRCLIB to get
+        # only Synced lyrics" - per-download checkbox rather than a
+        # Settings-page global, matching LyricsPanel's own copy of this for
+        # the per-track button. Defaults on. Read at click time in
+        # download_lyrics() and threaded through as LyricsDownloadThread's
+        # save_plain (inverted - checked means save_plain=False).
+        self.lyrics_synced_only = QCheckBox("Synced only")
+        self.lyrics_synced_only.setChecked(True)
         # 2026-09-18 - James: "Ability to search for album artwork" - see
         # search_artwork below and services/artwork_downloader.py's module
         # docstring for why this is a search-then-pick flow rather than an
@@ -149,7 +158,10 @@ class ReleaseDetailPanel(QWidget):
         # apply_local_image_to_release.
         self.artwork_file_btn = TouchButton("Choose from file…")
         self.artwork_file_btn.clicked.connect(self.choose_artwork_file)
-        for b in (shuffle, queue, self.lyrics_btn, self.artwork_btn, self.artwork_file_btn):
+        for b in (shuffle, queue, self.lyrics_btn):
+            actions.addWidget(b)
+        actions.addWidget(self.lyrics_synced_only)
+        for b in (self.artwork_btn, self.artwork_file_btn):
             actions.addWidget(b)
         actions.addStretch(1)
         self.track_count = dim_label("")
@@ -336,13 +348,16 @@ class ReleaseDetailPanel(QWidget):
             return
 
         self.lyrics_btn.setEnabled(False)
+        self.lyrics_synced_only.setEnabled(False)
         self.lyrics_progress.setVisible(True)
         self.lyrics_progress.setRange(0, len(inputs))
         self.lyrics_progress.setValue(0)
         self.lyrics_progress_label.setVisible(True)
         self.lyrics_progress_label.setText(f"Looking up lyrics for {len(inputs)} track(s)…")
 
-        self._lyrics_thread = LyricsDownloadThread(inputs, parent=self)
+        self._lyrics_thread = LyricsDownloadThread(
+            inputs, save_plain=not self.lyrics_synced_only.isChecked(), parent=self
+        )
         self._lyrics_thread.progress.connect(self._on_lyrics_progress)
         self._lyrics_thread.finished_with.connect(self._on_lyrics_finished)
         self._lyrics_thread.start()
@@ -357,6 +372,7 @@ class ReleaseDetailPanel(QWidget):
         self.lyrics_progress.setVisible(False)
         self.lyrics_progress_label.setVisible(False)
         self.lyrics_btn.setEnabled(True)
+        self.lyrics_synced_only.setEnabled(True)
         QMessageBox.information(self, "Download lyrics", result.summary())
 
     def search_artwork(self) -> None:
