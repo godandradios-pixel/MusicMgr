@@ -697,7 +697,21 @@ def search_addable_tracks(
     `album` (the release title, to tell apart same-named tracks in the
     results list). Capped at `limit` *results* - matches with no
     resolvable artist don't count against it, so more rows than `limit`
-    may be scanned to fill it."""
+    may be scanned to fill it.
+
+    2026-09-20 follow-up - James, looking at the picker's results list:
+    "on the songs, pick 2 sort the result set by album then song
+    title." The underlying query is still ordered by `Track.title`
+    (kept as-is, purely to decide which rows get scanned first when a
+    broad search matches more than `limit * 3` candidates - see the
+    `.limit(limit * 3)` above), but the *returned*, already-capped
+    `results` list is now re-sorted by `(album, title)` - a case-
+    insensitive sort, same `.lower()` convention `ui/views/jukebox.py`'s
+    older `JukeboxView._load_tracks_for_artist` already uses for its
+    own "group by album, alphabetical by title" sort (2026-09-07) -
+    so someone scanning the checklist for a specific song sees every
+    match from the same album clustered together instead of a flat
+    alphabetical-by-title list interleaving albums."""
     artist_query = artist_query.strip()
     track_query = track_query.strip()
     if not artist_query and not track_query:
@@ -732,4 +746,9 @@ def search_addable_tracks(
                 "album": release.title if release is not None else "",
             }
         )
+    # see the docstring's 2026-09-20 follow-up - re-sorted after capping
+    # at `limit`, not folded into the SQL `order_by` above, since that
+    # one still governs which raw rows get scanned first when a broad
+    # search matches more candidates than fit in one query.
+    results.sort(key=lambda r: (r["album"].lower(), r["title"].lower()))
     return results

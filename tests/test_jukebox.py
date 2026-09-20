@@ -807,3 +807,25 @@ class TestSearchAddableTracks:
         results = jb.search_addable_tracks(session, track_query="song", limit=2)
 
         assert len(results) == 2
+
+    def test_results_are_sorted_by_album_then_title(self, session):
+        """2026-09-20 follow-up - James: "on the songs, pick 2 sort the
+        result set by album then song title." Tracks inserted in a
+        deliberately scrambled order (not alphabetical by title, not
+        grouped by album) so a passing result can only come from a real
+        sort, not coincidental insertion/title order - same shape as
+        `ui/views/jukebox.py`'s own `_load_tracks_for_artist` sort test
+        (2026-09-07)."""
+        make_track(session, "Zebra", artist="Artist", album="Bravo")
+        make_track(session, "Song", artist="Artist", album="Delta")
+        make_track(session, "Apple", artist="Artist", album="Bravo")
+        make_track(session, "Track", artist="Artist", album="alpha")
+
+        results = jb.search_addable_tracks(session, artist_query="artist")
+
+        assert [(r["album"], r["title"]) for r in results] == [
+            ("alpha", "Track"),
+            ("Bravo", "Apple"),
+            ("Bravo", "Zebra"),
+            ("Delta", "Song"),
+        ]
