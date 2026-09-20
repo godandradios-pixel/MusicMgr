@@ -43,9 +43,12 @@ COLORS = {
     # at the board: it read as an alert color against the rest of the app's
     # warm brown/gold branding (the MusicMgr logo). Retinted to a walnut-
     # brown family instead - every consumer (ui/widgets/jukebox_strip.py's
-    # banner border/code-box/currently-playing fill, and QFrame#
-    # JukeboxArtistLine below) reads these three tokens rather than a
-    # hardcoded hex, so retheming here was the only change needed.
+    # banner border/code-box/currently-playing fill) reads these three
+    # tokens rather than a hardcoded hex, so retheming here was the only
+    # change needed. (A fourth consumer, QFrame#JukeboxArtistLine, was
+    # removed in a 2026-09-20 follow-up - see that rule's own removal note
+    # further down - once the artist badge widened to fill the row it used
+    # to share with two of those divider lines.)
     "jukebox_chrome_light": "#e7eaee",
     "jukebox_chrome_dark": "#8b909a",
     "jukebox_paper": "#f4e6bd",
@@ -720,11 +723,14 @@ QLabel#JukeboxArtistBadge {{
 QWidget#JukeboxArtistRow {{
     background: transparent;
 }}
-QFrame#JukeboxArtistLine {{
-    background: {c['jukebox_key']};
-    min-height: 2px;
-    max-height: 2px;
-}}
+/* QFrame#JukeboxArtistLine (the two divider frames that used to flank
+   the artist badge, each a background: {c['jukebox_key']}; min/max-
+   height: 2px; line) is gone as of a 2026-09-20 follow-up - James:
+   "widen the box so that it aligns to the left with the 2 tracks and
+   extend to the right so its aligned with the tip of the arrow." The
+   badge now fills the whole row itself (ui/widgets/jukebox_strip.py's
+   `_build_artist_row`/`_ARTIST_LABEL_WIDTH`), so there's no leftover
+   width for a divider line to fill any more. */
 
 /* ---------------- misc ---------------- */
 QFrame#Card {{

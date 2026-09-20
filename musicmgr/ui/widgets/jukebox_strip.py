@@ -529,17 +529,23 @@ class JukeboxStripWidget(QFrame):
     #: 2026-09-13 fix: James sent a screenshot of "Steve Miller Band" eliding
     #: to "STEVE MILLER BA…" - an ordinary-length name, not the deliberately
     #: extreme "Bob Seger & The Silver Bullet Band" case the 150px width was
-    #: originally sized around. Widened to 198, which is exactly the largest
-    #: value that costs nothing: the artist row's own width demand
-    #: (label width + the two divider lines' spacing) only starts to exceed
-    #: - and therefore drive - the column width past what _ChevronBanner's
-    #: sizeHint (210) already reserves once this label passes 198px, so the
-    #: whole card's fixed size (still set once via setFixedSize(sizeHint())
-    #: below) is completely unaffected. This comfortably fits the vast
-    #: majority of real artist billings ("The Rolling Stones," "Bruce
-    #: Springsteen," "Earth, Wind & Fire") without truncation; genuinely
-    #: long ones still elide, same as before.
-    _ARTIST_LABEL_WIDTH = 198
+    #: originally sized around. Widened to 198.
+    #:
+    #: 2026-09-20 follow-up - James, on a card screenshot: "widen the box
+    #: so that it aligns to the left with the 2 tracks and extend to the
+    #: right so its aligned with the tip of the arrow." Widened again, from
+    #: 198 to 210 - exactly `_ChevronBanner.sizeHint()`'s own hardcoded
+    #: width - and `_build_artist_row` below no longer flanks the label with
+    #: the two `JukeboxArtistLine` divider frames it used to; the label *is*
+    #: the whole row now. Matching the banner's width pixel-for-pixel (not
+    #: just "close enough to not grow the column", which 198 already was)
+    #: is what makes the badge's own left/right edges land flush with the
+    #: banners' - both are direct `right_col` children, so equal widths
+    #: means equal rendered widths once `setFixedSize(sizeHint())` locks
+    #: the whole card. Still comfortably fits real artist billings ("The
+    #: Rolling Stones," "Bruce Springsteen," "Earth, Wind & Fire") without
+    #: truncation; genuinely long ones still elide, same as before.
+    _ARTIST_LABEL_WIDTH = 210
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -607,22 +613,23 @@ class JukeboxStripWidget(QFrame):
         self.setAcceptDrops(True)
 
     def _build_artist_row(self) -> QWidget:
+        # 2026-09-20 follow-up (see `_ARTIST_LABEL_WIDTH`'s own comment
+        # above): used to flank `artist_label` with two `JukeboxArtistLine`
+        # divider frames, stretched to soak up whatever width the label's
+        # fixed 198px didn't - James asked for the badge itself to reach
+        # edge-to-edge instead, flush with the banners above/below, so
+        # there's no gap left for a divider to fill; the label is now the
+        # row's only child.
         row = QWidget()
         row.setObjectName("JukeboxArtistRow")
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(6)
-        left_line = QFrame()
-        left_line.setObjectName("JukeboxArtistLine")
+        h.setSpacing(0)
         self.artist_label = QLabel("")
         self.artist_label.setObjectName("JukeboxArtistBadge")
         self.artist_label.setAlignment(Qt.AlignCenter)
         self.artist_label.setFixedWidth(self._ARTIST_LABEL_WIDTH)
-        right_line = QFrame()
-        right_line.setObjectName("JukeboxArtistLine")
-        h.addWidget(left_line, 1)
         h.addWidget(self.artist_label)
-        h.addWidget(right_line, 1)
         return row
 
     def _set_artist_text(self, artist_name: str) -> None:
@@ -630,9 +637,13 @@ class JukeboxStripWidget(QFrame):
         `artist_label` has a fixed width precisely so a long name (a full
         "Bob Seger & The Silver Bullet Band"-style billing) can't grow this
         card wider than any other on the page."""
-        # a few px of slack for the QSS badge's own padding/border (see
-        # ui/theme.py's QLabel#JukeboxArtistBadge rule)
-        available = self._ARTIST_LABEL_WIDTH - 24
+        # slack for the QSS badge's own padding/border (see ui/theme.py's
+        # QLabel#JukeboxArtistBadge rule): 10px padding + 1px border each
+        # side = 22px - was 24px (2px border) before the 2026-09-20 card-
+        # height follow-up trimmed the border to 1px; corrected to match
+        # while this line was already being touched for the same day's
+        # width follow-up.
+        available = self._ARTIST_LABEL_WIDTH - 22
         metrics = self.artist_label.fontMetrics()
         elided = metrics.elidedText(artist_name.upper(), Qt.ElideRight, available)
         self.artist_label.setText(elided or "—")
