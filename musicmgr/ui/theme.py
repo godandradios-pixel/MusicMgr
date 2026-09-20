@@ -693,11 +693,32 @@ QFrame#JukeboxStrip[dropTarget="true"] {{
 QLabel#JukeboxArtistBadge {{
     background: {c['jukebox_paper']};
     color: {c['jukebox_ink']};
-    border: 2px solid {c['jukebox_ink']};
+    /* border/padding trimmed a px each (2026-09-20 follow-up, ui/widgets/
+       jukebox_strip.py - shrinking the jukebox card's height) - part of
+       shaving the artist-badge row down along with the rest of the card,
+       not a standalone restyle. */
+    border: 1px solid {c['jukebox_ink']};
     border-radius: 4px;
-    padding: 1px 10px;
+    padding: 0px 10px;
     font-weight: 700;
     font-size: {t['font_base'] - 2}px;
+}}
+/* 2026-09-20 follow-up - James: "remove the black space on the ends of
+   the middle artist block." `_build_artist_row`'s `row` container (ui/
+   widgets/jukebox_strip.py) is a bare QWidget with no rule of its own,
+   so it was inheriting the blanket `QWidget {{ background: {c['bg']}; }}`
+   rule above - QFrame#JukeboxArtistLine's own background is properly
+   capped to a 2px-tall line by min-height/max-height below, but that
+   still leaves the *rest* of the row's height (same as the artist-badge
+   label next to it) painted in that rule's near-black app background on
+   both sides of the thin line - not a thin colored line at all, a solid
+   dark block. Scoping this row to a transparent background lets the
+   card's own light chrome gradient (QFrame#JukeboxStrip) show through
+   there instead, same as it already does flanking the two chevron
+   banners above/below - `min-height`/`max-height` were already doing
+   their job; the line just had a solid dark box painted underneath it. */
+QWidget#JukeboxArtistRow {{
+    background: transparent;
 }}
 QFrame#JukeboxArtistLine {{
     background: {c['jukebox_key']};

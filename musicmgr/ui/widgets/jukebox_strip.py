@@ -236,6 +236,28 @@ this widget's own signal and event handling are completely unchanged;
 only which database call the view makes moved. See `reorder_slot`'s own
 docstring for the rank-based reassignment, and why a card ending up on
 the next page needs nothing special done for it here.
+
+2026-09-20 follow-up - James, on a 3x3 display: "can you make the jukebox
+cards a bit small from top to bottom... the bottom row is cut off a bit."
+`JukeboxView._rows_that_fit` (ui/views/jukebox.py) already sizes the page
+to however many rows of the strip's *actual* fixed height fit in the
+space available - but it deliberately never drops below `MIN_ROWS` (3),
+always showing a full 3 rows at the strip's fixed size even when that's a
+few pixels taller than what's actually there, rather than shrinking
+anything on its own (see that method's own docstring). On a shorter
+display than this was tuned against, that meant the 3rd row simply ran
+past the bottom of `grid_host` and got clipped. Trimmed the strip's own
+vertical footprint instead of touching that floor: `_ChevronBanner`'s
+`sizeHint` height (34px) and `setMinimumHeight` (32px) both down to 30/28,
+the outer/card layout's top+bottom margins (`outer`/`card_layout` in
+`JukeboxStripWidget.__init__`) trimmed from 4/10px to 2/6px each, and
+`right_col`'s spacing from 5px to 4px - plus the artist badge's own
+QSS (`QLabel#JukeboxArtistBadge` in `ui/theme.py`) losing a pixel of
+padding and border. None of this touches the cover's 74px size or any
+horizontal dimension - only what stacks up top-to-bottom. Since
+`_rows_that_fit`/`_cols_that_fit` measure `self.strips[0].sizeHint()`
+fresh every time rather than a cached number, the shorter card is picked
+up automatically - no change needed in ui/views/jukebox.py itself.
 """
 
 from __future__ import annotations
@@ -364,11 +386,11 @@ class _ChevronBanner(QAbstractButton):
         self._now_playing = False
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumWidth(140)
-        self.setMinimumHeight(32)
+        self.setMinimumHeight(28)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def sizeHint(self) -> QSize:  # noqa: D102 - Qt override
-        return QSize(210, 34)
+        return QSize(210, 30)
 
     def set_content(self, code: str, title: str) -> None:
         self._code = code
@@ -526,7 +548,7 @@ class JukeboxStripWidget(QFrame):
         self._now_playing_side: Optional[str] = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setContentsMargins(4, 2, 4, 2)
         outer.setSpacing(0)
 
         card = QFrame()
@@ -538,14 +560,14 @@ class JukeboxStripWidget(QFrame):
         outer.addWidget(card)
         self.card = card
         card_layout = QHBoxLayout(card)
-        card_layout.setContentsMargins(10, 10, 10, 10)
+        card_layout.setContentsMargins(10, 6, 10, 6)
         card_layout.setSpacing(10)
 
         self.cover = _CardCover(size=74)
         card_layout.addWidget(self.cover)
 
         right_col = QVBoxLayout()
-        right_col.setSpacing(5)
+        right_col.setSpacing(4)
 
         self._rows: dict[str, dict] = {}
 
@@ -586,6 +608,7 @@ class JukeboxStripWidget(QFrame):
 
     def _build_artist_row(self) -> QWidget:
         row = QWidget()
+        row.setObjectName("JukeboxArtistRow")
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(6)
