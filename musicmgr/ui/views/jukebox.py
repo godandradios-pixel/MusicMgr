@@ -444,7 +444,18 @@ class JukeboxPickerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
+        # Widened from the original 460x560 (2026-09-20 follow-up) - James:
+        # "expand the Add to jukebox window so I can see more text for the
+        # songs and their albums." Each row's checkbox label is a single
+        # unwrapped line ("Title — Artist (Album)"), so a narrow dialog just
+        # clipped long titles/albums behind track_list's horizontal
+        # scrollbar rather than shrinking the text - widening the dialog
+        # itself is what actually shows more of that line. `resize` (not
+        # just a taller `setMinimumSize` floor) sets the size the dialog
+        # actually opens at; it stays user-resizable beyond this in either
+        # direction since nothing here caps it with setMaximumSize.
         self.setMinimumSize(460, 560)
+        self.resize(820, 640)
         #: `(artist_query, track_query) -> results` - see the class
         #: docstring for how the two boxes below combine (ANDed, not
         #: either/or the way the single box this replaced worked).
