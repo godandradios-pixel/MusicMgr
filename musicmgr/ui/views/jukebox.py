@@ -274,13 +274,66 @@ the cursor - without the drag itself being interrupted. Neither arrow is
 ever a real *drop* target for a card (`QEvent.Drop` is explicitly
 ignored in the filter below) - releasing over one just ends the drag with
 nothing swapped, same as releasing over any other empty space.
+
+2026-09-22 follow-up - James, looking at the fixed row of genre chips:
+"I would like the ability to modify the genre titles at the top. Ability
+to add, delete and rename a genre. The Rename would be by holding your
+finger on the genre for a couple of seconds and it places your cursor in
+the text box." See `services/jukebox.py`'s own module docstring for the
+persisted-list side of this (the chips are no longer a hardcoded tuple);
+everything below is the chip row's side.
+
+`_GenreChip` (subclasses `ChipButton`, same plain checkable pill every
+other chip row in the app uses, so those are untouched) adds the
+long-press gesture and a right-click menu on top of the ordinary tap-to-
+filter click it already had: holding a chip down for
+`GENRE_CHIP_LONG_PRESS_MS` without moving or releasing fires
+`renameRequested`; "Rename genre…"/"Delete genre…" on the right-click
+menu are the mouse equivalent (there's no long-press *delete* - a long
+press is already spoken for by rename, so deleting is menu-only, same
+as `ui/widgets/jukebox_strip.py`'s "Remove from jukebox…" is menu-only
+for cards).
+
+`renameRequested` swaps the chip for an `_InlineGenreEdit` right in its
+place (`_begin_rename_genre`/`_open_genre_editor`) - a plain `QLineEdit`,
+pre-filled with the chip's current name, selected and focused, so the
+cursor is already in the box and typing immediately replaces the
+selection, exactly as James described. The trailing "+" chip
+(`_begin_add_genre`) opens the same box blank, in its own place, for
+adding a new genre rather than renaming an existing one - `_open_genre_
+editor` takes a `mode` ("rename"/"add") so `_finish_genre_edit` knows
+which `services/jukebox.py` mutation to call once the box closes. Enter,
+losing focus, or Escape (`_InlineGenreEdit.cancelled` - `QLineEdit` has
+no built-in "reverted" signal, so this box adds one) all end an edit,
+routed through the same `_finish_genre_edit(commit=...)`; a rejected
+commit (a blank name, or a case-insensitive duplicate) notifies rather
+than silently reverting, so a typo doesn't just vanish with no
+explanation. Only one edit can be open at a time (`self._genre_editor`
+is this view's "something's mid-edit right now" flag) - a second
+long-press or "+" tap while one's already open is a no-op.
+
+Deleting (`_on_delete_genre_requested`) confirms first, same "destructive
+action gets a confirmation" pattern `_on_remove_requested` already uses
+for a single card - naming how many cards will move rather than a bare
+"are you sure," since a delete relabels every card still on that genre's
+board (`services/jukebox.py:delete_genre`'s own fallback) rather than
+removing them. Refuses outright, before ever prompting, if it's the last
+genre left - this page always needs at least one chip to show.
+
+Every successful add/rename/delete rebuilds the whole chip row from
+scratch (`_build_genre_chips`) rather than patching in just what changed
+- genre edits are rare, and a full rebuild is far simpler than tracking
+exactly which chip moved/appeared/vanished by hand. `self._genre_chips`
+(the `QButtonGroup`) itself is kept across rebuilds, only its member
+buttons come and go, so the one `buttonClicked` connection from `__init__`
+never needs remaking.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Optional, Sequence
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -295,6 +348,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QVBoxLayout,
     QWidget,
@@ -899,6 +953,122 @@ class JukeboxOrganizeDialog(QDialog):
         return self.genre_combo.currentData()
 
 
+#: how long a genre chip has to be held down, without moving or letting go,
+#: before it starts an inline rename - James, 2026-09-22: "The Rename would
+#: be by holding your finger on the genre for a couple of seconds and it
+#: places your cursor in the text box." Long enough that an ordinary tap
+#: (picking which genre's board is showing - still this chip's everyday
+#: job) never accidentally starts a rename; short enough that "a couple of
+#: seconds" doesn't feel like it's ignoring the touch.
+GENRE_CHIP_LONG_PRESS_MS = 600
+
+
+class _GenreChip(ChipButton):
+    """One genre chip on the Jukebox page's filter row - `ChipButton` (the
+    plain checkable pill `cover_grid.py`'s sort chips and Now Playing's
+    "Up next"/"Lyrics" chips also use) plus the long-press-to-rename
+    gesture and right-click menu James asked for (2026-09-22 follow-up -
+    see `services/jukebox.py`'s module docstring). Subclassed here, not
+    added to `ChipButton` itself, so every other chip row in the app keeps
+    its own plain tap-to-toggle behavior unchanged.
+
+    `renameRequested`/`deleteRequested` are plain no-argument signals -
+    `JukeboxView` already knows which genre this chip represents (it reads
+    `property("genre")`, same as the click handler for the ordinary
+    checkable behavior already does) when it connects them, so the signal
+    itself doesn't need to carry anything.
+
+    A long press fires `renameRequested` *while the button is still held
+    down*, the same "hold still past the threshold" idiom real long-press
+    UIs use - `_press_timer` starts on press and is cancelled by any move
+    or release before it fires. `_long_press_fired` is what tells
+    `mouseReleaseEvent` to swallow the click that would otherwise follow -
+    without it, releasing the button after a successful long press would
+    also toggle the chip's checked state as an ordinary click, right as
+    the inline editor is opening underneath it. A quick tap (the timer
+    never fires) is completely untouched: `mouseReleaseEvent` falls
+    through to `ChipButton`/`QPushButton`'s own handling exactly as
+    before.
+
+    The right-click menu ("Rename genre…"/"Delete genre…") is the mouse
+    equivalent of the same two actions, for anyone driving this app with a
+    pointer rather than a touch panel - same "menu as the desktop
+    counterpart to a touch gesture" idea `ui/widgets/jukebox_strip.py`'s
+    own card context menu already follows, just one level up (chips, not
+    cards)."""
+
+    renameRequested = Signal()
+    deleteRequested = Signal()
+
+    def __init__(self, text: str, parent=None) -> None:
+        super().__init__(text, parent)
+        self._long_press_fired = False
+        self._press_timer = QTimer(self)
+        self._press_timer.setSingleShot(True)
+        self._press_timer.timeout.connect(self._on_long_press_timeout)
+
+    def mousePressEvent(self, event) -> None:  # noqa: D102 - Qt override
+        if event.button() == Qt.LeftButton:
+            self._long_press_fired = False
+            self._press_timer.start(GENRE_CHIP_LONG_PRESS_MS)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: D102 - Qt override
+        if self._press_timer.isActive():
+            self._press_timer.stop()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: D102 - Qt override
+        self._press_timer.stop()
+        if self._long_press_fired:
+            # swallow the click a long press already handled - see the
+            # class docstring - rather than also toggling checked state.
+            self._long_press_fired = False
+            return
+        super().mouseReleaseEvent(event)
+
+    def _on_long_press_timeout(self) -> None:
+        self._long_press_fired = True
+        self.renameRequested.emit()
+
+    def contextMenuEvent(self, event) -> None:  # noqa: D102 - Qt override
+        self._build_context_menu().exec(event.globalPos())
+
+    def _build_context_menu(self) -> QMenu:
+        """Split out from `contextMenuEvent` so a test can trigger either
+        action directly (find it by its text, then `.trigger()`) rather
+        than needing to drive `QMenu.exec()`'s real popup event loop -
+        same reason `ui/widgets/jukebox_strip.py:_build_context_menu`
+        already does this for the card's own right-click menu."""
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename genre…")
+        rename_action.triggered.connect(self.renameRequested.emit)
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete genre…")
+        delete_action.triggered.connect(self.deleteRequested.emit)
+        return menu
+
+
+class _InlineGenreEdit(QLineEdit):
+    """The text box a genre chip turns into mid-rename (or that the "+"
+    add-chip turns into) - James: "it places your cursor in the text
+    box." Plain `QLineEdit` plus one addition: `QLineEdit` has no built-in
+    "the user backed out" signal, so Escape is caught here and turned into
+    one (`cancelled`) rather than doing nothing, or - Qt's usual default
+    for Escape inside a dialog - closing a window this box doesn't own.
+    `JukeboxView` treats `cancelled` and the ordinary `editingFinished`
+    (Enter, or focus lost) as the two ways an edit can end; see
+    `_finish_genre_edit`."""
+
+    cancelled = Signal()
+
+    def keyPressEvent(self, event) -> None:  # noqa: D102 - Qt override
+        if event.key() == Qt.Key_Escape:
+            self.cancelled.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class _GridHost(QWidget):
     """The plain container `JukeboxView.grid` lives in - overrides
     `minimumSizeHint()` to always report zero rather than the default Qt
@@ -1034,27 +1204,45 @@ class JukeboxView(BaseView):
         # genre chips (2026-09-07 follow-up) - exclusive like every other
         # chip row in this app (cover_grid.py's sort chips, Now Playing's
         # "Up next"/"Lyrics"); which board is showing, not a search filter.
-        # Built in `JUKEBOX_GENRES` order, which is exactly the left-to-
-        # right order James asked for (sixth same-day follow-up) - no
-        # separate ordering logic needed here.
+        # Built in `get_jukebox_genres` order, which is exactly the
+        # left-to-right order James asked for (sixth same-day follow-up)
+        # and, as of the 2026-09-22 follow-up below, whatever order he's
+        # since edited it into - no separate ordering logic needed here
+        # either way.
+        #
+        # 2026-09-22 follow-up (James: "I would like the ability to modify
+        # the genre titles at the top. Ability to add, delete and rename a
+        # genre"): the fixed for-loop that used to build this row once,
+        # straight from the old `JUKEBOX_GENRES` constant, is now
+        # `_build_genre_chips` below - callable again any time the
+        # persisted list changes (an add, a rename, a delete), not just
+        # here at construction. `self.chip_row` and `self._add_chip` are
+        # kept as attributes for exactly that reason: rebuilding needs to
+        # find and clear whatever's currently in the row before repopulating
+        # it. `chip_row.addStretch(1)` stays here, added once and never
+        # touched again - every rebuild only ever inserts widgets *before*
+        # it (see `_stretch_index`), so it stays the trailing element the
+        # row was built to keep the chips left-aligned around.
         chip_row = QHBoxLayout()
         chip_row.setSpacing(8)
+        self.chip_row = chip_row
         self._genre_chips = QButtonGroup(self)
         self._genre_chips.setExclusive(True)
-        for genre in jkb_svc.JUKEBOX_GENRES:
-            chip = ChipButton(genre)
-            # "make the pills not red but the brown color" (sixth same-day
-            # follow-up) - overrides ChipButton's own "Chip" object name so
-            # only these genre chips pick up ui/theme.py's brown
-            # #ChipWarm:checked rule; every other chip row in the app keeps
-            # the ordinary red #Chip:checked look.
-            chip.setObjectName("ChipWarm")
-            chip.setProperty("genre", genre)
-            chip.setChecked(genre == self._genre)
-            self._genre_chips.addButton(chip)
-            chip_row.addWidget(chip)
-        chip_row.addStretch(1)
         self._genre_chips.buttonClicked.connect(self._on_genre_chip_clicked)
+        self._add_chip: Optional[QWidget] = None
+        # the chip/add-button currently swapped out for `_genre_editor`,
+        # and what its edit is doing - see `_begin_rename_genre`/
+        # `_begin_add_genre`/`_finish_genre_edit`. `_genre_editor is None`
+        # is this view's "nothing being edited right now" state, checked
+        # by both of those `_begin_*` methods so a second long-press (or a
+        # tap on "+") can't open a *second* editor while one's already
+        # open.
+        self._genre_editor: Optional[_InlineGenreEdit] = None
+        self._genre_editor_target: Optional[QWidget] = None
+        self._genre_editor_original: Optional[str] = None
+        self._genre_editor_mode: Optional[str] = None
+        chip_row.addStretch(1)
+        self._build_genre_chips()
         self.body().addLayout(chip_row)
 
         # "Rate a track 5 stars..." dropped from this hint 2026-09-07 - the
@@ -1226,6 +1414,210 @@ class JukeboxView(BaseView):
         self._page = 0
         self.refresh()
 
+    # -- genre management (2026-09-22 follow-up) -----------------------------
+    # James: "I would like the ability to modify the genre titles at the
+    # top. Ability to add, delete and rename a genre. The Rename would be
+    # by holding your finger on the genre for a couple of seconds and it
+    # places your cursor in the text box." See services/jukebox.py's
+    # module docstring for the persisted-list side of this; everything
+    # below is the chip row's side: building it from that list,
+    # `_GenreChip`'s long-press/right-click signals, and the inline
+    # `_InlineGenreEdit` box a chip (or the trailing "+" chip) turns into
+    # mid-edit.
+
+    def _stretch_index(self) -> int:
+        """`chip_row`'s trailing stretch (added once in `__init__` and
+        never removed) is always the last item - every insert below
+        targets this index, so a new chip always lands just before it
+        regardless of how many chips currently exist."""
+        return self.chip_row.count() - 1
+
+    def _build_genre_chips(self) -> None:
+        """(Re)builds the whole genre row from the persisted list -
+        called once from `__init__` and again after any add/rename/delete
+        commits (`_finish_genre_edit`, `_on_delete_genre_requested`).
+        Tearing the whole row down and rebuilding it fresh, rather than
+        trying to patch in just what changed, mirrors this same class's
+        `refresh()` for the card grid below - genre edits are rare enough
+        events that a full rebuild's simplicity is worth far more than
+        whatever a diff-and-patch version would save.
+
+        `self._genre_chips` (the `QButtonGroup`) is reused across rebuilds
+        rather than replaced - only its member buttons come and go - so
+        the one `buttonClicked` connection made in `__init__` keeps
+        working without needing to be remade here every time."""
+        for button in list(self._genre_chips.buttons()):
+            self._genre_chips.removeButton(button)
+            self.chip_row.removeWidget(button)
+            button.deleteLater()
+        if self._add_chip is not None:
+            self.chip_row.removeWidget(self._add_chip)
+            self._add_chip.deleteLater()
+            self._add_chip = None
+
+        with self.ctx.session() as session:
+            genres = jkb_svc.get_jukebox_genres(session)
+        # the active chip's genre may itself have just been renamed or
+        # deleted (this same rebuild is what both of those call) - fall
+        # back to whatever's now first rather than pointing at a genre
+        # that no longer has a chip.
+        if self._genre not in genres:
+            self._genre = genres[0] if genres else jkb_svc.DEFAULT_JUKEBOX_GENRE
+
+        for genre in genres:
+            chip = _GenreChip(genre)
+            # "make the pills not red but the brown color" (2026-09-07,
+            # sixth same-day follow-up) - overrides ChipButton's own
+            # "Chip" object name so only these genre chips pick up
+            # ui/theme.py's brown #ChipWarm:checked rule; every other chip
+            # row in the app keeps the ordinary red #Chip:checked look.
+            chip.setObjectName("ChipWarm")
+            chip.setProperty("genre", genre)
+            chip.setChecked(genre == self._genre)
+            chip.renameRequested.connect(
+                lambda c=chip, g=genre: self._begin_rename_genre(c, g)
+            )
+            chip.deleteRequested.connect(lambda g=genre: self._on_delete_genre_requested(g))
+            self._genre_chips.addButton(chip)
+            self.chip_row.insertWidget(self._stretch_index(), chip)
+
+        add_chip = ChipButton("+")
+        add_chip.setObjectName("ChipWarm")
+        add_chip.setCheckable(False)  # a command, not a filter - never "checked"
+        add_chip.setToolTip("Add a genre")
+        add_chip.clicked.connect(self._begin_add_genre)
+        self.chip_row.insertWidget(self._stretch_index(), add_chip)
+        self._add_chip = add_chip
+
+    def _begin_rename_genre(self, chip: "_GenreChip", genre: str) -> None:
+        """Fired by a chip's `renameRequested` (a long press, or "Rename
+        genre…" from its right-click menu) - swaps that one chip out for
+        an `_InlineGenreEdit` pre-filled with its current name, selected
+        and focused, so typing immediately replaces it and the cursor is
+        already sitting in the box, exactly as James asked. Ignored if an
+        edit is already open elsewhere in the row (another chip, or the
+        "+" add-chip) - only one at a time."""
+        if self._genre_editor is not None:
+            return
+        self._open_genre_editor(chip, initial_text=genre, mode="rename", original=genre)
+
+    def _begin_add_genre(self) -> None:
+        """Fired by tapping the trailing "+" chip - the same inline
+        text-box swap `_begin_rename_genre` uses, just starting blank and
+        in place of the "+" chip instead of an existing one."""
+        if self._genre_editor is not None:
+            return
+        self._open_genre_editor(self._add_chip, initial_text="", mode="add", original=None)
+
+    def _open_genre_editor(
+        self, target: QWidget, *, initial_text: str, mode: str, original: Optional[str]
+    ) -> None:
+        target.hide()
+        editor = _InlineGenreEdit(initial_text)
+        editor.setObjectName("GenreChipEditor")
+        if mode == "add":
+            editor.setPlaceholderText("New genre")
+        editor.setMinimumWidth(max(target.sizeHint().width(), 90))
+        editor.cancelled.connect(lambda: self._finish_genre_edit(commit=False))
+        editor.editingFinished.connect(lambda: self._finish_genre_edit(commit=True))
+        self.chip_row.insertWidget(self.chip_row.indexOf(target), editor)
+        editor.setFocus(Qt.OtherFocusReason)
+        editor.selectAll()
+        self._genre_editor = editor
+        self._genre_editor_target = target
+        self._genre_editor_original = original
+        self._genre_editor_mode = mode
+
+    def _finish_genre_edit(self, commit: bool) -> None:
+        """Ends whichever edit `_open_genre_editor` started - reached from
+        either `_InlineGenreEdit.cancelled` (Escape) or its ordinary
+        `editingFinished` (Enter, or focus lost), both wired to this same
+        method in `_open_genre_editor`. The `self._genre_editor is None`
+        guard up front is what keeps those two from double-handling one
+        edit: Escape finishes it (and clears `_genre_editor`) synchronously
+        by calling this with `commit=False`, but hiding/removing the box
+        right after can still cause Qt to deliver `editingFinished` to it
+        a moment later anyway - by then this method has already run once
+        and returns immediately the second time.
+
+        Removes the text box and restores whichever chip/add-button it
+        replaced either way (cancelled or committed-but-rejected); a
+        successful commit goes on to call the matching
+        `services/jukebox.py` mutation and, only if that actually changed
+        something, rebuilds the whole row via `_build_genre_chips` and
+        refreshes the board (a rename can change which genre `self._genre`
+        itself now means; a rebuild is the simplest way to keep every
+        chip's checked state and the "+" chip's position consistent no
+        matter what changed)."""
+        if self._genre_editor is None:
+            return
+        editor = self._genre_editor
+        target = self._genre_editor_target
+        original = self._genre_editor_original
+        mode = self._genre_editor_mode
+        self._genre_editor = None
+        self._genre_editor_target = None
+        self._genre_editor_original = None
+        self._genre_editor_mode = None
+
+        new_name = editor.text().strip()
+        self.chip_row.removeWidget(editor)
+        editor.deleteLater()
+        if target is not None:
+            target.show()
+
+        if not commit or not new_name:
+            return
+
+        with self.ctx.session() as session:
+            if mode == "rename":
+                ok = jkb_svc.rename_genre(session, original, new_name)
+            else:
+                ok = jkb_svc.add_genre(session, new_name)
+        if not ok:
+            self.ctx.notify(f'A genre named "{new_name}" already exists')
+            return
+        if mode == "rename" and self._genre == original:
+            self._genre = new_name
+        self._build_genre_chips()
+        self._page = 0
+        self.refresh()
+
+    def _on_delete_genre_requested(self, genre: str) -> None:
+        """Fired by a chip's `deleteRequested` ("Delete genre…" on its
+        right-click menu - there's no long-press equivalent, since the
+        long press is already spoken for by rename). Confirms first,
+        naming how many cards (if any) will move rather than just
+        "are you sure" - deleting a genre isn't undoable and, unlike
+        removing a single jukebox card, silently relabels every card
+        still filed under it (see `services/jukebox.py:delete_genre`'s
+        own docstring) rather than deleting them."""
+        if self._genre_editor is not None:
+            return
+        with self.ctx.session() as session:
+            genres = jkb_svc.get_jukebox_genres(session)
+            card_count = jkb_svc.slot_count(session, genre=genre)
+        if len(genres) <= 1:
+            self.ctx.notify("At least one genre must remain")
+            return
+        if card_count:
+            message = (
+                f'Delete "{genre}"? {card_count} card{"s" if card_count != 1 else ""} '
+                f"currently on this board will move to another genre."
+            )
+        else:
+            message = f'Delete "{genre}"?'
+        confirm = QMessageBox.question(self, "Delete genre", message)
+        if confirm != QMessageBox.Yes:
+            return
+        with self.ctx.session() as session:
+            deleted = jkb_svc.delete_genre(session, genre)
+        if not deleted:
+            return
+        self._build_genre_chips()
+        self._page = 0
+        self.refresh()
+
     def refresh(self) -> None:
         self._current_rows = self._rows_that_fit()
         self._current_cols = self._cols_that_fit()
@@ -1357,12 +1749,13 @@ class JukeboxView(BaseView):
         card for it, defeating the point of tapping this one)."""
         with self.ctx.session() as session:
             row = jkb_svc.get_slot_row(session, slot_number)
+            genres = jkb_svc.get_jukebox_genres(session)
         if row is None:
             return
         dialog = JukeboxPickerDialog(
             self,
             self._search_addable_tracks,
-            genres=jkb_svc.JUKEBOX_GENRES,
+            genres=genres,
             default_genre=row["genre"],
             initial_artist_query=row.get("artist_name", ""),
             max_picks=1,
@@ -1424,12 +1817,13 @@ class JukeboxView(BaseView):
         with self.ctx.session() as session:
             total = jkb_svc.slot_count(session)
             rows = jkb_svc.list_slot_rows(session, page=0, per_page=max(total, 1))
+            genres = jkb_svc.get_jukebox_genres(session)
         slots = [(r["slot_number"], r["artist_name"], r["genre"]) for r in rows]
         current = next((r for r in rows if r["slot_number"] == slot_number), None)
         current_genre = current["genre"] if current is not None else self._genre
 
         dialog = JukeboxOrganizeDialog(
-            self, slot_number, slots, current_genre, genres=jkb_svc.JUKEBOX_GENRES
+            self, slot_number, slots, current_genre, genres=genres
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -1486,10 +1880,12 @@ class JukeboxView(BaseView):
     # -- manual add ---------------------------------------------------------
 
     def _open_add_dialog(self) -> None:
+        with self.ctx.session() as session:
+            genres = jkb_svc.get_jukebox_genres(session)
         dialog = JukeboxPickerDialog(
             self,
             self._search_addable_tracks,
-            genres=jkb_svc.JUKEBOX_GENRES,
+            genres=genres,
             default_genre=self._genre,
         )
         if dialog.exec() != QDialog.Accepted:

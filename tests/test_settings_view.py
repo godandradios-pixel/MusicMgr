@@ -10,6 +10,25 @@ These tests instead monkeypatch `scan_paths` (the one seam both "Scan now"
 and "Scan selected" funnel through right before a thread would start) and
 assert on *what it was asked to scan* - that's the actual behavior this
 feature is about, and it doesn't need a real scan to run to prove it.
+
+2026-09-22 fix - the `scan_paths` stub in `TestScanSelected`/
+`TestScanAllUnaffected` (`lambda paths: scanned.append(paths)`) only
+accepted one positional argument, a leftover from before the 2026-09-18
+"Re-read all tags" follow-up threaded a `force` keyword through
+`scan_all`/`scan_selected`'s own `self.scan_paths(paths, force=...)`
+calls (see `claude/2026-09-18-comment-tag-fix-and-force-rescan.md`) -
+that doc claims these same lambdas were fixed already, but the fix
+evidently never made it to disk (the same silent-persistence failure the
+doc itself describes catching once before), so three of these five kept
+raising `TypeError: <lambda>() got an unexpected keyword argument
+'force'` every time `scan_all`/`scan_selected` actually reached its
+`scan_paths` call. All five now take `force=False` too, whether or not
+the specific test's code path reaches that argument today, so a future
+change to the early-return branches above `scan_paths` can't silently
+reintroduce the same mismatch. `TestAddFolder`'s own `scan_paths` stubs
+two classes down are untouched - `add_folder()` calls
+`self.scan_paths([path])` with no `force=` at all, a genuinely different
+call site, not the same drift.
 """
 
 from __future__ import annotations
@@ -54,7 +73,7 @@ def watched_paths(session) -> list[str]:
 class TestScanSelected:
     def test_no_row_selected_notifies_and_does_not_scan(self, ctx, view, monkeypatch):
         scanned = []
-        monkeypatch.setattr(view, "scan_paths", lambda paths: scanned.append(paths))
+        monkeypatch.setattr(view, "scan_paths", lambda paths, force=False: scanned.append(paths))
         notifications = []
         ctx.notified.connect(notifications.append)
 
@@ -74,7 +93,7 @@ class TestScanSelected:
         assert view.folder_list.current_payload()["path"] == "/music/one"
 
         scanned = []
-        monkeypatch.setattr(view, "scan_paths", lambda paths: scanned.append(paths))
+        monkeypatch.setattr(view, "scan_paths", lambda paths, force=False: scanned.append(paths))
 
         view.scan_selected()
 
@@ -90,7 +109,7 @@ class TestScanSelected:
         assert view.folder_list.current_payload()["path"] == "/music/two"
 
         scanned = []
-        monkeypatch.setattr(view, "scan_paths", lambda paths: scanned.append(paths))
+        monkeypatch.setattr(view, "scan_paths", lambda paths, force=False: scanned.append(paths))
 
         view.scan_selected()
 
@@ -109,7 +128,7 @@ class TestScanAllUnaffected:
         view.folder_list.setCurrentRow(0)  # a selection exists but scan_all ignores it
 
         scanned = []
-        monkeypatch.setattr(view, "scan_paths", lambda paths: scanned.append(paths))
+        monkeypatch.setattr(view, "scan_paths", lambda paths, force=False: scanned.append(paths))
 
         view.scan_all()
 
@@ -118,7 +137,7 @@ class TestScanAllUnaffected:
 
     def test_no_folders_shows_a_message_instead_of_scanning(self, ctx, view, monkeypatch):
         scanned = []
-        monkeypatch.setattr(view, "scan_paths", lambda paths: scanned.append(paths))
+        monkeypatch.setattr(view, "scan_paths", lambda paths, force=False: scanned.append(paths))
         boxes = []
         monkeypatch.setattr(
             settings_module.QMessageBox,

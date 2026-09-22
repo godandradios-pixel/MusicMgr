@@ -82,13 +82,48 @@ the board be re-filed under a different chip independently of its board
 position (`swap_slots` handles position; the two are orthogonal and
 exposed as two independent controls in `ui/views/jukebox.py`'s "Organize
 card…" dialog).
+
+2026-09-22 follow-up - James, looking at the fixed row of chips: "I would
+like the ability to modify the genre titles at the top. Ability to add,
+delete and rename a genre. The Rename would be by holding your finger on
+the genre for a couple of seconds and it places your cursor in the text
+box." The chip list stops being a hardcoded tuple here and becomes a
+per-install, user-editable, persisted list - `get_jukebox_genres` reads
+it (seeding it from `_DEFAULT_JUKEBOX_GENRES`, the same ten names the old
+`JUKEBOX_GENRES` tuple held, the first time it's ever called on a given
+database) and `add_genre`/`rename_genre`/`delete_genre` below are the
+three new mutations `ui/views/jukebox.py`'s chip row calls. Stored as one
+JSON-encoded list under a single `Setting` row (`_GENRES_SETTING_KEY`),
+the same generic key/value table `_next_slot_number` above already uses
+for its own single persisted value - a dedicated table felt like overkill
+for what's still just an ordered list of short strings, not rows that
+need their own id/foreign keys/queries.
+
+`rename_genre`/`delete_genre` both also sweep `JukeboxSlot.genre` for
+every slot currently tagged with the old name - a genre chip is a live
+filter (`list_slots`/`slot_count`/etc. all take `genre=`), so renaming or
+removing one without relabeling its cards would either silently rename
+every card out from under itself (fine, and exactly wanted) or, for a
+delete, strand them under a genre tag no chip exists for any more -
+invisible to every page, findable again only by database surgery.
+`delete_genre` reassigns those orphaned cards to `DEFAULT_JUKEBOX_GENRE`
+if it's still in the list, or to whatever the new first genre is if not,
+rather than leaving them homeless - and refuses to delete the last
+remaining genre outright (`ui/views/jukebox.py` always needs at least one
+chip to show, and `place_track`'s callers always need somewhere to file a
+brand-new card). Both also reject a name collision (case-insensitively,
+so "rock" can't sit next to "Rock") rather than silently merging two
+genres' worth of cards onto one chip - the person can always delete the
+one they don't want and rename the other, if a merge is really what they
+meant.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+import json
+from typing import Optional, Sequence
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..db.models import JukeboxSlot, Release, Setting, Track
@@ -105,24 +140,28 @@ from .matching import normalize
 #: *other* caller gets by default.
 SLOTS_PER_PAGE = 9
 
-#: the fixed board categories James wants as chips on the Jukebox page
-#: (2026-09-07 follow-up: "I would like the jukebox page to have a chip of
-#: 5 genres: Classic Rock, Country, Pop, Hairbands, Rock") - a card's genre
-#: is purely this board-organization tag (`JukeboxSlot.genre`), not derived
-#: from the track's own tagged Genre(s) - "Hairbands" doesn't correspond to
-#: real genre metadata any file actually carries. Grew to seven the same
-#: day (James: "add 2 more chips: Christian, 80's. Then reorder them...
-#: Country, Christian, Classic Rock, Rock, 80's, Hairbands, Pop") - the
-#: tuple's order here is exactly the left-to-right chip order on the page
-#: (`ui/views/jukebox.py` builds one `ChipButton` per entry, in order) and
-#: the order every genre combo box lists them in too. Grew to ten on
-#: 2026-09-08 (James: "add 3 more genres to the jukebox: Metal, R&B,
-#: Hip/Hop") - appended, not interleaved into the earlier reorder, since
-#: this follow-up asked only to add chips, not to reorder existing ones.
-JUKEBOX_GENRES = (
+#: the board categories James originally hardcoded as chips on the Jukebox
+#: page (2026-09-07 follow-up: "I would like the jukebox page to have a
+#: chip of 5 genres: Classic Rock, Country, Pop, Hairbands, Rock" - grew to
+#: seven the same day, "add 2 more chips: Christian, 80's. Then reorder
+#: them... Country, Christian, Classic Rock, Rock, 80's, Hairbands, Pop" -
+#: then to ten on 2026-09-08, "add 3 more genres to the jukebox: Metal,
+#: R&B, Hip/Hop"). As of the 2026-09-22 follow-up (see the module
+#: docstring) this tuple is no longer read directly anywhere - it's only
+#: `get_jukebox_genres`'s seed for a fresh database, kept exactly as James
+#: last left it so an existing install's first read under the new code
+#: reproduces the same ten chips in the same order it already had, rather
+#: than reshuffling anyone's board the moment they upgrade.
+_DEFAULT_JUKEBOX_GENRES = (
     "Country", "Christian", "Classic Rock", "Rock", "80's", "Hairbands", "Pop",
     "Metal", "R&B", "Hip/Hop",
 )
+
+#: `Setting.key` holding the persisted, user-editable genre list, as JSON -
+#: see the module docstring's 2026-09-22 follow-up. Same "one `Setting`
+#: row per single persisted value" pattern `_NEXT_SLOT_NUMBER_KEY` below
+#: already follows.
+_GENRES_SETTING_KEY = "jukebox_genres"
 
 #: what a newly-placed track is filed under when the picker dialog's own
 #: `genre_combo` doesn't resolve to anything (an empty `genres` sequence,
@@ -178,6 +217,133 @@ def _next_slot_number(session: Session) -> int:
     setting.value = str(next_number + 1)
     session.flush()
     return next_number
+
+
+def get_jukebox_genres(session: Session) -> tuple[str, ...]:
+    """The current, persisted, left-to-right order of genre chips - what
+    `ui/views/jukebox.py`'s chip row, and every genre combo box in this
+    app, build themselves from (2026-09-22 follow-up; see the module
+    docstring). Seeded from `_DEFAULT_JUKEBOX_GENRES` the first time this
+    is ever called against a given database - same "no row yet, so create
+    one" pattern `_next_slot_number` above already follows for its own
+    single persisted value - so an existing install's first read under
+    this code reproduces the exact same chips it already had.
+
+    A stored value that fails to parse as a JSON list (shouldn't happen
+    outside direct database tampering, but `_next_slot_number`'s own
+    `Setting.value` is a plain string with no such guard either) falls
+    back to the same default tuple rather than raising - a corrupted
+    setting shouldn't be able to take the whole Jukebox page down."""
+    setting = session.get(Setting, _GENRES_SETTING_KEY)
+    if setting is None:
+        setting = Setting(
+            key=_GENRES_SETTING_KEY, value=json.dumps(list(_DEFAULT_JUKEBOX_GENRES))
+        )
+        session.add(setting)
+        session.flush()
+    try:
+        genres = json.loads(setting.value)
+        if not isinstance(genres, list) or not all(isinstance(g, str) for g in genres):
+            raise ValueError("not a list of strings")
+    except (TypeError, ValueError):
+        genres = list(_DEFAULT_JUKEBOX_GENRES)
+    return tuple(genres)
+
+
+def _save_jukebox_genres(session: Session, genres: Sequence[str]) -> None:
+    """Write the ordered genre list back out - shared by `add_genre`/
+    `rename_genre`/`delete_genre` below, all three of which read the
+    current list via `get_jukebox_genres` (which will have already
+    created the `Setting` row if this is the very first mutation), mutate
+    their own copy of it, and hand it back here."""
+    setting = session.get(Setting, _GENRES_SETTING_KEY)
+    value = json.dumps(list(genres))
+    if setting is None:
+        session.add(Setting(key=_GENRES_SETTING_KEY, value=value))  # pragma: no cover - defensive
+    else:
+        setting.value = value
+    session.flush()
+
+
+def add_genre(session: Session, name: str) -> bool:
+    """Appends a new chip to the end of the row - James: "Ability to add...
+    a genre." Blank (whitespace-only) names are rejected, as is a name
+    that already exists on the board, compared case-insensitively so
+    "rock" can't sit next to "Rock" as a second, confusingly-similar chip.
+    Returns False as a no-op for either rejection, True once the new list
+    is committed via `session.flush()` (inside `_save_jukebox_genres`)."""
+    name = name.strip()
+    if not name:
+        return False
+    genres = list(get_jukebox_genres(session))
+    if any(existing.lower() == name.lower() for existing in genres):
+        return False
+    genres.append(name)
+    _save_jukebox_genres(session, genres)
+    return True
+
+
+def rename_genre(session: Session, old_name: str, new_name: str) -> bool:
+    """Relabels one chip in place - its position in the row doesn't
+    change, only its text - and relabels every `JukeboxSlot.genre` that
+    was filed under the old name to match, in the same bulk `UPDATE`, so
+    no card is silently stranded under a tag no chip shows any more (see
+    the module docstring). James: "The Rename would be by holding your
+    finger on the genre for a couple of seconds" - the gesture itself
+    lives in `ui/views/jukebox.py`; this is just the write it triggers.
+
+    Returns False as a no-op if `old_name` isn't a genre that currently
+    exists (the chip row changed underneath the gesture - the same
+    "board changed while a dialog/gesture was in flight" guard every
+    other mutator in this module already returns False for), a blank
+    `new_name`, or a `new_name` that collides case-insensitively with a
+    *different* existing genre. Renaming a genre to the exact name it
+    already has is a no-op that still returns True - nothing to persist,
+    but nothing to reject either."""
+    new_name = new_name.strip()
+    if not new_name:
+        return False
+    genres = list(get_jukebox_genres(session))
+    if old_name not in genres:
+        return False
+    if new_name == old_name:
+        return True
+    if any(existing.lower() == new_name.lower() for existing in genres if existing != old_name):
+        return False
+    genres[genres.index(old_name)] = new_name
+    _save_jukebox_genres(session, genres)
+    session.execute(
+        update(JukeboxSlot).where(JukeboxSlot.genre == old_name).values(genre=new_name)
+    )
+    session.flush()
+    return True
+
+
+def delete_genre(session: Session, name: str) -> bool:
+    """Removes one chip outright - James: "Ability to add, delete and
+    rename a genre." Every card still filed under it is reassigned rather
+    than left stranded (see the module docstring): to `DEFAULT_JUKEBOX_
+    GENRE` ("Rock") if that's still one of the remaining genres, otherwise
+    to whatever the new first genre in the row is - there's always at
+    least one, since the guard below refuses to delete the very last
+    genre in the first place (`ui/views/jukebox.py` always needs a chip to
+    show, and `place_track` always needs somewhere to file a brand-new
+    card with no genre picker of its own).
+
+    Returns False as a no-op if `name` isn't a genre that currently exists
+    or is the only one left; True once both the shortened list and the
+    reassigned slots are committed via `session.flush()`."""
+    genres = list(get_jukebox_genres(session))
+    if name not in genres or len(genres) <= 1:
+        return False
+    genres.remove(name)
+    fallback = DEFAULT_JUKEBOX_GENRE if DEFAULT_JUKEBOX_GENRE in genres else genres[0]
+    _save_jukebox_genres(session, genres)
+    session.execute(
+        update(JukeboxSlot).where(JukeboxSlot.genre == name).values(genre=fallback)
+    )
+    session.flush()
+    return True
 
 
 def place_track(

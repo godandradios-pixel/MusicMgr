@@ -612,17 +612,25 @@ class JukeboxSlot(Base):
     side_b_track_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("tracks.id", ondelete="SET NULL")
     )
-    #: which of the five fixed board chips this card is filed under (2026-09-07
-    #: follow-up, James: "I would like the jukebox page to have a chip of 5
-    #: genres: Classic Rock, Country, Pop, Hairbands, Rock. Then have the pages
-    #: of the cards where you can select the location and what genre page a
+    #: which board chip this card is filed under (2026-09-07 follow-up,
+    #: James: "I would like the jukebox page to have a chip of 5 genres:
+    #: Classic Rock, Country, Pop, Hairbands, Rock. Then have the pages of
+    #: the cards where you can select the location and what genre page a
     #: track will be organized by"). Purely a board-organization tag, not
     #: derived from the track's own tagged Genre(s) - "Hairbands" doesn't
-    #: correspond to real genre metadata any file actually carries. The
-    #: default literal here must stay in sync with
+    #: correspond to real genre metadata any file actually carries. No
+    #: longer a fixed set of five (then ten) - as of a 2026-09-22
+    #: follow-up (James: "Ability to add, delete and rename a genre"), the
+    #: valid chip names themselves are a per-install, user-editable,
+    #: persisted list (`services/jukebox.py:get_jukebox_genres`); this
+    #: column just holds whichever one a given card is tagged with, same
+    #: as always. The default literal here must stay in sync with
     #: services/jukebox.py:DEFAULT_JUKEBOX_GENRE - this module can't import
     #: that constant without a circular import (services already imports from
-    #: db.models).
+    #: db.models). If "Rock" itself is ever renamed or deleted, this default
+    #: is still a harmless starting label for a slot created with no explicit
+    #: genre - see `delete_genre`'s own reassignment fallback for what
+    #: happens to a *card* left pointing at a genre that no longer exists.
     genre: Mapped[str] = mapped_column(String(40), default="Rock", server_default="Rock")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 

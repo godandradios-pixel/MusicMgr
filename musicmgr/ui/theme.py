@@ -371,6 +371,19 @@ QPushButton#ChipWarm:checked {{
     border-color: {c['jukebox_key']};
     color: #fff;
 }}
+/* the text box a genre chip (or the trailing "+" chip) turns into
+   mid-rename/add (2026-09-22 follow-up - see ui/views/jukebox.py's
+   _InlineGenreEdit) - same pill radius/height/padding as #ChipWarm right
+   above so swapping one for the other doesn't visibly jump the row, plus
+   a border in the jukebox key color so it still reads as "something's
+   being edited" rather than a plain, unstyled QLineEdit. */
+QLineEdit#GenreChipEditor {{
+    border-radius: 18px;
+    min-height: 44px;
+    padding: 0 18px;
+    background: {c['surface']};
+    border: 2px solid {c['jukebox_key']};
+}}
 QPushButton#RowPageArrow {{
     background: {c['surface_alt']};
     border-radius: 16px;

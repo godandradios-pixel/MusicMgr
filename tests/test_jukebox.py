@@ -180,6 +180,121 @@ class TestPlaceTrack:
         assert numbers == [1, 2, 3]
 
 
+class TestGetJukeboxGenres:
+    def test_seeds_the_default_list_on_first_read(self, session):
+        genres = jb.get_jukebox_genres(session)
+
+        assert genres == (
+            "Country", "Christian", "Classic Rock", "Rock", "80's",
+            "Hairbands", "Pop", "Metal", "R&B", "Hip/Hop",
+        )
+
+    def test_a_second_read_returns_the_same_persisted_list_not_a_fresh_seed(self, session):
+        jb.add_genre(session, "Jazz")
+
+        assert jb.get_jukebox_genres(session)[-1] == "Jazz"
+        assert jb.get_jukebox_genres(session)[-1] == "Jazz"  # not reseeded
+
+
+class TestAddGenre:
+    def test_appends_a_new_genre_to_the_end(self, session):
+        added = jb.add_genre(session, "Jazz")
+
+        assert added is True
+        assert jb.get_jukebox_genres(session)[-1] == "Jazz"
+
+    def test_surrounding_whitespace_is_stripped(self, session):
+        jb.add_genre(session, "  Jazz  ")
+
+        assert jb.get_jukebox_genres(session)[-1] == "Jazz"
+
+    def test_a_blank_name_is_a_no_op(self, session):
+        before = jb.get_jukebox_genres(session)
+
+        assert jb.add_genre(session, "   ") is False
+        assert jb.get_jukebox_genres(session) == before
+
+    def test_a_case_insensitive_duplicate_is_a_no_op(self, session):
+        before = jb.get_jukebox_genres(session)
+
+        assert jb.add_genre(session, "rock") is False
+        assert jb.get_jukebox_genres(session) == before
+
+
+class TestRenameGenre:
+    def test_relabels_the_chip_in_place_without_reordering(self, session):
+        before = jb.get_jukebox_genres(session)
+        rock_index = before.index("Rock")
+
+        renamed = jb.rename_genre(session, "Rock", "Album Rock")
+
+        assert renamed is True
+        after = jb.get_jukebox_genres(session)
+        assert after[rock_index] == "Album Rock"
+        assert len(after) == len(before)
+
+    def test_relabels_every_slot_tagged_with_the_old_name(self, session):
+        artist = lib.get_or_create_artist(session, "Artist")
+        track = make_track(session, "Song", artist="Artist")
+        slot = jb.place_track(session, artist.id, track.id, genre="Rock")
+
+        jb.rename_genre(session, "Rock", "Album Rock")
+
+        assert slot.genre == "Album Rock"
+
+    def test_a_nonexistent_old_name_is_a_no_op(self, session):
+        assert jb.rename_genre(session, "Nonexistent", "Whatever") is False
+
+    def test_a_blank_new_name_is_a_no_op(self, session):
+        assert jb.rename_genre(session, "Rock", "   ") is False
+
+    def test_renaming_to_its_own_current_name_is_a_no_op_success(self, session):
+        assert jb.rename_genre(session, "Rock", "Rock") is True
+
+    def test_renaming_to_a_case_insensitive_duplicate_of_another_genre_is_a_no_op(self, session):
+        assert jb.rename_genre(session, "Rock", "pop") is False
+        assert "Rock" in jb.get_jukebox_genres(session)
+
+
+class TestDeleteGenre:
+    def test_removes_the_genre_from_the_list(self, session):
+        deleted = jb.delete_genre(session, "Metal")
+
+        assert deleted is True
+        assert "Metal" not in jb.get_jukebox_genres(session)
+
+    def test_reassigns_slots_under_the_deleted_genre_to_the_default(self, session):
+        artist = lib.get_or_create_artist(session, "Artist")
+        track = make_track(session, "Song", artist="Artist")
+        slot = jb.place_track(session, artist.id, track.id, genre="Metal")
+
+        jb.delete_genre(session, "Metal")
+
+        assert slot.genre == jb.DEFAULT_JUKEBOX_GENRE
+
+    def test_reassigns_to_the_new_first_genre_when_the_default_is_also_gone(self, session):
+        artist = lib.get_or_create_artist(session, "Artist")
+        track = make_track(session, "Song", artist="Artist")
+        slot = jb.place_track(session, artist.id, track.id, genre="Metal")
+        jb.delete_genre(session, jb.DEFAULT_JUKEBOX_GENRE)  # "Rock" gone first
+
+        jb.delete_genre(session, "Metal")
+
+        assert slot.genre == jb.get_jukebox_genres(session)[0]
+
+    def test_a_nonexistent_genre_is_a_no_op(self, session):
+        assert jb.delete_genre(session, "Nonexistent") is False
+
+    def test_deleting_the_last_remaining_genre_is_a_no_op(self, session):
+        for genre in list(jb.get_jukebox_genres(session))[1:]:
+            jb.delete_genre(session, genre)
+        last = jb.get_jukebox_genres(session)
+        assert len(last) == 1
+
+        assert jb.delete_genre(session, last[0]) is False
+        assert jb.get_jukebox_genres(session) == last
+
+
 class TestSetSlotGenre:
     def test_relabels_the_slot_and_keeps_its_number_and_tracks(self, session):
         artist = lib.get_or_create_artist(session, "Artist")

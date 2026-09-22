@@ -21,19 +21,38 @@ make the suite slow and timing-flaky for no real coverage gain) -
 `_schedule_search` is only checked to start the timer without querying
 immediately, and `_run_search` (what the timer actually fires) is called
 directly to test the query/render behavior itself.
+
+`TestGenreChip`/`TestGenreChipRow` cover the 2026-09-22 genre-management
+follow-up - see `services/jukebox.py`'s module docstring for the
+persisted-list side. The long-press gesture's `QTimer` isn't spun for
+real here (same "don't wait on a real timer" call `TestJukeboxPickerDialog`
+above already makes for its own debounce) - `_on_long_press_timeout` is
+called directly to simulate a long press firing, and a quick tap is
+simulated with real `QMouseEvent`s the same way
+`test_jukebox_strip.py:TestStartDrag` drives its own press/move/release
+sequence. `QMessageBox.question` (the delete-genre confirmation) is
+monkeypatched to return a fixed answer rather than driving a real modal
+popup, the same "swap the one Qt call that would block" idea used
+throughout this suite for anything that would otherwise open a real
+dialog.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QCoreApplication, QEvent, QMimeData, QPoint, Qt
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
-from PySide6.QtWidgets import QCheckBox
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeyEvent, QMouseEvent
+from PySide6.QtWidgets import QCheckBox, QMessageBox
 
 from musicmgr.services import jukebox as jb
 from musicmgr.services import library as lib
 from musicmgr.services.matching import normalize
 from musicmgr.db.models import Track
-from musicmgr.ui.views.jukebox import JukeboxPickerDialog, JukeboxView
+from musicmgr.ui.views.jukebox import (
+    JukeboxPickerDialog,
+    JukeboxView,
+    _GenreChip,
+    _InlineGenreEdit,
+)
 from musicmgr.ui.widgets.jukebox_strip import SLOT_MIME_TYPE
 
 
@@ -330,3 +349,275 @@ class TestJukeboxPickerDialog:
         checkbox = dialog.track_list.itemWidget(dialog.track_list.item(0))
         assert checkbox.isChecked()
         assert dialog._picks == {1: 10}
+
+
+def chip_for(view: JukeboxView, genre: str) -> _GenreChip:
+    for chip in view._genre_chips.buttons():
+        if chip.property("genre") == genre:
+            return chip
+    raise AssertionError(f"no genre chip for {genre!r}")
+
+
+def press_event(pos=QPoint(0, 0)) -> QMouseEvent:
+    return QMouseEvent(QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+
+
+def release_event(pos=QPoint(0, 0)) -> QMouseEvent:
+    return QMouseEvent(QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+
+
+class TestInlineGenreEdit:
+    """`_InlineGenreEdit`'s one addition over a plain `QLineEdit` - see its
+    own docstring for why Escape needs special handling here at all."""
+
+    def test_escape_emits_cancelled_instead_of_the_default_qlineedit_behavior(self, qapp):
+        editor = _InlineGenreEdit("Rock")
+        cancelled = []
+        editor.cancelled.connect(lambda: cancelled.append(True))
+
+        editor.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+
+        assert cancelled == [True]
+
+    def test_an_ordinary_key_is_not_intercepted(self, qapp):
+        editor = _InlineGenreEdit("")
+        cancelled = []
+        editor.cancelled.connect(lambda: cancelled.append(True))
+
+        editor.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_A, Qt.NoModifier, "a"))
+
+        assert cancelled == []
+        assert editor.text() == "a"
+
+
+class TestGenreChip:
+    """`_GenreChip`'s long-press gesture in isolation, no `JukeboxView`
+    needed - see the module docstring's note on how the long-press timer
+    itself is simulated rather than waited on."""
+
+    def test_a_quick_tap_still_behaves_like_an_ordinary_checkable_click(self, qapp):
+        chip = _GenreChip("Rock")
+        fired = []
+        chip.renameRequested.connect(lambda: fired.append(True))
+
+        chip.mousePressEvent(press_event())
+        chip.mouseReleaseEvent(release_event())
+
+        assert fired == []
+        assert chip.isChecked()
+
+    def test_a_long_press_emits_renamerequested_and_swallows_the_release(self, qapp):
+        chip = _GenreChip("Rock")
+        fired = []
+        chip.renameRequested.connect(lambda: fired.append(True))
+
+        chip.mousePressEvent(press_event())
+        chip._on_long_press_timeout()  # simulate the timer firing while still held
+        chip.mouseReleaseEvent(release_event())
+
+        assert fired == [True]
+        # the release that followed the long press must not also register
+        # as an ordinary click - otherwise the chip would toggle checked
+        # right as the rename box opens underneath it.
+        assert not chip.isChecked()
+
+    def test_moving_before_the_timer_fires_cancels_the_pending_long_press(self, qapp):
+        chip = _GenreChip("Rock")
+        fired = []
+        chip.renameRequested.connect(lambda: fired.append(True))
+
+        chip.mousePressEvent(press_event())
+        chip.mouseMoveEvent(
+            QMouseEvent(QEvent.MouseMove, QPoint(50, 50), Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        )
+
+        assert not chip._press_timer.isActive()
+        chip.mouseReleaseEvent(release_event())
+        assert fired == []
+
+    def test_context_menu_actions_emit_the_matching_signal(self, qapp):
+        chip = _GenreChip("Rock")
+        renamed = []
+        deleted = []
+        chip.renameRequested.connect(lambda: renamed.append(True))
+        chip.deleteRequested.connect(lambda: deleted.append(True))
+
+        menu = chip._build_context_menu()
+        actions = {action.text(): action for action in menu.actions()}
+        actions["Rename genre…"].trigger()
+        actions["Delete genre…"].trigger()
+
+        assert renamed == [True]
+        assert deleted == [True]
+
+
+class TestGenreChipRow:
+    """`JukeboxView`'s side of the 2026-09-22 genre-management follow-up:
+    building the chip row from the persisted list, and the add/rename/
+    delete flows the chip signals and the trailing "+" chip trigger."""
+
+    def test_builds_one_chip_per_persisted_genre_plus_a_trailing_add_chip(self, ctx, session):
+        view = JukeboxView(ctx)
+
+        chip_genres = [c.property("genre") for c in view._genre_chips.buttons()]
+        assert chip_genres == list(jb.get_jukebox_genres(session))
+        assert view._add_chip.text() == "+"
+        assert not view._add_chip.isCheckable()
+
+    def test_the_default_genre_starts_checked(self, ctx, session):
+        view = JukeboxView(ctx)
+
+        assert chip_for(view, jb.DEFAULT_JUKEBOX_GENRE).isChecked()
+
+    def test_rename_swaps_the_chip_for_a_prefilled_focused_editor(self, ctx, session):
+        view = JukeboxView(ctx)
+        chip = chip_for(view, "Rock")
+
+        view._begin_rename_genre(chip, "Rock")
+
+        assert chip.isHidden()
+        assert view._genre_editor is not None
+        assert view._genre_editor.text() == "Rock"
+
+    def test_committing_a_rename_relabels_the_chip_and_follows_the_active_filter(self, ctx, session):
+        view = JukeboxView(ctx)
+        chip = chip_for(view, "Rock")
+        view._begin_rename_genre(chip, "Rock")
+
+        view._genre_editor.setText("Album Rock")
+        view._finish_genre_edit(commit=True)
+
+        assert view._genre_editor is None
+        assert "Album Rock" in [c.property("genre") for c in view._genre_chips.buttons()]
+        assert "Rock" not in [c.property("genre") for c in view._genre_chips.buttons()]
+        # "Rock" was the active chip when the rename started - the filter
+        # should still point at whatever it's now called, not vanish.
+        assert view._genre == "Album Rock"
+        assert chip_for(view, "Album Rock").isChecked()
+
+    def test_renaming_relabels_cards_already_filed_under_the_old_name(self, ctx, session):
+        artist = lib.get_or_create_artist(session, "Artist")
+        track = make_track(session, "Song")
+        jb.place_track(session, artist.id, track.id, genre="Metal")
+        session.flush()
+        view = JukeboxView(ctx)
+        chip = chip_for(view, "Metal")
+
+        view._begin_rename_genre(chip, "Metal")
+        view._genre_editor.setText("Heavy Metal")
+        view._finish_genre_edit(commit=True)
+
+        with ctx.session() as s:
+            assert jb.slot_count(s, genre="Metal") == 0
+            assert jb.slot_count(s, genre="Heavy Metal") == 1
+
+    def test_cancelling_a_rename_via_escape_leaves_the_genre_untouched(self, ctx, session):
+        view = JukeboxView(ctx)
+        chip = chip_for(view, "Rock")
+        before = jb.get_jukebox_genres(session)
+        view._begin_rename_genre(chip, "Rock")
+        view._genre_editor.setText("Should not stick")
+
+        view._genre_editor.cancelled.emit()
+
+        assert view._genre_editor is None
+        assert jb.get_jukebox_genres(session) == before
+        assert chip_for(view, "Rock") is chip
+        assert not chip.isHidden()
+
+    def test_renaming_to_a_duplicate_name_notifies_and_changes_nothing(self, ctx, session):
+        view = JukeboxView(ctx)
+        messages = []
+        ctx.notified.connect(messages.append)
+        before = jb.get_jukebox_genres(session)
+        chip = chip_for(view, "Rock")
+        view._begin_rename_genre(chip, "Rock")
+
+        view._genre_editor.setText("Pop")
+        view._finish_genre_edit(commit=True)
+
+        assert jb.get_jukebox_genres(session) == before
+        assert len(messages) == 1
+
+    def test_tapping_the_plus_chip_opens_a_blank_editor_in_its_place(self, ctx, session):
+        view = JukeboxView(ctx)
+        add_chip = view._add_chip
+
+        view._begin_add_genre()
+
+        assert add_chip.isHidden()
+        assert view._genre_editor.text() == ""
+
+    def test_committing_a_new_genre_appends_a_chip(self, ctx, session):
+        view = JukeboxView(ctx)
+        view._begin_add_genre()
+
+        view._genre_editor.setText("Jazz")
+        view._finish_genre_edit(commit=True)
+
+        assert "Jazz" in [c.property("genre") for c in view._genre_chips.buttons()]
+
+    def test_committing_a_blank_add_is_a_no_op(self, ctx, session):
+        view = JukeboxView(ctx)
+        before = jb.get_jukebox_genres(session)
+        view._begin_add_genre()
+
+        view._genre_editor.setText("   ")
+        view._finish_genre_edit(commit=True)
+
+        assert jb.get_jukebox_genres(session) == before
+
+    def test_a_second_edit_cannot_open_while_one_is_already_in_progress(self, ctx, session):
+        view = JukeboxView(ctx)
+        chip = chip_for(view, "Rock")
+        view._begin_rename_genre(chip, "Rock")
+        first_editor = view._genre_editor
+
+        view._begin_add_genre()
+
+        assert view._genre_editor is first_editor
+
+    def test_delete_genre_confirmed_removes_the_chip_and_reassigns_its_cards(self, ctx, session, monkeypatch):
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+        artist = lib.get_or_create_artist(session, "Artist")
+        track = make_track(session, "Song")
+        slot = jb.place_track(session, artist.id, track.id, genre="Metal")
+        session.flush()
+        view = JukeboxView(ctx)
+
+        view._on_delete_genre_requested("Metal")
+
+        assert "Metal" not in [c.property("genre") for c in view._genre_chips.buttons()]
+        with ctx.session() as s:
+            row = jb.get_slot_row(s, slot.slot_number)
+        assert row["genre"] == jb.DEFAULT_JUKEBOX_GENRE
+
+    def test_delete_genre_declined_leaves_the_board_untouched(self, ctx, session, monkeypatch):
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+        before = jb.get_jukebox_genres(session)
+        view = JukeboxView(ctx)
+
+        view._on_delete_genre_requested("Metal")
+
+        assert jb.get_jukebox_genres(session) == before
+
+    def test_deleting_the_last_genre_is_refused_before_ever_prompting(self, ctx, session, monkeypatch):
+        prompted = []
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            staticmethod(lambda *a, **k: prompted.append(True) or QMessageBox.Yes),
+        )
+        for genre in list(jb.get_jukebox_genres(session))[1:]:
+            jb.delete_genre(session, genre)
+        session.flush()
+        last = jb.get_jukebox_genres(session)[0]
+        view = JukeboxView(ctx)
+        messages = []
+        ctx.notified.connect(messages.append)
+
+        view._on_delete_genre_requested(last)
+
+        assert prompted == []
+        assert len(messages) == 1
+        assert jb.get_jukebox_genres(session) == (last,)

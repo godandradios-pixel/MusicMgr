@@ -395,13 +395,19 @@ class NowPlayingView(BaseView):
                 if artist_id is not None and release is not None and release.album_artist is not None
                 else ""
             )
+            # fetched inside this same session (2026-09-22 follow-up - see
+            # services/jukebox.py's module docstring) since the genre list
+            # is now a persisted, user-editable `Setting` row rather than
+            # a static import-time constant, and the session above is
+            # already closed by the time the dialog below is constructed.
+            genres = jukebox_svc.get_jukebox_genres(session)
         if artist_id is None:
             self.ctx.notify("This track has no album artist to file a jukebox slot under")
             return
         dialog = JukeboxPickerDialog(
             self,
             self._search_addable_tracks,
-            genres=jukebox_svc.JUKEBOX_GENRES,
+            genres=genres,
             default_genre=jukebox_svc.DEFAULT_JUKEBOX_GENRE,
             initial_artist_query=artist_name,
             initial_track_query=title,
