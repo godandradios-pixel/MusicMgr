@@ -31,7 +31,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Callable, Iterable, Optional, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -46,6 +46,7 @@ from ..db.models import (
     Setting,
     Track,
 )
+from ..db.session import session_scope
 from .matching import best_match, normalize
 
 log = logging.getLogger(__name__)
@@ -189,18 +190,65 @@ def match_entry(session: Session, entry: ChartEntry, threshold: float = 0.72) ->
     return False
 
 
-def rematch_chart(session: Session, chart_id: int, threshold: float = 0.72) -> int:
-    """Re-run matching for a whole chart, e.g. after adding music."""
+def rematch_chart(
+    session: Session,
+    chart_id: int,
+    threshold: float = 0.72,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> int:
+    """Re-run matching for a whole chart, e.g. after adding music.
+
+    `progress` (2026-09-22, part of rematch_all_charts below) is called
+    `(done, total, "")` per entry - fuzzy title/artist matching
+    (`matching.best_match`) against every candidate track is real CPU work
+    per entry, not a cheap lookup, so a chart with a few thousand entries
+    is worth reporting progress through rather than leaving Settings
+    looking frozen for however long that takes."""
     matched = 0
     stmt = (
         select(ChartEntry)
         .join(ChartIssue, ChartEntry.issue_id == ChartIssue.id)
         .where(ChartIssue.chart_id == chart_id)
     )
-    for entry in session.scalars(stmt):
+    entries = session.scalars(stmt).all()
+    total = len(entries)
+    for i, entry in enumerate(entries, start=1):
         if match_entry(session, entry, threshold):
             matched += 1
+        if progress and (i % 50 == 0 or i == total):
+            progress(i, total, "")
     return matched
+
+
+def rematch_all_charts(
+    threshold: float = 0.72,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> int:
+    """Settings' bulk "Re-match" button (2026-09-22, part of "does the
+    progress bar also work on ... the other settings options that scan" -
+    this used to be a plain loop inline in SettingsView.rematch_all,
+    entirely on the UI thread with no feedback at all). Opens its own
+    session, same as every other bulk action's service-level entry point
+    (download_bios_for_artists/update_popularity_for_artists/
+    search_artwork_for_releases) - this one just needed pulling out of
+    SettingsView to have a session of its own to give a background thread.
+
+    `progress` gets one `(0, 0, "<chart name>")` tick per chart (mirroring
+    metadata_health.scan_missing_metadata's own phase-announcement shape),
+    then rematch_chart's own real per-entry ticks for that chart."""
+    with session_scope() as session:
+        chart_ids_and_names = [
+            (chart.id, chart.name)
+            for chart in session.scalars(
+                select(Chart).where(Chart.kind == Chart.KIND_EXTERNAL)
+            )
+        ]
+        total = 0
+        for chart_id, name in chart_ids_and_names:
+            if progress:
+                progress(0, 0, f"Re-matching {name}…")
+            total += rematch_chart(session, chart_id, threshold, progress=progress)
+        return total
 
 
 def search_tracks_for_match(

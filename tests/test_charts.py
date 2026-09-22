@@ -292,6 +292,91 @@ class TestRematchChart:
 
         assert matched == 1
 
+    def test_progress_callback_reports_the_final_total(self, session):
+        make_owned_track(session, "Thriller", "Michael Jackson")
+        chart = charts.get_or_create_chart(session, "Test")
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2020, 1, 1))
+        session.add(issue)
+        session.flush()
+        session.add(ChartEntry(
+            issue_id=issue.id, rank=1, title="Thriller", artist_name="Michael Jackson",
+            title_key=normalize("Thriller"), artist_key=normalize("Michael Jackson"),
+        ))
+        session.flush()
+
+        calls = []
+        charts.rematch_chart(session, chart.id, progress=lambda done, total, name: calls.append((done, total)))
+
+        assert calls
+        assert calls[-1] == (1, 1)
+
+
+class TestRematchAllCharts:
+    """2026-09-22 - James: "does the progress bar also work on ... the
+    other settings options that scan" - SettingsView.rematch_all used to
+    hold this loop-over-every-external-chart logic itself; it moved here
+    so RematchChartsThread (ui/widgets/common.py) has a single service-
+    level entry point to run on a background thread, the same shape every
+    other bulk action's own service function (download_bios_for_artists,
+    update_popularity_for_artists, search_artwork_for_releases) already
+    has."""
+
+    def test_rematches_every_external_chart_and_sums_the_matched_count(self, session):
+        make_owned_track(session, "Thriller", "Michael Jackson")
+        make_owned_track(session, "Purple Rain", "Prince")
+        chart_a = charts.get_or_create_chart(session, "Chart A")
+        chart_b = charts.get_or_create_chart(session, "Chart B")
+        for chart, title, artist in (
+            (chart_a, "Thriller", "Michael Jackson"),
+            (chart_b, "Purple Rain", "Prince"),
+        ):
+            issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2020, 1, 1))
+            session.add(issue)
+            session.flush()
+            session.add(ChartEntry(
+                issue_id=issue.id, rank=1, title=title, artist_name=artist,
+                title_key=normalize(title), artist_key=normalize(artist),
+            ))
+        session.flush()
+
+        total = charts.rematch_all_charts()
+
+        assert total == 2
+
+    def test_only_external_charts_are_rematched(self, session):
+        make_owned_track(session, "Thriller", "Michael Jackson")
+        chart = charts.get_or_create_chart(session, "Derived", kind="playback")
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2020, 1, 1))
+        session.add(issue)
+        session.flush()
+        session.add(ChartEntry(
+            issue_id=issue.id, rank=1, title="Thriller", artist_name="Michael Jackson",
+            title_key=normalize("Thriller"), artist_key=normalize("Michael Jackson"),
+        ))
+        session.flush()
+
+        total = charts.rematch_all_charts()
+
+        assert total == 0
+
+    def test_progress_announces_each_chart_by_name(self, session):
+        make_owned_track(session, "Thriller", "Michael Jackson")
+        chart = charts.get_or_create_chart(session, "Named Chart")
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2020, 1, 1))
+        session.add(issue)
+        session.flush()
+        session.add(ChartEntry(
+            issue_id=issue.id, rank=1, title="Thriller", artist_name="Michael Jackson",
+            title_key=normalize("Thriller"), artist_key=normalize("Michael Jackson"),
+        ))
+        session.flush()
+
+        calls = []
+        charts.rematch_all_charts(progress=lambda done, total, name: calls.append((done, total, name)))
+
+        phase_names = {name for done, total, name in calls if total == 0}
+        assert "Re-matching Named Chart…" in phase_names
+
 
 class TestChartShape:
     def test_no_issues_is_a_dash(self, session):

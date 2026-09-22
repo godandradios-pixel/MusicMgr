@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QTreeWidgetItemIterator,
@@ -44,10 +45,16 @@ from PySide6.QtWidgets import (
 )
 
 from ...config import TOUCH
+from ...db.session import session_scope
 from ...services import artist_bio_downloader as bio_dl
+from ...services import artist_images as artist_images_svc
 from ...services import artwork_downloader as artwork_dl
+from ...services import charts as chart_svc
 from ...services import lyrics_downloader as lyrics_dl
 from ...services import lastfm_popularity as popularity_dl
+from ...services import metadata_health
+from ...services import scanner
+from ...services import video_scanner
 from ..theme import COLORS
 
 ROLE_PAYLOAD = Qt.UserRole + 1
@@ -1192,6 +1199,94 @@ class ArtworkBulkThread(QThread):
         self.finished_with.emit(result)
 
 
+class MetadataScanThread(QThread):
+    """Runs `services.metadata_health.scan_missing_metadata` off the UI
+    thread - Settings' "Missing metadata" dashboard button
+    (MissingMetadataDialog below). All four of that dashboard's queries run
+    in here now, not just the slow lyrics one - James, 2026-09-22, on the
+    first version of this: "I click the option and it looks like nothing is
+    happening", because the other three (fast, but not free) ran
+    synchronously in the button's own click handler before this thread -
+    and this progress bar - ever appeared. `progress` fires a `(0, 0,
+    "<phase>")` tick at the start of each of the three fast phases (nothing
+    meaningful to show a fraction of, but the phase name alone is enough to
+    prove something's happening) and real `(done, total, "")` ticks
+    throughout the slow lyrics phase, the same shape
+    BioDownloadThread/PopularityDownloadThread above already use."""
+
+    progress = Signal(int, int, str)
+    finished_with = Signal(object)  # metadata_health.ScanResult
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        result = metadata_health.scan_missing_metadata(
+            progress=lambda done, total, name: self.progress.emit(done, total, name),
+        )
+        self.finished_with.emit(result)
+
+
+class ArtistImagesImportThread(QThread):
+    """Runs `services.artist_images.import_artist_images` off the UI
+    thread - Settings' "Artist images" ("Import…") button. 2026-09-22 -
+    James: "does the progress bar also work on the import of artist
+    images" (it didn't - this used to run entirely synchronously in the
+    button's own click handler). Opens its own session, same reason
+    MetadataScanThread's underlying scan does - a session isn't safe to
+    share across threads (see conftest.py's own docstring on this)."""
+
+    progress = Signal(int, int, str)
+    finished_with = Signal(object)  # artist_images.ArtistImageResult
+
+    def __init__(self, folder, overwrite: bool = True, copy: bool = True, parent=None) -> None:
+        super().__init__(parent)
+        self.folder = folder
+        self.overwrite = overwrite
+        self.copy = copy
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        with session_scope() as session:
+            result = artist_images_svc.import_artist_images(
+                session, self.folder, overwrite=self.overwrite, copy=self.copy,
+                progress=lambda done, total, name: self.progress.emit(done, total, name),
+            )
+        self.finished_with.emit(result)
+
+
+class VerifyFilesThread(QThread):
+    """Runs "Verify files" (scanner.mark_missing_files then
+    video_scanner.mark_missing_videos) off the UI thread. 2026-09-22 -
+    James: "does the progress bar also work on ... verify files" (it
+    didn't). Two phases, same `(0, 0, "<phase>")`-then-real-progress shape
+    MetadataScanThread's own scan uses for its own multi-phase run."""
+
+    progress = Signal(int, int, str)
+    finished_with = Signal(int)  # total newly-missing count, audio + video
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        emit = lambda done, total, name: self.progress.emit(done, total, name)
+        with session_scope() as session:
+            emit(0, 0, "Checking audio files…")
+            missing = scanner.mark_missing_files(session, progress=emit)
+            emit(0, 0, "Checking video files…")
+            missing += video_scanner.mark_missing_videos(session, progress=emit)
+        self.finished_with.emit(missing)
+
+
+class RematchChartsThread(QThread):
+    """Runs `services.charts.rematch_all_charts` off the UI thread -
+    Settings' "Charts" ("Re-match…") button. 2026-09-22 - James: "does the
+    progress bar also work on ... charts" (it didn't - this used to be a
+    plain loop inline in SettingsView.rematch_all)."""
+
+    progress = Signal(int, int, str)
+    finished_with = Signal(int)  # total chart entries newly matched
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        total = chart_svc.rematch_all_charts(
+            progress=lambda done, total, name: self.progress.emit(done, total, name),
+        )
+        self.finished_with.emit(total)
+
+
 class ArtworkPickerDialog(QDialog):
     """Lets James pick one Discogs search result as a release's cover -
     a touch-friendly icon grid (QListWidget in IconMode, large tiles
@@ -1258,6 +1353,145 @@ class ArtworkPickerDialog(QDialog):
         if index is None or not (0 <= index < len(self._candidates)):
             return None
         return self._candidates[index]
+
+
+class MissingMetadataDialog(QDialog):
+    """Settings' "Missing metadata" dashboard (James, 2026-09-22: "one
+    screen listing releases missing cover art, bio, lyrics, or popularity
+    data, instead of only surfacing that per-item") - one tab per
+    enrichment source, each a `TouchList` of what's still missing there.
+
+    Takes the four already-computed row lists (see
+    `services.metadata_health`) rather than querying anything itself - the
+    same "widget just renders what it's handed" convention
+    ArtworkPickerDialog/FolderPickerDialog above already follow, and the
+    reason the lyrics scan's own slow filesystem walk
+    (MetadataScanThread) happens before this dialog is even constructed,
+    not inside it.
+
+    Deliberately browse-and-jump only, no "fix all" button of its own
+    (James, 2026-09-22: asked for and chose that scope explicitly) -
+    tapping a row closes this dialog and hands the caller a `(kind, id)`
+    pair via `picked()`, the same request/response shape
+    `FolderPickerDialog.selected_folder_id()` uses. What happens with that
+    pick - `ctx.navigateRequested`/`openArtistRequested`/
+    `openReleaseRequested`, exactly Now Playing's own tappable-artist/
+    tappable-album pattern (ui/views/nowplaying.py) - is Settings' job, not
+    this dialog's; it has no `AppContext` of its own to do that with.
+
+    2026-09-22 same-day follow-up (James: "is there any way ... I can go
+    back and forth to fix them. Right now it's a one time click and then
+    back to running the missing metadata query again") - two additions to
+    make working through this list an actual back-and-forth loop instead
+    of a one-shot detour:
+
+    - `visited`, an optional `{(kind, id), ...}` set - rows already tapped
+      once (Settings remembers this across dialog reopens, see
+      SettingsView._metadata_visited) get a small "visited" trailing
+      marker, so returning here after fixing one item shows at a glance
+      which one to pick next instead of re-reading titles to recall it.
+    - A "Rescan" button alongside Close, distinct from a row pick or a
+      close by the `int` `exec()` returns - `REFRESH` below - since
+      Settings itself decides whether reopening this dialog needs fresh
+      data or can just replay whatever it already has in memory
+      (SettingsView._last_metadata_scan): tapping a row and coming back
+      shouldn't cost another full rescan (the lyrics half in particular -
+      see MetadataScanThread), but James fixing a batch of items and
+      wanting the list to reflect that needs an explicit way to ask for
+      one anyway.
+    """
+
+    #: `exec()` return value for "Rescan" - QDialog's own Accepted/Rejected
+    #: (1/0) are already spoken for by a row pick / Close, so this picks
+    #: the next unused value rather than colliding with either.
+    REFRESH = 2
+
+    def __init__(
+        self,
+        missing_covers: list,
+        missing_bios: list,
+        missing_popularity: list,
+        missing_lyrics: list,
+        visited: Optional[set] = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Missing metadata")
+        self.setMinimumSize(560, 560)
+        self._picked: Optional[tuple] = None
+        self._visited = visited or set()
+
+        layout = QVBoxLayout(self)
+        tabs = QTabWidget()
+        layout.addWidget(tabs, 1)
+
+        tabs.addTab(
+            self._build_tab(missing_covers, "release", "No releases missing a cover."),
+            f"Album artwork ({len(missing_covers)})",
+        )
+        tabs.addTab(
+            self._build_tab(missing_bios, "artist", "No artists missing a biography."),
+            f"Artist profiles ({len(missing_bios)})",
+        )
+        tabs.addTab(
+            self._build_tab(
+                missing_popularity, "artist", "No artists missing popularity data."
+            ),
+            f"Track popularity ({len(missing_popularity)})",
+        )
+        tabs.addTab(
+            self._build_tab(missing_lyrics, "release", "No releases missing lyrics."),
+            f"Lyrics ({len(missing_lyrics)})",
+        )
+
+        footer = QHBoxLayout()
+        refresh_btn = TouchButton("Rescan")
+        refresh_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        refresh_btn.clicked.connect(lambda: self.done(self.REFRESH))
+        footer.addWidget(refresh_btn)
+        footer.addStretch(1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.Close).clicked.connect(self.reject)
+        footer.addWidget(buttons)
+        layout.addLayout(footer)
+
+    def _build_tab(self, rows: list, kind: str, empty_text: str) -> QWidget:
+        if not rows:
+            return EmptyState("All caught up", empty_text)
+
+        tab = QWidget()
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 8, 0, 0)
+
+        touch_list = TouchList()
+        payloads = [self._row_payload(row, kind) for row in rows]
+        touch_list.set_rows(payloads)
+        touch_list.itemActivatedPayload.connect(self._on_row_picked)
+        tab_layout.addWidget(touch_list, 1)
+        return tab
+
+    def _row_payload(self, row: dict, kind: str) -> dict:
+        if kind == "artist":
+            payload = {"primary": row["name"], "kind": "artist", "id": row["id"]}
+        else:
+            payload = {"primary": row["title"], "secondary": row.get("artist", ""),
+                       "kind": "release", "id": row["id"]}
+            if "missing" in row and "total" in row:
+                payload["trail"] = f"{row['missing']}/{row['total']} missing"
+        if (kind, row["id"]) in self._visited:
+            payload["lead"] = "✓"
+            payload["lead_color"] = COLORS["text_dim"]
+        return payload
+
+    def _on_row_picked(self, payload: dict) -> None:
+        self._picked = (payload.get("kind"), payload.get("id"))
+        self.accept()
+
+    def picked(self) -> Optional[tuple]:
+        """`(kind, id)` - `kind` is "artist" or "release" - for whichever
+        row was tapped, or None if the dialog was just closed/cancelled."""
+        return self._picked
 
 
 # --------------------------------------------------------------------------

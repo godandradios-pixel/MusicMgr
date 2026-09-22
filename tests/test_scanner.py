@@ -425,6 +425,19 @@ class TestMarkMissingFiles:
 
         assert changed == 0
 
+    def test_progress_callback_reports_the_final_total(self, session, tmp_path):
+        """2026-09-22 - James: "does the progress bar also work on ...
+        verify files" - SettingsView.verify_files now runs this on a
+        background thread and needs real progress out of it."""
+        make_silent_wav(tmp_path / "Artist" / "Album" / "01 Song.wav")
+        scanner.scan_folder(session, tmp_path)
+
+        calls = []
+        scanner.mark_missing_files(session, progress=lambda done, total, name: calls.append((done, total)))
+
+        assert calls
+        assert calls[-1] == (1, 1)
+
 
 class TestPurgeOrphanedTracks:
     """Covers the 2026-09-07 fix: a track sitting only on a jukebox slot

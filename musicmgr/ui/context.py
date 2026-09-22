@@ -75,6 +75,25 @@ class AppContext(QObject):
     #: a standalone "Now Playing" ancestor rather than one of those grids.
     openReleaseRequested = Signal(int)
 
+    #: same as openArtistRequested, for Settings' "Missing metadata"
+    #: dashboard (2026-09-22 - James: "is there any way we can have a back
+    #: button when you go from missing metadata to the album and then
+    #: back") - a separate signal rather than reusing openArtistRequested
+    #: because the artist page's breadcrumb needs to say "Missing metadata"
+    #: and lead back there, not to the plain Artists grid (see
+    #: LibraryView._open_artist_from_missing_metadata).
+    openArtistFromMissingMetadataRequested = Signal(int)
+    #: same idea as openArtistFromMissingMetadataRequested, for a release
+    #: row (Album artwork / Lyrics tabs) - the release breadcrumb's "Now
+    #: Playing" ancestor (openReleaseRequested, above) becomes "Missing
+    #: metadata" here instead (LibraryView._open_release_from_missing_metadata).
+    openReleaseFromMissingMetadataRequested = Signal(int)
+    #: the "Missing metadata" breadcrumb's own back action, both of the
+    #: above - SettingsView reopens its dashboard dialog in response
+    #: (reusing its cached scan - see SettingsView._last_metadata_scan -
+    #: so this is instant, not another full rescan).
+    missingMetadataBackRequested = Signal()
+
     def __init__(self, player: PlayerController, parent=None) -> None:
         super().__init__(parent)
         self.player = player

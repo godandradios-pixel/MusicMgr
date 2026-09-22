@@ -271,6 +271,17 @@ class TestMarkMissingVideos:
         assert changed == 0
         assert session.scalar(select(Video)).is_missing is False
 
+    def test_progress_callback_reports_the_final_total(self, session, tmp_path):
+        path = tmp_path / "Artist" / "Clip.mp4"
+        make_placeholder_video(path)
+        video_scanner.scan_video_folder(session, tmp_path)
+
+        calls = []
+        video_scanner.mark_missing_videos(session, progress=lambda done, total, name: calls.append((done, total)))
+
+        assert calls
+        assert calls[-1] == (1, 1)
+
 
 class TestPurgeMissingVideos:
     def test_deletes_a_missing_video(self, session, tmp_path):

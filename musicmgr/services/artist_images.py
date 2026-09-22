@@ -23,7 +23,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -138,11 +138,21 @@ def import_artist_images(
     folder: Path | str,
     overwrite: bool = True,
     copy: bool = True,
+    progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> ArtistImageResult:
     """Match every image in `folder` to an artist and record it.
 
     `overwrite=False` leaves artists that already have a portrait alone.
-    """
+
+    2026-09-22 - James: "does the progress bar also work on the import of
+    artist images" (it didn't - this ran entirely on the UI thread with no
+    feedback at all, same class of problem the "Missing metadata"
+    dashboard had before it got a progress bar). `progress`, when given, is
+    called as `(done, total, name)` once per candidate image - `iter_candidates`
+    is materialized into a list up front rather than iterated lazily so
+    `total` is known from the start; a folder of artist portraits is small
+    enough (nowhere near the scanner's whole-library scale) that this
+    costs nothing worth avoiding."""
     result = ArtistImageResult()
     folder = Path(folder).expanduser()
     if not folder.is_dir():
@@ -154,7 +164,11 @@ def import_artist_images(
         result.errors.append("no artists in the library yet - scan your music first")
         return result
 
-    for raw_name, path in iter_candidates(folder):
+    candidates = list(iter_candidates(folder))
+    total = len(candidates)
+    for i, (raw_name, path) in enumerate(candidates, start=1):
+        if progress:
+            progress(i, total, path.name)
         try:
             name = _clean_name(raw_name)
             key = normalize(name)

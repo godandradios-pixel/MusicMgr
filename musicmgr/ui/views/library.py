@@ -91,7 +91,7 @@ where a route's ancestor trail and click targets are built; see it and
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -153,6 +153,12 @@ class LibraryView(BaseView):
         #: index-matched to whatever `_open_release()` last built (see there
         #: and `_on_release_breadcrumb()`)
         self._release_breadcrumb_actions: list[Callable[[], None]] = []
+        #: same idea, for the artist-detail breadcrumb's leading crumb (see
+        #: _build_artist_detail/_on_artist_breadcrumb/_open_artist) - just
+        #: one action (index 0), since unlike a release's ancestor chain
+        #: this page only ever has the one leading crumb before the
+        #: artist's own name.
+        self._artist_breadcrumb_actions: list[Callable[[], None]] = []
         self._search_text = ""
 
         self.stats = dim_label("")
@@ -232,6 +238,12 @@ class LibraryView(BaseView):
         ctx.libraryChanged.connect(self._on_library_changed)
         ctx.openArtistRequested.connect(self._open_artist_from_elsewhere)
         ctx.openReleaseRequested.connect(self._open_release_from_elsewhere)
+        ctx.openArtistFromMissingMetadataRequested.connect(
+            self._open_artist_from_missing_metadata
+        )
+        ctx.openReleaseFromMissingMetadataRequested.connect(
+            self._open_release_from_missing_metadata
+        )
 
     # -- construction ---------------------------------------------------------
 
@@ -274,13 +286,20 @@ class LibraryView(BaseView):
 
     def _build_artist_detail(self) -> QWidget:
         self.artist_detail = ArtistDetailPanel(self.ctx)
-        # the page's only ancestor crumb ("Artists") always jumps to the
-        # grid, so the crumb index is irrelevant here
-        self.artist_detail.breadcrumb.crumbActivated.connect(
-            lambda _index: self.panes.setCurrentIndex(PANE_ARTIST_GRID)
-        )
+        # 2026-09-22 follow-up (James: "is there any way we can have a back
+        # button when you go from missing metadata to the album and then
+        # back") - the page's one leading crumb used to always jump to the
+        # Artists grid; it's now whatever _open_artist's own `root` param
+        # last set (see _on_artist_breadcrumb/_artist_breadcrumb_actions),
+        # the same "index-matched actions list" shape _open_release already
+        # uses for its own (longer) ancestor chain.
+        self.artist_detail.breadcrumb.crumbActivated.connect(self._on_artist_breadcrumb)
         self.artist_detail.releaseActivated.connect(self._open_release_from_artist)
         return self.artist_detail
+
+    def _on_artist_breadcrumb(self, index: int) -> None:
+        if 0 <= index < len(self._artist_breadcrumb_actions):
+            self._artist_breadcrumb_actions[index]()
 
     def _open_release_from_artist(self, release_id: int) -> None:
         artist_name = self.artist_detail.name.text() or "Artist"
@@ -627,8 +646,18 @@ class LibraryView(BaseView):
 
     # -- navigation -----------------------------------------------------------
 
-    def _open_artist(self, artist_id: int) -> None:
-        self.artist_detail.set_artist(artist_id)
+    def _open_artist(
+        self, artist_id: int, root: Optional[tuple[str, Callable[[], None]]] = None
+    ) -> None:
+        """`root` overrides the breadcrumb's leading crumb - (label, click
+        action) - for a caller that didn't reach this page through the
+        Artists grid (default: back to that grid) - see
+        _open_artist_from_missing_metadata below for the one other case
+        today, the artist-page equivalent of _open_release's own
+        `ancestors` list."""
+        label, action = root or ("Artists", lambda: self.panes.setCurrentIndex(PANE_ARTIST_GRID))
+        self._artist_breadcrumb_actions = [action]
+        self.artist_detail.set_artist(artist_id, root_label=label)
         self.panes.setCurrentIndex(PANE_ARTIST_DETAIL)
 
     def _activate_video(self, video_id: int) -> None:
@@ -673,6 +702,37 @@ class LibraryView(BaseView):
         one of those grids."""
         self._open_release(release_id, [
             ("Now Playing", lambda: self.ctx.navigateRequested.emit("nowplaying")),
+        ])
+
+    def _return_to_missing_metadata(self) -> None:
+        """The "Missing metadata" breadcrumb crumb's click target, shared by
+        both _open_artist_from_missing_metadata and
+        _open_release_from_missing_metadata below (2026-09-22 - James: "is
+        there any way we can have a back button when you go from missing
+        metadata to the album and then back"). Settings reopens its
+        dashboard dialog from its cached scan (SettingsView.
+        _last_metadata_scan/view_missing_metadata) in response, rather than
+        rerunning it - the whole point here is a cheap round trip, not
+        another wait."""
+        self.ctx.navigateRequested.emit("settings")
+        self.ctx.missingMetadataBackRequested.emit()
+
+    def _open_artist_from_missing_metadata(self, artist_id: int) -> None:
+        """ctx.openArtistFromMissingMetadataRequested - the "Missing
+        metadata" dashboard's Artist profiles/Track popularity tabs (see
+        MissingMetadataDialog). Same shape as _open_artist_from_elsewhere,
+        just with the breadcrumb's leading crumb pointing back to the
+        dashboard instead of the Artists grid."""
+        self.select_mode(BROWSE_ARTIST)
+        self._open_artist(artist_id, root=("Missing metadata", self._return_to_missing_metadata))
+
+    def _open_release_from_missing_metadata(self, release_id: int) -> None:
+        """ctx.openReleaseFromMissingMetadataRequested - the "Missing
+        metadata" dashboard's Album artwork/Lyrics tabs. Same shape as
+        _open_release_from_elsewhere's own "Now Playing" ancestor, just
+        leading back to the dashboard instead."""
+        self._open_release(release_id, [
+            ("Missing metadata", self._return_to_missing_metadata),
         ])
 
     # -- Title Details ----------------------------------------------------------

@@ -37,12 +37,15 @@ import wave
 from pathlib import Path
 
 import pytest
+from PySide6.QtWidgets import QDialog
 from sqlalchemy import func, select
 
 from musicmgr.db.models import Track, Video, WatchedFolder
+from musicmgr.services import metadata_health
 from musicmgr.services import scanner
 from musicmgr.ui.views import settings as settings_module
 from musicmgr.ui.views.settings import SettingsView
+from musicmgr.ui.widgets.common import MissingMetadataDialog
 
 
 @pytest.fixture
@@ -304,3 +307,298 @@ class TestPurgeMissingFiles:
             remaining_videos = [v.title for v in session.scalars(select(Video))]
         assert remaining_videos == ["Here"]
         assert notifications[-1] == "Removed 1 missing track and 1 missing video"
+
+
+class _FakeSignal:
+    """Stands in for a Qt `Signal` on `_FakeMetadataScanThread` below -
+    `.connect()` just remembers the slot, nothing here ever actually
+    `.emit()`s (these tests never need the thread to "finish")."""
+
+    def connect(self, slot) -> None:
+        self.slot = slot
+
+
+class _FakeMetadataScanThread:
+    """Stands in for `MetadataScanThread` - records that it was asked to
+    start without spinning up a real `QThread` (this fixture's `:memory:`
+    database would be invisible to one anyway - see this module's own
+    docstring). `instances` lets a test assert whether a scan was started
+    at all, which is the actual thing these tests care about - whether
+    `view_missing_metadata` reused `self._last_metadata_scan` or went and
+    rescanned."""
+
+    instances: list["_FakeMetadataScanThread"] = []
+
+    def __init__(self, parent=None) -> None:
+        self.started = False
+        self.progress = _FakeSignal()
+        self.finished_with = _FakeSignal()
+        _FakeMetadataScanThread.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def isRunning(self) -> bool:
+        return False
+
+
+class TestMissingMetadataDashboard:
+    """2026-09-22 follow-up (James: "is there any way ... I can go back
+    and forth to fix them. Right now it's a one time click and then back
+    to running the missing metadata query again") - `view_missing_metadata`
+    reusing `self._last_metadata_scan` instead of rescanning, a picked row
+    marking itself in `self._metadata_visited`, and the dialog's "Rescan"
+    button clearing the cache to force a fresh one. See
+    services/metadata_health.py and ui/widgets/common.py:
+    MissingMetadataDialog for the rest of the story."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_fake_thread(self):
+        _FakeMetadataScanThread.instances = []
+        yield
+        _FakeMetadataScanThread.instances = []
+
+    def test_first_open_with_no_cache_starts_a_scan_thread(self, view, monkeypatch):
+        monkeypatch.setattr(settings_module, "MetadataScanThread", _FakeMetadataScanThread)
+
+        view.view_missing_metadata()
+
+        assert len(_FakeMetadataScanThread.instances) == 1
+        assert _FakeMetadataScanThread.instances[0].started
+
+    def test_reopening_reuses_the_cached_scan_without_rescanning(self, view, monkeypatch):
+        monkeypatch.setattr(settings_module, "MetadataScanThread", _FakeMetadataScanThread)
+        view._last_metadata_scan = metadata_health.ScanResult()
+        monkeypatch.setattr(MissingMetadataDialog, "exec", lambda self: QDialog.Rejected)
+
+        view.view_missing_metadata()
+
+        assert _FakeMetadataScanThread.instances == []
+
+    def test_picking_a_row_marks_it_visited_and_navigates(self, view, ctx, monkeypatch):
+        view._last_metadata_scan = metadata_health.ScanResult(
+            missing_covers=[{"id": 7, "title": "Some Album", "artist": "Some Artist"}],
+        )
+        monkeypatch.setattr(MissingMetadataDialog, "exec", lambda self: QDialog.Accepted)
+        monkeypatch.setattr(MissingMetadataDialog, "picked", lambda self: ("release", 7))
+        navigated = []
+        opened_releases = []
+        ctx.navigateRequested.connect(navigated.append)
+        ctx.openReleaseFromMissingMetadataRequested.connect(opened_releases.append)
+
+        view.view_missing_metadata()
+
+        assert navigated == ["library"]
+        assert opened_releases == [7]
+        assert ("release", 7) in view._metadata_visited
+        # the cache itself is untouched by a plain pick - only a rescan or
+        # a bulk-fix button (_on_bio_done/_on_popularity_done/_on_artwork_done)
+        # clears it.
+        assert view._last_metadata_scan is not None
+
+    def test_clicking_rescan_clears_the_cache_and_starts_a_new_scan(self, view, monkeypatch):
+        monkeypatch.setattr(settings_module, "MetadataScanThread", _FakeMetadataScanThread)
+        view._last_metadata_scan = metadata_health.ScanResult()
+        monkeypatch.setattr(MissingMetadataDialog, "exec", lambda self: MissingMetadataDialog.REFRESH)
+
+        view.view_missing_metadata()
+
+        assert view._last_metadata_scan is None
+        assert len(_FakeMetadataScanThread.instances) == 1
+        assert _FakeMetadataScanThread.instances[0].started
+
+    def test_a_bulk_fix_action_invalidates_a_stale_cached_scan(self, view, monkeypatch):
+        from musicmgr.services import artist_bio_downloader as bio_dl
+
+        monkeypatch.setattr(
+            settings_module.QMessageBox, "information", staticmethod(lambda *a, **k: None)
+        )
+        view._last_metadata_scan = metadata_health.ScanResult()
+
+        view._on_bio_done(bio_dl.BioDownloadResult())
+
+        assert view._last_metadata_scan is None
+
+
+class _FakeThread:
+    """Generic stand-in for any of this page's QThread subclasses - same
+    reasoning as _FakeMetadataScanThread above (no real QThread against
+    this fixture's :memory: database - see this module's own docstring),
+    generalized to accept any constructor args a real one would (a plain
+    `*a, **k` sink) so one fake class covers ArtistImagesImportThread/
+    VerifyFilesThread/RematchChartsThread instead of needing three
+    near-identical ones."""
+
+    instances: list["_FakeThread"] = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.args = args
+        self.kwargs = kwargs
+        self.started = False
+        self.progress = _FakeSignal()
+        self.finished_with = _FakeSignal()
+        _FakeThread.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def isRunning(self) -> bool:
+        # a _FakeThread instance stands for "a job was started and hasn't
+        # been cleaned up" - these tests never simulate one finishing (the
+        # "done" handlers are exercised directly, by calling _on_x_done),
+        # so unlike a real QThread this never has a reason to say False.
+        return True
+
+
+class TestBusyWith:
+    """2026-09-22 - the shared guard `download_artist_profiles`/
+    `update_track_popularity`/`search_missing_artwork`/`view_missing_metadata`/
+    `import_artist_images`/`verify_files`/`rematch_all` all now call before
+    starting their own background job."""
+
+    def test_none_when_nothing_is_running(self, view):
+        assert view._busy_with() is None
+
+    @pytest.mark.parametrize(
+        "attr,message",
+        [
+            ("_thread", "A scan is running — wait for it to finish first"),
+            ("_migration_thread", "A data move is running — wait for it to finish first"),
+            ("_bio_thread", "Artist profiles are downloading — wait for it to finish first"),
+            ("_popularity_thread", "Track popularity is updating — wait for it to finish first"),
+            ("_artwork_thread", "Album artwork is downloading — wait for it to finish first"),
+            ("_metadata_scan_thread", "Missing metadata is scanning — wait for it to finish first"),
+            ("_artist_images_thread", "Artist images are importing — wait for it to finish first"),
+            ("_verify_thread", "Files are being verified — wait for it to finish first"),
+            ("_rematch_thread", "Charts are re-matching — wait for it to finish first"),
+        ],
+    )
+    def test_reports_whichever_thread_is_running(self, view, attr, message):
+        setattr(view, attr, _FakeThread())
+
+        assert view._busy_with() == message
+
+
+class TestImportArtistImagesThreaded:
+    @pytest.fixture(autouse=True)
+    def _reset_fake_thread(self):
+        _FakeThread.instances = []
+        yield
+        _FakeThread.instances = []
+
+    def test_no_folder_chosen_starts_nothing(self, view, monkeypatch):
+        monkeypatch.setattr(
+            settings_module.QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *a, **k: ""),
+        )
+        monkeypatch.setattr(settings_module, "ArtistImagesImportThread", _FakeThread)
+
+        view.import_artist_images()
+
+        assert _FakeThread.instances == []
+
+    def test_starts_a_thread_with_the_chosen_folder(self, view, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            settings_module.QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *a, **k: str(tmp_path)),
+        )
+        monkeypatch.setattr(settings_module, "ArtistImagesImportThread", _FakeThread)
+
+        view.import_artist_images()
+
+        assert len(_FakeThread.instances) == 1
+        thread = _FakeThread.instances[0]
+        assert thread.started
+        assert thread.args[0] == str(tmp_path)
+
+    def test_refuses_to_start_while_another_bulk_job_is_running(self, view, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            settings_module.QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *a, **k: str(tmp_path)),
+        )
+        monkeypatch.setattr(settings_module, "ArtistImagesImportThread", _FakeThread)
+        view._bio_thread = _FakeThread()
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+
+        view.import_artist_images()
+
+        assert _FakeThread.instances == [view._bio_thread]  # no new one started
+        assert notifications == ["Artist profiles are downloading — wait for it to finish first"]
+
+
+class TestVerifyFilesThreaded:
+    @pytest.fixture(autouse=True)
+    def _reset_fake_thread(self):
+        _FakeThread.instances = []
+        yield
+        _FakeThread.instances = []
+
+    def test_starts_a_thread(self, view, monkeypatch):
+        monkeypatch.setattr(settings_module, "VerifyFilesThread", _FakeThread)
+
+        view.verify_files()
+
+        assert len(_FakeThread.instances) == 1
+        assert _FakeThread.instances[0].started
+
+    def test_refuses_to_start_while_another_bulk_job_is_running(self, view, monkeypatch):
+        monkeypatch.setattr(settings_module, "VerifyFilesThread", _FakeThread)
+        view._artwork_thread = _FakeThread()
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+
+        view.verify_files()
+
+        assert _FakeThread.instances == [view._artwork_thread]
+        assert notifications == ["Album artwork is downloading — wait for it to finish first"]
+
+    def test_on_verify_done_reports_the_count_and_refreshes(self, view, monkeypatch):
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+        refreshed = []
+        monkeypatch.setattr(view, "refresh", lambda: refreshed.append(True))
+
+        view._on_verify_done(3)
+
+        assert notifications == ["3 file(s) newly marked missing"]
+        assert refreshed == [True]
+        assert view.progress.isVisible() is False
+
+
+class TestRematchAllThreaded:
+    @pytest.fixture(autouse=True)
+    def _reset_fake_thread(self):
+        _FakeThread.instances = []
+        yield
+        _FakeThread.instances = []
+
+    def test_starts_a_thread(self, view, monkeypatch):
+        monkeypatch.setattr(settings_module, "RematchChartsThread", _FakeThread)
+
+        view.rematch_all()
+
+        assert len(_FakeThread.instances) == 1
+        assert _FakeThread.instances[0].started
+
+    def test_refuses_to_start_while_another_bulk_job_is_running(self, view, monkeypatch):
+        monkeypatch.setattr(settings_module, "RematchChartsThread", _FakeThread)
+        view._verify_thread = _FakeThread()
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+
+        view.rematch_all()
+
+        assert _FakeThread.instances == [view._verify_thread]
+        assert notifications == ["Files are being verified — wait for it to finish first"]
+
+    def test_on_rematch_done_reports_the_count(self, view, ctx):
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+        library_changed = []
+        ctx.libraryChanged.connect(lambda: library_changed.append(True))
+
+        view._on_rematch_done(5)
+
+        assert notifications == ["5 chart entries now point at tracks you own"]
+        assert library_changed == [True]

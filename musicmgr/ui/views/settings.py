@@ -132,23 +132,30 @@ from ...version import APP_VERSION
 from ...db.models import WatchedFolder
 from ...db.session import reset_database, session_scope
 from ...services import artist_bio_downloader as bio_dl
+from ...services import artist_images as art_svc
 from ...services import artwork_downloader as artwork_dl
 from ...services import data_migration
 from ...services import library as lib
 from ...services import scanner
 from ...services import lastfm_popularity as popularity_dl
+from ...services import metadata_health
 from ...services import video_scanner
 from ...services import videos as vid_svc
 from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS
 from ..widgets.common import (
+    ArtistImagesImportThread,
     ArtworkBulkThread,
     BioDownloadThread,
+    MetadataScanThread,
+    MissingMetadataDialog,
     PopularityDownloadThread,
+    RematchChartsThread,
     SearchBar,
     TouchButton,
     TouchList,
+    VerifyFilesThread,
     dim_label,
 )
 from .base import BaseView
@@ -486,6 +493,34 @@ class SettingsView(BaseView):
         self._bio_thread: Optional[BioDownloadThread] = None
         self._popularity_thread: Optional[PopularityDownloadThread] = None
         self._artwork_thread: Optional[ArtworkBulkThread] = None
+        self._metadata_scan_thread: Optional[MetadataScanThread] = None
+        #: 2026-09-22 - James: "does the progress bar also work on the
+        #: import of artist images and the other settings options that
+        #: scan" (it didn't - "Artist images"/"Verify files"/"Charts" all
+        #: used to run entirely on the UI thread with no feedback). Same
+        #: QThread-with-a-progress-signal shape as everything above.
+        self._artist_images_thread: Optional[ArtistImagesImportThread] = None
+        self._verify_thread: Optional[VerifyFilesThread] = None
+        self._rematch_thread: Optional[RematchChartsThread] = None
+        #: last "Missing metadata" scan, reused so reopening the dashboard
+        #: (e.g. right after fixing one item) doesn't rerun the whole thing
+        #: - see view_missing_metadata's own docstring. Cleared (forcing a
+        #: fresh scan) whenever a bulk action below changes the data it
+        #: reports on, and by the dialog's own "Rescan" button.
+        self._last_metadata_scan: Optional[metadata_health.ScanResult] = None
+        #: (kind, id) pairs picked from the dashboard at least once - purely
+        #: a "you've already been here" marker (MissingMetadataDialog), so
+        #: it's additive only, never cleared by a rescan.
+        self._metadata_visited: set = set()
+        # 2026-09-22 follow-up (James: "is there any way we can have a back
+        # button when you go from missing metadata to the album and then
+        # back") - the artist/release page's own "Missing metadata"
+        # breadcrumb crumb (LibraryView._return_to_missing_metadata) lands
+        # back here by emitting this rather than by calling anything on
+        # Settings directly, the same "Library and Settings only talk
+        # through ctx" convention every other cross-view hand-off in this
+        # app already follows.
+        ctx.missingMetadataBackRequested.connect(self.view_missing_metadata)
 
         # 2026-09-16 follow-up (same one that added the row-per-tool
         # Maintenance table below) - this page's content used to fit
@@ -634,6 +669,18 @@ class SettingsView(BaseView):
             tool_rows.append(row)
             return row.button
 
+        # 2026-09-22 follow-up (James: "move that missing metadata settings
+        # option up closer to the progress bar") - first in this list
+        # rather than after the other four enrichment-source rows, since
+        # `self.progress`/`self.progress_label` just above this card is
+        # exactly what lights up while its own scan runs (see
+        # view_missing_metadata).
+        add_tool_row(
+            "Missing metadata",
+            "See everything still missing cover art, a biography, popularity data, or lyrics.",
+            "View…",
+            self.view_missing_metadata,
+        )
         add_tool_row(
             "Artist images",
             "Import missing cover art for your artists from local files.",
@@ -649,32 +696,11 @@ class SettingsView(BaseView):
             "Download…",
             self.download_artist_profiles,
         )
-        # 2026-09-16 same-day follow-up (James, on where "Top Tracks"
-        # ranking comes from - ended up on Last.fm, see the module
-        # docstring for why) - see update_track_popularity/
-        # open_lastfm_credentials below.
-        add_tool_row(
-            "Last.fm API key",
-            "Set the free API key track popularity needs to fetch Last.fm charts.",
-            "Set key…",
-            self.open_lastfm_credentials,
-        )
         add_tool_row(
             "Track popularity",
             "Refresh Last.fm popularity for every artist with a release.",
             "Update…",
             self.update_track_popularity,
-        )
-        # 2026-09-18 - James: "Ability to search for album artwork" - see
-        # services/artwork_downloader.py's module docstring for the full
-        # story and why this bulk button auto-applies the top match rather
-        # than reviewing each one (unlike the release page's own per-release
-        # "Search artwork" button, which always shows a picker first).
-        add_tool_row(
-            "Discogs API token",
-            "Set the free personal access token album artwork search needs.",
-            "Set token…",
-            self.open_discogs_credentials,
         )
         add_tool_row(
             "Album artwork",
@@ -712,6 +738,29 @@ class SettingsView(BaseView):
             "Purge…",
             self.purge_missing_files,
         )
+        # 2026-09-22 follow-up (James: "move the 2 API key and token
+        # options to the bottom just above the nuke") - Last.fm API key/
+        # Discogs API token used to sit next to the button that actually
+        # uses each key (Track popularity/Album artwork respectively);
+        # moved here as a pair instead, right before the destructive
+        # "Nuke library" row below.
+        add_tool_row(
+            "Last.fm API key",
+            "Set the free API key track popularity needs to fetch Last.fm charts.",
+            "Set key…",
+            self.open_lastfm_credentials,
+        )
+        # 2026-09-18 - James: "Ability to search for album artwork" - see
+        # services/artwork_downloader.py's module docstring for the full
+        # story and why this bulk button auto-applies the top match rather
+        # than reviewing each one (unlike the release page's own per-release
+        # "Search artwork" button, which always shows a picker first).
+        add_tool_row(
+            "Discogs API token",
+            "Set the free personal access token album artwork search needs.",
+            "Set token…",
+            self.open_discogs_credentials,
+        )
         # 2026-09-19 - James: "Create for me a 'nuke' option. Where you
         # completely wipe out library.db and start with a fresh database."
         # Deliberately last in this list - the most destructive action
@@ -743,6 +792,35 @@ class SettingsView(BaseView):
 
         ctx.libraryChanged.connect(self.refresh)
         ctx.videosChanged.connect(self.refresh)
+
+    def _busy_with(self) -> Optional[str]:
+        """None if no other bulk background job is currently running, else
+        the notify() message to show instead of starting a new one - every
+        bulk-action handler below checks this (after its own "am I already
+        running" check, which gets its own more specific message) so at
+        most one such job ever touches the database at once.
+
+        2026-09-22 follow-up (the same "does the progress bar also work
+        on ... the other settings options that scan" conversation that
+        added ArtistImagesImportThread/VerifyFilesThread/RematchChartsThread
+        below) - one shared check replacing each handler's own repeated
+        "if self._x_thread ... elif self._y_thread ..." chain, which was
+        still fine at four sibling threads to cross-check but stopped being
+        worth copy-pasting once there were eight."""
+        for thread, busy_message in (
+            (self._thread, "A scan is running — wait for it to finish first"),
+            (self._migration_thread, "A data move is running — wait for it to finish first"),
+            (self._bio_thread, "Artist profiles are downloading — wait for it to finish first"),
+            (self._popularity_thread, "Track popularity is updating — wait for it to finish first"),
+            (self._artwork_thread, "Album artwork is downloading — wait for it to finish first"),
+            (self._metadata_scan_thread, "Missing metadata is scanning — wait for it to finish first"),
+            (self._artist_images_thread, "Artist images are importing — wait for it to finish first"),
+            (self._verify_thread, "Files are being verified — wait for it to finish first"),
+            (self._rematch_thread, "Charts are re-matching — wait for it to finish first"),
+        ):
+            if thread is not None and thread.isRunning():
+                return busy_message
+        return None
 
     # -- loading -------------------------------------------------------------
 
@@ -986,6 +1064,26 @@ class SettingsView(BaseView):
                 "Album artwork is downloading — wait for it to finish before scanning"
             )
             return
+        if self._metadata_scan_thread is not None and self._metadata_scan_thread.isRunning():
+            self.ctx.notify(
+                "Missing metadata is scanning — wait for it to finish before scanning"
+            )
+            return
+        if self._artist_images_thread is not None and self._artist_images_thread.isRunning():
+            self.ctx.notify(
+                "Artist images are importing — wait for it to finish before scanning"
+            )
+            return
+        if self._verify_thread is not None and self._verify_thread.isRunning():
+            self.ctx.notify(
+                "Files are being verified — wait for it to finish before scanning"
+            )
+            return
+        if self._rematch_thread is not None and self._rematch_thread.isRunning():
+            self.ctx.notify(
+                "Charts are re-matching — wait for it to finish before scanning"
+            )
+            return
         # 2026-09-08 follow-up - James: "have the progress bar appear on
         # the line with the folder." Give every folder about to be scanned
         # an immediate row-level state rather than leaving its stale "last
@@ -1016,15 +1114,42 @@ class SettingsView(BaseView):
         self.ctx.videosChanged.emit()
 
     def import_artist_images(self) -> None:
+        """2026-09-22 - James: "does the progress bar also work on the
+        import of artist images" (it didn't - this used to run entirely
+        synchronously in this very method, after the folder picker, with
+        no feedback for however long a big folder took). Threaded the same
+        way as every other bulk action on this page now - see
+        ArtistImagesImportThread (ui/widgets/common.py)."""
         folder = QFileDialog.getExistingDirectory(
             self, "Choose your folder of artist images", str(Path.home())
         )
         if not folder:
             return
-        from ...services import artist_images as art_svc
+        if self._artist_images_thread is not None and self._artist_images_thread.isRunning():
+            self.ctx.notify("Already importing artist images")
+            return
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
 
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self.progress_label.setText("Starting…")
+        self._artist_images_thread = ArtistImagesImportThread(folder, parent=self)
+        self._artist_images_thread.progress.connect(self._on_artist_images_progress)
+        self._artist_images_thread.finished_with.connect(self._on_artist_images_done)
+        self._artist_images_thread.start()
+
+    def _on_artist_images_progress(self, done: int, total: int, name: str) -> None:
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.progress_label.setText(f"{done}/{total} — {name}" if name else f"{done}/{total}")
+
+    def _on_artist_images_done(self, result: art_svc.ArtistImageResult) -> None:
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
         with self.ctx.session() as session:
-            result = art_svc.import_artist_images(session, folder)
             missing = art_svc.artists_without_images(session, limit=12)
 
         lines = [result.summary()]
@@ -1059,17 +1184,9 @@ class SettingsView(BaseView):
         if self._bio_thread is not None and self._bio_thread.isRunning():
             self.ctx.notify("Already downloading artist profiles")
             return
-        if self._thread is not None and self._thread.isRunning():
-            self.ctx.notify("A scan is running — wait for it to finish first")
-            return
-        if self._migration_thread is not None and self._migration_thread.isRunning():
-            self.ctx.notify("A data move is running — wait for it to finish first")
-            return
-        if self._popularity_thread is not None and self._popularity_thread.isRunning():
-            self.ctx.notify("Track popularity is updating — wait for it to finish first")
-            return
-        if self._artwork_thread is not None and self._artwork_thread.isRunning():
-            self.ctx.notify("Album artwork is downloading — wait for it to finish first")
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
             return
 
         artist_ids = bio_dl.artists_missing_bio()
@@ -1113,6 +1230,10 @@ class SettingsView(BaseView):
             lines.append("")
             lines += [f"  ! {err}" for err in result.errors[:8]]
         QMessageBox.information(self, "Artist profiles", "\n".join(lines))
+        # this just filled in what the "Missing metadata" dashboard's
+        # "Artist profiles" tab was reporting - a cached scan (see
+        # view_missing_metadata) would still show artists just fixed here.
+        self._last_metadata_scan = None
 
     def open_lastfm_credentials(self) -> None:
         """Opens `LastfmCredentialsDialog` pre-filled with whatever's
@@ -1144,17 +1265,9 @@ class SettingsView(BaseView):
         if self._popularity_thread is not None and self._popularity_thread.isRunning():
             self.ctx.notify("Already updating track popularity")
             return
-        if self._thread is not None and self._thread.isRunning():
-            self.ctx.notify("A scan is running — wait for it to finish first")
-            return
-        if self._migration_thread is not None and self._migration_thread.isRunning():
-            self.ctx.notify("A data move is running — wait for it to finish first")
-            return
-        if self._bio_thread is not None and self._bio_thread.isRunning():
-            self.ctx.notify("Artist profiles are downloading — wait for it to finish first")
-            return
-        if self._artwork_thread is not None and self._artwork_thread.isRunning():
-            self.ctx.notify("Album artwork is downloading — wait for it to finish first")
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
             return
 
         if not popularity_dl.has_api_key():
@@ -1213,6 +1326,9 @@ class SettingsView(BaseView):
             lines += [f"  ! {err}" for err in result.errors[:8]]
         QMessageBox.information(self, "Track popularity", "\n".join(lines))
         self.ctx.libraryChanged.emit()
+        # same reason _on_bio_done clears this - a cached "Missing
+        # metadata" scan would still show artists this bulk run just fixed.
+        self._last_metadata_scan = None
 
     def open_discogs_credentials(self) -> None:
         """Opens `DiscogsCredentialsDialog` pre-filled with whatever's
@@ -1243,17 +1359,9 @@ class SettingsView(BaseView):
         if self._artwork_thread is not None and self._artwork_thread.isRunning():
             self.ctx.notify("Already searching for album artwork")
             return
-        if self._thread is not None and self._thread.isRunning():
-            self.ctx.notify("A scan is running — wait for it to finish first")
-            return
-        if self._migration_thread is not None and self._migration_thread.isRunning():
-            self.ctx.notify("A data move is running — wait for it to finish first")
-            return
-        if self._bio_thread is not None and self._bio_thread.isRunning():
-            self.ctx.notify("Artist profiles are downloading — wait for it to finish first")
-            return
-        if self._popularity_thread is not None and self._popularity_thread.isRunning():
-            self.ctx.notify("Track popularity is updating — wait for it to finish first")
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
             return
 
         if not artwork_dl.has_api_token():
@@ -1312,28 +1420,194 @@ class SettingsView(BaseView):
             lines += [f"  ! {err}" for err in result.errors[:8]]
         QMessageBox.information(self, "Album artwork", "\n".join(lines))
         self.ctx.libraryChanged.emit()
+        # same reason _on_bio_done clears this - a cached "Missing
+        # metadata" scan would still show releases this bulk run just fixed.
+        self._last_metadata_scan = None
+
+    def view_missing_metadata(self) -> None:
+        """James, 2026-09-22: "one screen listing releases missing cover
+        art, bio, lyrics, or popularity data, instead of only surfacing
+        that per-item" - see services/metadata_health.py's module docstring
+        for the full story.
+
+        2026-09-22 same-day follow-up (James, on the first version of this:
+        "I click the option and it looks like nothing is happening") - all
+        four categories, not just the slow lyrics one, now run inside
+        MetadataScanThread. The original version ran the three fast ones
+        right here, synchronously, before ever making the progress bar
+        visible - fast enough in a unit test's empty database, but a real
+        library's worth of indexed-but-not-free queries added up to a
+        genuinely silent multi-second freeze. `self.progress` is now made
+        visible (in indeterminate/"busy" mode - `setRange(0, 0)`, no
+        fraction to show yet) immediately, before the thread is even
+        started, so there's no gap at all between tapping "View…" and
+        seeing *something* move.
+
+        Browse-and-jump only (James, same conversation, asked for and chose
+        this scope explicitly over the dashboard also getting its own
+        "fix all" buttons) - picking a row just hands off to the same
+        ctx.navigateRequested/openArtistRequested/openReleaseRequested trip
+        Now Playing's own tappable artist/album already makes
+        (ui/views/nowplaying.py), landing on the artist/release page where
+        the actual fix button (Fetch bio, Search artwork, Fetch popularity,
+        Download lyrics) already lives.
+
+        2026-09-22 same-day follow-up (James: "is there any way ... I can
+        go back and forth to fix them. Right now it's a one time click and
+        then back to running the missing metadata query again") - a scan
+        already sitting in `self._last_metadata_scan` is reused instead of
+        rerun, so tapping "Missing metadata" again after fixing one item
+        (from _open_missing_metadata_dialog below) reopens instantly rather
+        than repeating the whole scan - the lyrics half in particular isn't
+        cheap on a real library. `self._metadata_visited` is never cleared
+        here, only added to (same method) and read by
+        MissingMetadataDialog to mark rows already picked, so working
+        through a long list keeps track of where you left off across
+        however many reopens that takes."""
+        if self._last_metadata_scan is not None:
+            self._open_missing_metadata_dialog(self._last_metadata_scan)
+            return
+        if self._metadata_scan_thread is not None and self._metadata_scan_thread.isRunning():
+            self.ctx.notify("Already scanning for missing metadata")
+            return
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self.progress_label.setText("Starting…")
+        self._metadata_scan_thread = MetadataScanThread(parent=self)
+        self._metadata_scan_thread.progress.connect(self._on_metadata_scan_progress)
+        self._metadata_scan_thread.finished_with.connect(self._on_metadata_scan_done)
+        self._metadata_scan_thread.start()
+
+    def _on_metadata_scan_progress(self, done: int, total: int, name: str) -> None:
+        if total <= 0:
+            # one of the three fast phases (album artwork/profiles/
+            # popularity) - nothing to show a fraction of, `name` carries
+            # the phase itself so the bar still visibly changes.
+            self.progress.setRange(0, 0)
+            self.progress_label.setText(name or "Scanning…")
+        else:
+            self.progress.setRange(0, total)
+            self.progress.setValue(done)
+            self.progress_label.setText(f"Checking lyrics… {done}/{total}")
+
+    def _on_metadata_scan_done(self, result: metadata_health.ScanResult) -> None:
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
+        self._last_metadata_scan = result
+        self._open_missing_metadata_dialog(result)
+
+    def _open_missing_metadata_dialog(self, result: metadata_health.ScanResult) -> None:
+        dialog = MissingMetadataDialog(
+            result.missing_covers, result.missing_bios,
+            result.missing_popularity, result.missing_lyrics,
+            visited=self._metadata_visited, parent=self,
+        )
+        code = dialog.exec()
+        if code == MissingMetadataDialog.REFRESH:
+            self._last_metadata_scan = None
+            self.view_missing_metadata()
+            return
+        picked = dialog.picked()
+        if not picked:
+            return
+        kind, item_id = picked
+        self._metadata_visited.add((kind, item_id))
+        self.ctx.navigateRequested.emit("library")
+        # the "FromMissingMetadata" variants (not the plain
+        # openArtistRequested/openReleaseRequested Now Playing's own
+        # tappable artist/album use) so the artist/release page's
+        # breadcrumb leads back here instead of to the Artists/Albums grid
+        # - James, 2026-09-22: "is there any way we can have a back button
+        # when you go from missing metadata to the album and then back".
+        if kind == "artist":
+            self.ctx.openArtistFromMissingMetadataRequested.emit(item_id)
+        else:
+            self.ctx.openReleaseFromMissingMetadataRequested.emit(item_id)
 
     def verify_files(self) -> None:
-        # 2026-09-07 follow-up: checks video files too now, not just audio -
-        # the same "one unified thing" this whole view's folder merge is
-        # about (see module docstring); there's no reason "Verify files"
-        # would only mean half of what's watched.
-        with self.ctx.session() as session:
-            missing = scanner.mark_missing_files(session)
-            missing += video_scanner.mark_missing_videos(session)
+        """2026-09-07 follow-up: checks video files too now, not just audio -
+        the same "one unified thing" this whole view's folder merge is
+        about (see module docstring); there's no reason "Verify files"
+        would only mean half of what's watched.
+
+        2026-09-22 - James: "does the progress bar also work on ... verify
+        files" (it didn't - this used to run both checks entirely
+        synchronously, right here, with no feedback). Threaded the same
+        way as every other bulk action on this page now - see
+        VerifyFilesThread (ui/widgets/common.py), which runs both the
+        audio and video checks in the two phases this used to be."""
+        if self._verify_thread is not None and self._verify_thread.isRunning():
+            self.ctx.notify("Already verifying files")
+            return
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self.progress_label.setText("Starting…")
+        self._verify_thread = VerifyFilesThread(parent=self)
+        self._verify_thread.progress.connect(self._on_verify_progress)
+        self._verify_thread.finished_with.connect(self._on_verify_done)
+        self._verify_thread.start()
+
+    def _on_verify_progress(self, done: int, total: int, name: str) -> None:
+        if total <= 0:
+            self.progress.setRange(0, 0)
+            self.progress_label.setText(name or "Verifying…")
+        else:
+            self.progress.setRange(0, total)
+            self.progress.setValue(done)
+            self.progress_label.setText(f"{done}/{total}")
+
+    def _on_verify_done(self, missing: int) -> None:
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
         self.ctx.notify(f"{missing} file(s) newly marked missing")
         self.refresh()
 
     def rematch_all(self) -> None:
-        from ...db.models import Chart
-        from ...services import charts as chart_svc
+        """2026-09-22 - James: "does the progress bar also work on ...
+        charts" (it didn't - this used to be a plain loop over every
+        external chart, entirely synchronous, right here). Threaded the
+        same way as every other bulk action on this page now - see
+        RematchChartsThread (ui/widgets/common.py) and
+        services.charts.rematch_all_charts, which now owns the loop this
+        method used to."""
+        if self._rematch_thread is not None and self._rematch_thread.isRunning():
+            self.ctx.notify("Already re-matching charts")
+            return
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
 
-        total = 0
-        with self.ctx.session() as session:
-            for chart in session.scalars(
-                select(Chart).where(Chart.kind == Chart.KIND_EXTERNAL)
-            ):
-                total += chart_svc.rematch_chart(session, chart.id)
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self.progress_label.setText("Starting…")
+        self._rematch_thread = RematchChartsThread(parent=self)
+        self._rematch_thread.progress.connect(self._on_rematch_progress)
+        self._rematch_thread.finished_with.connect(self._on_rematch_done)
+        self._rematch_thread.start()
+
+    def _on_rematch_progress(self, done: int, total: int, name: str) -> None:
+        if total <= 0:
+            self.progress.setRange(0, 0)
+            self.progress_label.setText(name or "Re-matching…")
+        else:
+            self.progress.setRange(0, total)
+            self.progress.setValue(done)
+            self.progress_label.setText(f"{done}/{total}")
+
+    def _on_rematch_done(self, total: int) -> None:
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
         self.ctx.notify(f"{total} chart entries now point at tracks you own")
         self.ctx.libraryChanged.emit()
 

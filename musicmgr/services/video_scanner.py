@@ -15,10 +15,10 @@ import datetime as dt
 import logging
 import os
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 import mutagen
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -175,17 +175,25 @@ def rescan_all_videos(
     return result
 
 
-def mark_missing_videos(session: Session) -> int:
+def mark_missing_videos(
+    session: Session,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> int:
     """Flag rows whose file has disappeared instead of deleting metadata -
-    same convention as scanner.py:mark_missing_files."""
+    same convention as scanner.py:mark_missing_files, `progress` (2026-09-22,
+    part of the same "does the progress bar also work on ... verify files"
+    fix) included."""
+    total = session.scalar(select(func.count(Video.id))) or 0
     count = 0
-    for video in session.scalars(select(Video)):
+    for i, video in enumerate(session.scalars(select(Video)), start=1):
         exists = os.path.exists(video.path)
         if not exists and not video.is_missing:
             video.is_missing = True
             count += 1
         elif exists and video.is_missing:
             video.is_missing = False
+        if progress and (i % 250 == 0 or i == total):
+            progress(i, total, "")
     return count
 
 

@@ -481,7 +481,13 @@ class ArtistDetailPanel(QWidget):
     def tracks(self) -> list:
         return self._tracks
 
-    def set_artist(self, artist_id: Optional[int]) -> None:
+    def set_artist(self, artist_id: Optional[int], root_label: str = "Artists") -> None:
+        """`root_label` names the breadcrumb's leading crumb - "Artists"
+        (the grid this page normally hangs off of) unless the caller opened
+        this page from somewhere else entirely, e.g. LibraryView's
+        `_open_artist_from_missing_metadata` passing "Missing metadata" so
+        the crumb (and its click target, wired by the caller - see
+        LibraryView._on_artist_breadcrumb) leads back there instead."""
         self._artist_id = artist_id
         self._artist_name = ""
         self._tracks = []
@@ -512,7 +518,7 @@ class ArtistDetailPanel(QWidget):
                 return
             self.name.setText(artist.name)
             self._artist_name = artist.name
-            self.breadcrumb.set_path(["Artists", artist.name])
+            self.breadcrumb.set_path([root_label, artist.name])
             # captured while `artist` is still attached to this session -
             # BioPanel itself opens its own session later, for a fetch
             self.bio.set_artist(artist_id, artist.name, artist.profile)

@@ -22,7 +22,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from mutagen.oggvorbis import OggVorbis
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -678,16 +678,36 @@ def rescan_all(
     return result
 
 
-def mark_missing_files(session: Session) -> int:
-    """Flag rows whose file has disappeared instead of deleting metadata."""
+#: how often mark_missing_files below reports progress - each item here is
+#: just one os.path.exists() stat call (unlike the actual tag-reading work
+#: scan_folder's own `idx % 5` throttles), so this can afford to be much
+#: coarser - same reasoning and same value as metadata_health.py's own
+#: _LYRICS_PROGRESS_EVERY, which walks a comparable per-track stat call.
+_MISSING_FILES_PROGRESS_EVERY = 250
+
+
+def mark_missing_files(
+    session: Session,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> int:
+    """Flag rows whose file has disappeared instead of deleting metadata.
+
+    2026-09-22 - James: "does the progress bar also work on ... verify
+    files" (it didn't - "Verify files" ran this entirely on the UI thread
+    with no feedback, same problem class the "Missing metadata" dashboard
+    had before its own progress bar). `progress`, when given, is called
+    `(done, total, "")`."""
+    total = session.scalar(select(func.count(MediaFile.id))) or 0
     count = 0
-    for mf in session.scalars(select(MediaFile)):
+    for i, mf in enumerate(session.scalars(select(MediaFile)), start=1):
         exists = os.path.exists(mf.path)
         if not exists and not mf.is_missing:
             mf.is_missing = True
             count += 1
         elif exists and mf.is_missing:
             mf.is_missing = False
+        if progress and (i % _MISSING_FILES_PROGRESS_EVERY == 0 or i == total):
+            progress(i, total, "")
     return count
 
 
