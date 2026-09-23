@@ -577,6 +577,7 @@ def scan_folder(
     progress: Optional[ProgressFn] = None,
     result: Optional[ScanResult] = None,
     force: bool = False,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> ScanResult:
     root = Path(root).expanduser()
     result = result or ScanResult()
@@ -611,6 +612,8 @@ def scan_folder(
             overrides[p] = decision
 
     for idx, path in enumerate(files, start=1):
+        if should_stop and should_stop():
+            break
         try:
             if path in overrides:
                 album_artist, is_compilation = overrides[path]
@@ -664,6 +667,19 @@ def scan_folder(
     return result
 
 
+# 2026-09-22 - James: "add a real cancel button that stops any process
+# running within Settings". `should_stop` above, when given, is checked
+# once per file, *before* that file's own import starts - deliberately a
+# `break`, never a raise, so this never takes the `session.rollback()` path
+# a few lines up (that path exists only for a genuinely bad file, and
+# throws away every row flushed-but-not-committed in the whole scan so
+# far - see its own comment). A clean break instead leaves whatever's
+# already been imported (flushed or not) to get picked up by the one
+# `session.flush()`/commit this whole scan still ends with normally, same
+# as if the folder's remaining files had simply not been reached yet -
+# they'll just get picked back up, cleanly, on the next scan.
+
+
 def rescan_all(
     session: Session, progress: Optional[ProgressFn] = None, force: bool = False
 ) -> ScanResult:
@@ -689,6 +705,7 @@ _MISSING_FILES_PROGRESS_EVERY = 250
 def mark_missing_files(
     session: Session,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
     """Flag rows whose file has disappeared instead of deleting metadata.
 
@@ -696,10 +713,19 @@ def mark_missing_files(
     files" (it didn't - "Verify files" ran this entirely on the UI thread
     with no feedback, same problem class the "Missing metadata" dashboard
     had before its own progress bar). `progress`, when given, is called
-    `(done, total, "")`."""
+    `(done, total, "")`.
+
+    2026-09-22 same-day follow-up (James: "add a real cancel button...") -
+    `should_stop`, checked once per row, `break`s rather than raising -
+    each row's `mf.is_missing` flip is an independent in-memory mutation
+    with no per-row commit, so a break just leaves the remaining rows
+    unchecked for this run, same as `import_artist_images`'s own
+    should_stop above."""
     total = session.scalar(select(func.count(MediaFile.id))) or 0
     count = 0
     for i, mf in enumerate(session.scalars(select(MediaFile)), start=1):
+        if should_stop and should_stop():
+            break
         exists = os.path.exists(mf.path)
         if not exists and not mf.is_missing:
             mf.is_missing = True

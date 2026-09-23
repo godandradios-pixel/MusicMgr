@@ -128,7 +128,16 @@ def scan_video_folder(
     result: Optional[ScanResult] = None,
     *,
     force: bool = False,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> ScanResult:
+    """2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings". `should_stop`, checked once per file before
+    that file's own import, `break`s rather than raising - same
+    safe-via-break shape scanner.py:scan_folder's own should_stop just
+    adopted, and for the same reason: no per-file savepoint here either
+    (see the matching `session.rollback()` comment below), so a clean break
+    just leaves the folder's own end-of-scan bookkeeping (WatchedFolder
+    timestamp, flush) to run over whatever got imported before the stop."""
     root = Path(root).expanduser()
     result = result or ScanResult()
     if not root.exists():
@@ -138,6 +147,8 @@ def scan_video_folder(
     files = list(iter_video_files(root))
     total = len(files)
     for idx, path in enumerate(files, start=1):
+        if should_stop and should_stop():
+            break
         try:
             import_video_file(session, path, result, force=force)
         except Exception as exc:  # keep going on one bad file
@@ -178,14 +189,19 @@ def rescan_all_videos(
 def mark_missing_videos(
     session: Session,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
     """Flag rows whose file has disappeared instead of deleting metadata -
     same convention as scanner.py:mark_missing_files, `progress` (2026-09-22,
     part of the same "does the progress bar also work on ... verify files"
-    fix) included."""
+    fix) included, and now `should_stop` too (2026-09-22 same-day
+    follow-up, "add a real cancel button...") - same safe-via-break shape
+    as scanner.py:mark_missing_files."""
     total = session.scalar(select(func.count(Video.id))) or 0
     count = 0
     for i, video in enumerate(session.scalars(select(Video)), start=1):
+        if should_stop and should_stop():
+            break
         exists = os.path.exists(video.path)
         if not exists and not video.is_missing:
             video.is_missing = True

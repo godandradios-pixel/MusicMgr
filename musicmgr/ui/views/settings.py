@@ -102,6 +102,33 @@ outline plus the row spacing already reads as one grouped list without
 it), and swapped `_ToolRow`'s internal order so the button sits on the
 left with the title/description filling the rest of the row - see
 `_ToolRow` itself for the new layout.
+
+2026-09-22 follow-up (James: "how do I stop a process, Download Artist
+Profiles from running", followed a moment later by "add a real cancel
+button that stops any process running within Settings") - this page's
+nine background threads (everything `_busy_with` above enumerates) had no
+way to stop once started short of closing the whole app. A single
+`self.cancel_btn`, next to `self.progress_label`, now covers eight of
+them - `_active_cancellable_thread`/`_show_cancel`/`_hide_cancel` right
+after `_busy_with` below - by requesting `QThread.requestInterruption()`
+on whichever one is currently running; each underlying service-layer loop
+(`download_bios_for_artists`, `update_popularity_for_artists`,
+`search_artwork_for_releases`, `import_artist_images`,
+`scanner.scan_folder`/`mark_missing_files`,
+`video_scanner.scan_video_folder`/`mark_missing_videos`,
+`charts.rematch_all_charts`/`rematch_chart`,
+`metadata_health.scan_missing_metadata`) grew a matching `should_stop`
+parameter, checked once per item and always via a clean `break` rather
+than a raise, so whatever's already been committed (or, for the handful
+that only flush once at the end, already processed in memory) is never
+rolled back - see each function's own should_stop docstring note for why
+that specific loop is safe to interrupt this way. `MigrationThread` (the
+ninth - "Move data location…") is the deliberate exception:
+`data_migration.migrate` copies files to a new location in several
+discrete steps with no per-step undo, so `_CANCELLABLE_THREAD_ATTRS`
+leaves it out entirely and Cancel simply never appears while it's
+running - see move_data's own confirmation dialog text for how that's
+explained up front instead.
 """
 
 from __future__ import annotations
@@ -344,6 +371,8 @@ class ScanThread(QThread):
         try:
             with session_scope() as session:
                 for folder in self.folders:
+                    if self.isInterruptionRequested():
+                        break
                     scanner.scan_folder(
                         session,
                         folder,
@@ -352,24 +381,37 @@ class ScanThread(QThread):
                         ),
                         result=audio_result,
                         force=self.force,
+                        should_stop=self.isInterruptionRequested,
                     )
                 audio_result.missing = scanner.mark_missing_files(session)
                 audio_result.removed = scanner.purge_orphaned_tracks(session)
-            with session_scope() as session:
-                for folder in self.folders:
-                    video_scanner.scan_video_folder(
-                        session,
-                        folder,
-                        progress=lambda done, total, name, folder=folder: self.progress.emit(
-                            done, total, folder, f"Video: {name}"
-                        ),
-                        result=video_result,
-                        force=self.force,
-                    )
-                video_result.missing = video_scanner.mark_missing_videos(session)
-            self.finished_with.emit(
-                f"Audio: {audio_result.summary()} · Video: {video_result.summary()}"
-            )
+            # 2026-09-22 - James: "add a real cancel button that stops any
+            # process running within Settings" - a cancel mid-audio-pass
+            # skips the video pass entirely rather than starting a second
+            # multi-folder walk right after being asked to stop; the audio
+            # side above still gets its own mark_missing_files/
+            # purge_orphaned_tracks bookkeeping either way, same as any
+            # other scan, cancelled or not.
+            if not self.isInterruptionRequested():
+                with session_scope() as session:
+                    for folder in self.folders:
+                        if self.isInterruptionRequested():
+                            break
+                        video_scanner.scan_video_folder(
+                            session,
+                            folder,
+                            progress=lambda done, total, name, folder=folder: self.progress.emit(
+                                done, total, folder, f"Video: {name}"
+                            ),
+                            result=video_result,
+                            force=self.force,
+                            should_stop=self.isInterruptionRequested,
+                        )
+                    video_result.missing = video_scanner.mark_missing_videos(session)
+            summary = f"Audio: {audio_result.summary()} · Video: {video_result.summary()}"
+            if self.isInterruptionRequested():
+                summary = f"Cancelled — {summary}"
+            self.finished_with.emit(summary)
         except Exception as exc:
             self.finished_with.emit(f"Scan failed: {exc}")
 
@@ -635,8 +677,28 @@ class SettingsView(BaseView):
         self.progress.setObjectName("ProgressWarm")  # this page's brown pallet - see theme.py
         self.progress.setVisible(False)
         body.addWidget(self.progress)
+
+        # 2026-09-22 - James: "add a real cancel button that stops any
+        # process running within Settings" (asked right after being told
+        # "Download Artist Profiles" had no way to stop it short of closing
+        # the whole app). One button, not one per bulk action - see
+        # `_busy_with`, which this reuses the same "which of the nine
+        # threads is running" enumeration from (minus MigrationThread - see
+        # `_active_cancellable_thread`'s own docstring for why a data move
+        # can't safely take a mid-flight stop). Sits right next to
+        # `progress_label` rather than in the Maintenance table below,
+        # since that's the one line every bulk action already updates
+        # (ScanThread is the one exception - see its own row-progress
+        # notes - but still shows/hides this same button via
+        # `_show_cancel`/`_hide_cancel`).
         self.progress_label = dim_label("")
-        body.addWidget(self.progress_label)
+        progress_row = QHBoxLayout()
+        progress_row.addWidget(self.progress_label, 1)
+        self.cancel_btn = TouchButton("Cancel")
+        self.cancel_btn.setVisible(False)
+        self.cancel_btn.clicked.connect(self._on_cancel_clicked)
+        progress_row.addWidget(self.cancel_btn, 0, Qt.AlignRight)
+        body.addLayout(progress_row)
 
         # ---- maintenance ----
         # 2026-09-16 follow-up (James: "let's have settings be rows in a
@@ -821,6 +883,61 @@ class SettingsView(BaseView):
             if thread is not None and thread.isRunning():
                 return busy_message
         return None
+
+    #: every bulk-action thread attribute that's actually safe to interrupt
+    #: mid-run - the same nine minus `_migration_thread`. 2026-09-22, James:
+    #: "add a real cancel button that stops any process running within
+    #: Settings" - `MigrationThread` (data_migration.migrate) copies files
+    #: to a new location in several discrete steps (db, artwork/, artists/,
+    #: then rewriting paths) with no per-step undo; stopping it partway
+    #: could leave a half-copied, half-rewritten destination that looks
+    #: plausible but isn't safe to actually switch to. Every thread listed
+    #: here, by contrast, either commits/flushes per-item or is read-only -
+    #: see each service function's own should_stop docstring note for the
+    #: specifics - so a break is always safe.
+    _CANCELLABLE_THREAD_ATTRS = (
+        "_thread",
+        "_bio_thread",
+        "_popularity_thread",
+        "_artwork_thread",
+        "_metadata_scan_thread",
+        "_artist_images_thread",
+        "_verify_thread",
+        "_rematch_thread",
+    )
+
+    def _active_cancellable_thread(self) -> Optional[QThread]:
+        """The one currently-running thread Cancel is allowed to act on, or
+        None if nothing cancellable is running right now (including "the
+        thing running is the migration, which Cancel can't touch")."""
+        for attr in self._CANCELLABLE_THREAD_ATTRS:
+            thread = getattr(self, attr)
+            if thread is not None and thread.isRunning():
+                return thread
+        return None
+
+    def _show_cancel(self) -> None:
+        self.cancel_btn.setVisible(True)
+        self.cancel_btn.setEnabled(True)
+
+    def _hide_cancel(self, thread: Optional[QThread] = None) -> None:
+        """Called from every bulk action's `_on_..._done` handler, mirroring
+        the matching `self.progress.setVisible(False)` right next to each
+        one. `thread` - the just-finished thread, if this action has a
+        cancellable one - lets a run that was actually stopped early say so
+        once, here, rather than every individual result dialog below
+        needing its own "was this cancelled" wording."""
+        self.cancel_btn.setVisible(False)
+        if thread is not None and thread.isInterruptionRequested():
+            self.ctx.notify("Cancelled — showing partial results")
+
+    def _on_cancel_clicked(self) -> None:
+        thread = self._active_cancellable_thread()
+        if thread is None:
+            return
+        thread.requestInterruption()
+        self.cancel_btn.setEnabled(False)
+        self.ctx.notify("Cancelling — finishing the current item…")
 
     # -- loading -------------------------------------------------------------
 
@@ -1097,6 +1214,7 @@ class SettingsView(BaseView):
         self._thread.progress.connect(self._on_progress)
         self._thread.finished_with.connect(self._on_scan_done)
         self._thread.start()
+        self._show_cancel()
 
     def _on_progress(self, done: int, total: int, folder: str, name: str) -> None:
         fraction = done / total if total else 0.0
@@ -1109,6 +1227,7 @@ class SettingsView(BaseView):
         # __init__) rebuilds every row fresh from the database, which is
         # what clears the in-progress look above back to an ordinary "last
         # scan: …" row - nothing else to clean up here.
+        self.cancel_btn.setVisible(False)
         self.ctx.notify(summary)
         self.ctx.libraryChanged.emit()
         self.ctx.videosChanged.emit()
@@ -1140,6 +1259,7 @@ class SettingsView(BaseView):
         self._artist_images_thread.progress.connect(self._on_artist_images_progress)
         self._artist_images_thread.finished_with.connect(self._on_artist_images_done)
         self._artist_images_thread.start()
+        self._show_cancel()
 
     def _on_artist_images_progress(self, done: int, total: int, name: str) -> None:
         self.progress.setRange(0, total)
@@ -1149,6 +1269,7 @@ class SettingsView(BaseView):
     def _on_artist_images_done(self, result: art_svc.ArtistImageResult) -> None:
         self.progress.setVisible(False)
         self.progress_label.setText("")
+        self._hide_cancel(self._artist_images_thread)
         with self.ctx.session() as session:
             missing = art_svc.artists_without_images(session, limit=12)
 
@@ -1216,6 +1337,7 @@ class SettingsView(BaseView):
         self._bio_thread.progress.connect(self._on_bio_progress)
         self._bio_thread.finished_with.connect(self._on_bio_done)
         self._bio_thread.start()
+        self._show_cancel()
 
     def _on_bio_progress(self, done: int, total: int, name: str) -> None:
         self.progress.setRange(0, total)
@@ -1225,6 +1347,7 @@ class SettingsView(BaseView):
     def _on_bio_done(self, result: bio_dl.BioDownloadResult) -> None:
         self.progress.setVisible(False)
         self.progress_label.setText("")
+        self._hide_cancel(self._bio_thread)
         lines = [result.summary()]
         if result.errors:
             lines.append("")
@@ -1311,6 +1434,7 @@ class SettingsView(BaseView):
         self._popularity_thread.progress.connect(self._on_popularity_progress)
         self._popularity_thread.finished_with.connect(self._on_popularity_done)
         self._popularity_thread.start()
+        self._show_cancel()
 
     def _on_popularity_progress(self, done: int, total: int, name: str) -> None:
         self.progress.setRange(0, total)
@@ -1320,6 +1444,7 @@ class SettingsView(BaseView):
     def _on_popularity_done(self, result: popularity_dl.PopularityResult) -> None:
         self.progress.setVisible(False)
         self.progress_label.setText("")
+        self._hide_cancel(self._popularity_thread)
         lines = [result.summary()]
         if result.errors:
             lines.append("")
@@ -1405,6 +1530,7 @@ class SettingsView(BaseView):
         self._artwork_thread.progress.connect(self._on_artwork_progress)
         self._artwork_thread.finished_with.connect(self._on_artwork_done)
         self._artwork_thread.start()
+        self._show_cancel()
 
     def _on_artwork_progress(self, done: int, total: int, name: str) -> None:
         self.progress.setRange(0, total)
@@ -1414,6 +1540,7 @@ class SettingsView(BaseView):
     def _on_artwork_done(self, result: artwork_dl.ArtworkSearchResult) -> None:
         self.progress.setVisible(False)
         self.progress_label.setText("")
+        self._hide_cancel(self._artwork_thread)
         lines = [result.summary()]
         if result.errors:
             lines.append("")
@@ -1482,6 +1609,7 @@ class SettingsView(BaseView):
         self._metadata_scan_thread.progress.connect(self._on_metadata_scan_progress)
         self._metadata_scan_thread.finished_with.connect(self._on_metadata_scan_done)
         self._metadata_scan_thread.start()
+        self._show_cancel()
 
     def _on_metadata_scan_progress(self, done: int, total: int, name: str) -> None:
         if total <= 0:
@@ -1498,7 +1626,19 @@ class SettingsView(BaseView):
     def _on_metadata_scan_done(self, result: metadata_health.ScanResult) -> None:
         self.progress.setVisible(False)
         self.progress_label.setText("")
-        self._last_metadata_scan = result
+        cancelled = self._metadata_scan_thread is not None and (
+            self._metadata_scan_thread.isInterruptionRequested()
+        )
+        self._hide_cancel(self._metadata_scan_thread)
+        # 2026-09-22 - James: "add a real cancel button..." - a cancelled
+        # scan's `result` is only whatever categories were reached before
+        # the stop (see scan_missing_metadata's own should_stop docstring),
+        # so it's shown once but deliberately NOT cached into
+        # `_last_metadata_scan` the way a completed scan is - reopening
+        # "Missing metadata" after a cancelled run re-scans from scratch
+        # instead of silently treating a partial result as the real one.
+        if not cancelled:
+            self._last_metadata_scan = result
         self._open_missing_metadata_dialog(result)
 
     def _open_missing_metadata_dialog(self, result: metadata_health.ScanResult) -> None:
@@ -1556,6 +1696,7 @@ class SettingsView(BaseView):
         self._verify_thread.progress.connect(self._on_verify_progress)
         self._verify_thread.finished_with.connect(self._on_verify_done)
         self._verify_thread.start()
+        self._show_cancel()
 
     def _on_verify_progress(self, done: int, total: int, name: str) -> None:
         if total <= 0:
@@ -1569,6 +1710,7 @@ class SettingsView(BaseView):
     def _on_verify_done(self, missing: int) -> None:
         self.progress.setVisible(False)
         self.progress_label.setText("")
+        self._hide_cancel(self._verify_thread)
         self.ctx.notify(f"{missing} file(s) newly marked missing")
         self.refresh()
 
@@ -1595,6 +1737,7 @@ class SettingsView(BaseView):
         self._rematch_thread.progress.connect(self._on_rematch_progress)
         self._rematch_thread.finished_with.connect(self._on_rematch_done)
         self._rematch_thread.start()
+        self._show_cancel()
 
     def _on_rematch_progress(self, done: int, total: int, name: str) -> None:
         if total <= 0:
@@ -1608,6 +1751,7 @@ class SettingsView(BaseView):
     def _on_rematch_done(self, total: int) -> None:
         self.progress.setVisible(False)
         self.progress_label.setText("")
+        self._hide_cancel(self._rematch_thread)
         self.ctx.notify(f"{total} chart entries now point at tracks you own")
         self.ctx.libraryChanged.emit()
 
@@ -1680,7 +1824,10 @@ class SettingsView(BaseView):
             "the new folder is your portable data\\ folder, set the "
             "MUSICMGR_HOME environment variable to it first).\n\n"
             "For the safest result, avoid scanning or importing anything in "
-            "MusicMgr until this finishes. Continue?",
+            "MusicMgr until this finishes. Unlike every other action on this "
+            "page, this one has no Cancel button — it copies files in "
+            "several steps with no safe way to stop partway through, so "
+            "once started it's best just left to finish. Continue?",
             QMessageBox.Yes | QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:

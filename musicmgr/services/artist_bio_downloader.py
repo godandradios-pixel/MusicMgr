@@ -273,6 +273,7 @@ def download_bios_for_artists(
     overwrite: bool = False,
     rate_limit_s: float = DEFAULT_RATE_LIMIT_S,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> BioDownloadResult:
     """Download biographies for a list of artist ids, one Wikipedia lookup
     per artist - used both by Settings' bulk "Download artist profiles…"
@@ -283,6 +284,13 @@ def download_bios_for_artists(
     the database at all) and commits after each artist rather than only
     once at the end, so a long bulk run over hundreds of artists isn't
     all-or-nothing if it's interrupted partway through.
+
+    2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings". `should_stop`, when given, is checked once
+    per artist, before that artist's own lookup starts - every artist
+    already looked up this run has already been individually committed
+    (see the `db.commit()` right below), so stopping here just means "don't
+    start the next one", never a rollback of work already saved.
     """
     result = BioDownloadResult()
     http = requests.Session()
@@ -291,6 +299,8 @@ def download_bios_for_artists(
     total = len(artist_ids)
     with session_scope() as db:
         for i, artist_id in enumerate(artist_ids, start=1):
+            if should_stop and should_stop():
+                break
             artist = db.get(Artist, artist_id)
             if artist is None:
                 continue

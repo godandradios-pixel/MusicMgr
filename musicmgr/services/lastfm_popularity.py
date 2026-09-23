@@ -258,11 +258,18 @@ def update_popularity_for_artists(
     *,
     rate_limit_s: float = DEFAULT_RATE_LIMIT_S,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> PopularityResult:
     """Update Last.fm popularity for a list of artist ids - used both by
     Settings' bulk "Update track popularity from Last.fm…" button and, as a
     batch of one, the artist page's own per-artist "Fetch popularity"
-    button (see PopularityDownloadThread in ui/widgets/common.py)."""
+    button (see PopularityDownloadThread in ui/widgets/common.py).
+
+    2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings". `should_stop`, checked once per artist before
+    that artist's own lookup starts, same safe-to-interrupt shape
+    `artist_bio_downloader.download_bios_for_artists` just adopted - every
+    artist already looked up this run is already committed below."""
     result = PopularityResult()
     total = len(artist_ids)
 
@@ -281,6 +288,8 @@ def update_popularity_for_artists(
 
     with session_scope() as db:
         for i, artist_id in enumerate(artist_ids, start=1):
+            if should_stop and should_stop():
+                break
             artist = db.get(Artist, artist_id)
             if artist is None:
                 continue

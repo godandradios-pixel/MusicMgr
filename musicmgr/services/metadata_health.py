@@ -63,6 +63,7 @@ class ScanResult:
 
 def scan_missing_metadata(
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> ScanResult:
     """Everything the "Missing metadata" dashboard needs, in one call - the
     three fast/indexed queries plus the one slow filesystem-bound one,
@@ -70,20 +71,38 @@ def scan_missing_metadata(
     than a real fraction - these three finish in well under a second each,
     there's nothing meaningful to show a fraction of) so a caller driving a
     progress bar (MetadataScanThread) has something to show throughout the
-    whole scan, not just its last, slowest phase."""
+    whole scan, not just its last, slowest phase.
+
+    2026-09-22 same-day follow-up (James: "add a real cancel button that
+    stops any process running within Settings") - every query here is
+    read-only (nothing in this whole module ever writes to the database),
+    so there's no partial-write risk to guard against at all: `should_stop`
+    just skips whichever phases haven't started yet the moment it's set,
+    checked between phases and, for the one slow phase, inside its own row
+    loop too (see releases_missing_lyrics_rows) - the dashboard then simply
+    opens with fewer categories filled in than a full scan would have
+    found."""
 
     def tick(name: str) -> None:
         if progress:
             progress(0, 0, name)
 
+    if should_stop and should_stop():
+        return ScanResult([], [], [], [])
     tick("Checking album artwork…")
     covers = releases_missing_cover_rows()
+    if should_stop and should_stop():
+        return ScanResult(covers, [], [], [])
     tick("Checking artist profiles…")
     bios = artists_missing_bio_rows()
+    if should_stop and should_stop():
+        return ScanResult(covers, bios, [], [])
     tick("Checking track popularity…")
     popularity = artists_missing_popularity_rows()
+    if should_stop and should_stop():
+        return ScanResult(covers, bios, popularity, [])
     tick("Checking lyrics…")
-    lyrics = releases_missing_lyrics_rows(progress=progress)
+    lyrics = releases_missing_lyrics_rows(progress=progress, should_stop=should_stop)
     return ScanResult(covers, bios, popularity, lyrics)
 
 
@@ -145,6 +164,7 @@ def artists_missing_popularity_rows(limit: Optional[int] = None) -> list[dict]:
 
 def releases_missing_lyrics_rows(
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> list[dict]:
     """Every release with at least one track missing a sibling `.lrc` file
     - `{"id", "title", "artist", "missing", "total"}`, `missing`/`total`
@@ -195,6 +215,8 @@ def releases_missing_lyrics_rows(
         totals: dict[int, dict] = {}
         i = 0
         for release_id, title, artist, path in db.execute(base):
+            if should_stop and should_stop():
+                break
             i += 1
             entry = totals.setdefault(
                 release_id, {"id": release_id, "title": title or "", "artist": artist or "",

@@ -424,13 +424,19 @@ def search_artwork_for_releases(
     overwrite: bool = False,
     rate_limit_s: float = DEFAULT_RATE_LIMIT_S,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> ArtworkSearchResult:
     """Bulk cover search for a list of release ids - auto-applies the top
     (first, already relevance-ranked by Discogs) candidate for each one
     rather than prompting per release, the same auto-apply-and-report
     shape download_bios_for_artists/update_popularity_for_artists use for
     their own bulk actions (see module docstring for why a per-release
-    review step doesn't scale to a real library)."""
+    review step doesn't scale to a real library).
+
+    2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings". `should_stop`, checked once per release
+    before that release's own search starts - same safe-to-interrupt shape
+    the other two bulk downloaders above just adopted."""
     result = ArtworkSearchResult()
     total = len(release_ids)
 
@@ -447,6 +453,8 @@ def search_artwork_for_releases(
 
     with session_scope() as db:
         for i, release_id in enumerate(release_ids, start=1):
+            if should_stop and should_stop():
+                break
             release = db.get(Release, release_id)
             if release is None:
                 continue

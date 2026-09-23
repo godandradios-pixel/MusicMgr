@@ -195,6 +195,7 @@ def rematch_chart(
     chart_id: int,
     threshold: float = 0.72,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
     """Re-run matching for a whole chart, e.g. after adding music.
 
@@ -203,7 +204,15 @@ def rematch_chart(
     (`matching.best_match`) against every candidate track is real CPU work
     per entry, not a cheap lookup, so a chart with a few thousand entries
     is worth reporting progress through rather than leaving Settings
-    looking frozen for however long that takes."""
+    looking frozen for however long that takes.
+
+    2026-09-22 same-day follow-up (James: "add a real cancel button that
+    stops any process running within Settings") - `should_stop`, checked
+    once per entry, `break`s rather than raising. Nothing here commits at
+    all (the whole multi-chart run shares rematch_all_charts' one
+    session_scope, committed once at the very end), so a break just means
+    fewer entries get re-matched this run - never a rollback, since there
+    was never anything to roll back mid-loop in the first place."""
     matched = 0
     stmt = (
         select(ChartEntry)
@@ -213,6 +222,8 @@ def rematch_chart(
     entries = session.scalars(stmt).all()
     total = len(entries)
     for i, entry in enumerate(entries, start=1):
+        if should_stop and should_stop():
+            break
         if match_entry(session, entry, threshold):
             matched += 1
         if progress and (i % 50 == 0 or i == total):
@@ -223,6 +234,7 @@ def rematch_chart(
 def rematch_all_charts(
     threshold: float = 0.72,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
     """Settings' bulk "Re-match" button (2026-09-22, part of "does the
     progress bar also work on ... the other settings options that scan" -
@@ -235,7 +247,13 @@ def rematch_all_charts(
 
     `progress` gets one `(0, 0, "<chart name>")` tick per chart (mirroring
     metadata_health.scan_missing_metadata's own phase-announcement shape),
-    then rematch_chart's own real per-entry ticks for that chart."""
+    then rematch_chart's own real per-entry ticks for that chart.
+
+    2026-09-22 same-day follow-up ("add a real cancel button...") -
+    `should_stop` is threaded into every rematch_chart call (so a stop
+    lands within a few dozen entries even mid-chart) and re-checked here
+    between charts too, so a chart not yet started when Cancel is pressed
+    is never begun at all."""
     with session_scope() as session:
         chart_ids_and_names = [
             (chart.id, chart.name)
@@ -245,9 +263,13 @@ def rematch_all_charts(
         ]
         total = 0
         for chart_id, name in chart_ids_and_names:
+            if should_stop and should_stop():
+                break
             if progress:
                 progress(0, 0, f"Re-matching {name}…")
-            total += rematch_chart(session, chart_id, threshold, progress=progress)
+            total += rematch_chart(
+                session, chart_id, threshold, progress=progress, should_stop=should_stop
+            )
         return total
 
 

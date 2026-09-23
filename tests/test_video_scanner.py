@@ -243,6 +243,57 @@ class TestScanVideoFolder:
         assert session.scalar(select(func.count(Video.id))) == 1
 
 
+class TestScanVideoFolderShouldStop:
+    """2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings" - same should_stop/break shape as
+    scanner.py:scan_folder's own tests, since this is the video half of
+    the exact same ScanThread run."""
+
+    def test_should_stop_true_from_the_start_imports_nothing_but_still_stamps_the_folder(
+        self, session, tmp_path
+    ):
+        make_placeholder_video(tmp_path / "Artist" / "Clip.mp4")
+
+        result = video_scanner.scan_video_folder(session, tmp_path, should_stop=lambda: True)
+
+        assert result.added == 0
+        assert session.scalar(select(Video)) is None
+        folder = session.scalar(
+            select(WatchedFolder).where(WatchedFolder.path == str(tmp_path))
+        )
+        assert folder is not None and folder.last_scan_at is not None
+
+    def test_should_stop_partway_through_keeps_the_video_already_imported(
+        self, session, tmp_path
+    ):
+        make_placeholder_video(tmp_path / "Artist" / "First.mp4")
+        make_placeholder_video(tmp_path / "Artist" / "Second.mp4")
+
+        calls = {"n": 0}
+
+        def should_stop() -> bool:
+            calls["n"] += 1
+            return calls["n"] > 1
+
+        result = video_scanner.scan_video_folder(session, tmp_path, should_stop=should_stop)
+
+        assert result.added == 1
+        assert session.scalar(select(func.count(Video.id))) == 1
+
+
+class TestMarkMissingVideosShouldStop:
+    def test_should_stop_true_from_the_start_flags_nothing(self, session, tmp_path):
+        path = tmp_path / "Artist" / "Clip.mp4"
+        make_placeholder_video(path)
+        video_scanner.scan_video_folder(session, tmp_path)
+        path.unlink()
+
+        changed = video_scanner.mark_missing_videos(session, should_stop=lambda: True)
+
+        assert changed == 0
+        assert session.scalar(select(Video)).is_missing is False
+
+
 class TestMarkMissingVideos:
     def test_flags_a_video_whose_file_no_longer_exists(self, session, tmp_path):
         path = tmp_path / "Artist" / "Clip.mp4"

@@ -387,6 +387,72 @@ class TestScanFolder:
         assert len(releases[0].tracks) == 2
 
 
+class TestScanFolderShouldStop:
+    """2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings" - `should_stop`, checked once per file before
+    that file's own import, must `break` cleanly rather than raising: the
+    folder's own end-of-scan bookkeeping (WatchedFolder row/last_scan_at,
+    the final flush) still has to run over whatever got imported before
+    the stop, exactly as if the scan had simply been asked to cover fewer
+    files (see scan_folder's own should_stop docstring note)."""
+
+    def test_should_stop_true_from_the_start_imports_nothing(self, session, tmp_path):
+        make_silent_wav(tmp_path / "Artist" / "Album" / "01 Song.wav")
+
+        result = scanner.scan_folder(session, tmp_path, should_stop=lambda: True)
+
+        assert result.added == 0
+        assert result.scanned == 0
+        assert session.scalar(select(Track)) is None
+
+    def test_should_stop_true_from_the_start_still_updates_the_watched_folder_row(
+        self, session, tmp_path
+    ):
+        # the point of "break, never raise" - a cancelled scan still counts
+        # as having scanned this folder just now, same as a completed one.
+        make_silent_wav(tmp_path / "Artist" / "Album" / "01 Song.wav")
+
+        scanner.scan_folder(session, tmp_path, should_stop=lambda: True)
+
+        folder = session.scalar(
+            select(WatchedFolder).where(WatchedFolder.path == str(tmp_path))
+        )
+        assert folder is not None
+        assert folder.last_scan_at is not None
+
+    def test_should_stop_partway_through_keeps_files_already_imported(
+        self, session, tmp_path
+    ):
+        make_silent_wav(tmp_path / "Artist" / "Album" / "01 First.wav")
+        make_silent_wav(tmp_path / "Artist" / "Album" / "02 Second.wav")
+        make_silent_wav(tmp_path / "Artist" / "Album" / "03 Third.wav")
+
+        calls = {"n": 0}
+
+        def should_stop() -> bool:
+            calls["n"] += 1
+            return calls["n"] > 1  # let the first file through, stop before the rest
+
+        result = scanner.scan_folder(session, tmp_path, should_stop=should_stop)
+
+        assert result.added == 1
+        assert result.scanned == 1
+        assert len(session.scalars(select(Track)).all()) == 1
+        # the one file that did get imported is really and fully committed,
+        # not just flushed-and-forgotten - a second scan sees it as already
+        # there rather than re-adding it.
+        result2 = scanner.scan_folder(session, tmp_path)
+        assert result2.added == 2  # the other two, still never having run
+        assert result2.unchanged == 1  # the first one, untouched by the stop
+
+    def test_no_should_stop_argument_behaves_exactly_as_before(self, session, tmp_path):
+        make_silent_wav(tmp_path / "Artist" / "Album" / "01 Song.wav")
+
+        result = scanner.scan_folder(session, tmp_path)
+
+        assert result.added == 1
+
+
 class TestMarkMissingFiles:
     def test_flags_a_file_whose_path_no_longer_exists(self, session, tmp_path):
         wav = tmp_path / "Artist" / "Album" / "01 Song.wav"
@@ -398,6 +464,21 @@ class TestMarkMissingFiles:
 
         assert changed == 1
         assert session.scalar(select(MediaFile)).is_missing is True
+
+    def test_should_stop_true_from_the_start_flags_nothing(self, session, tmp_path):
+        # 2026-09-22 - "add a real cancel button..." - should_stop, checked
+        # once per row, break-only (see scanner.scan_folder's own note for
+        # the general shape); no per-row commit here either, so a stop
+        # just means fewer rows get checked this run.
+        wav = tmp_path / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(wav)
+        scanner.scan_folder(session, tmp_path)
+        wav.unlink()
+
+        changed = scanner.mark_missing_files(session, should_stop=lambda: True)
+
+        assert changed == 0
+        assert session.scalar(select(MediaFile)).is_missing is False
 
     def test_clears_missing_once_the_file_reappears(self, session, tmp_path):
         wav = tmp_path / "Artist" / "Album" / "01 Song.wav"

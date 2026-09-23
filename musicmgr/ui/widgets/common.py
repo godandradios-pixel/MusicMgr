@@ -1116,6 +1116,7 @@ class BioDownloadThread(QThread):
             self.artist_ids,
             overwrite=self.overwrite,
             progress=lambda done, total, name: self.progress.emit(done, total, name),
+            should_stop=self.isInterruptionRequested,
         )
         self.finished_with.emit(result)
 
@@ -1145,6 +1146,7 @@ class PopularityDownloadThread(QThread):
         result = popularity_dl.update_popularity_for_artists(
             self.artist_ids,
             progress=lambda done, total, name: self.progress.emit(done, total, name),
+            should_stop=self.isInterruptionRequested,
         )
         self.finished_with.emit(result)
 
@@ -1195,6 +1197,7 @@ class ArtworkBulkThread(QThread):
             self.release_ids,
             overwrite=self.overwrite,
             progress=lambda done, total, name: self.progress.emit(done, total, name),
+            should_stop=self.isInterruptionRequested,
         )
         self.finished_with.emit(result)
 
@@ -1220,6 +1223,7 @@ class MetadataScanThread(QThread):
     def run(self) -> None:  # pragma: no cover - exercised interactively
         result = metadata_health.scan_missing_metadata(
             progress=lambda done, total, name: self.progress.emit(done, total, name),
+            should_stop=self.isInterruptionRequested,
         )
         self.finished_with.emit(result)
 
@@ -1247,6 +1251,7 @@ class ArtistImagesImportThread(QThread):
             result = artist_images_svc.import_artist_images(
                 session, self.folder, overwrite=self.overwrite, copy=self.copy,
                 progress=lambda done, total, name: self.progress.emit(done, total, name),
+                should_stop=self.isInterruptionRequested,
             )
         self.finished_with.emit(result)
 
@@ -1265,9 +1270,14 @@ class VerifyFilesThread(QThread):
         emit = lambda done, total, name: self.progress.emit(done, total, name)
         with session_scope() as session:
             emit(0, 0, "Checking audio files…")
-            missing = scanner.mark_missing_files(session, progress=emit)
-            emit(0, 0, "Checking video files…")
-            missing += video_scanner.mark_missing_videos(session, progress=emit)
+            missing = scanner.mark_missing_files(
+                session, progress=emit, should_stop=self.isInterruptionRequested
+            )
+            if not self.isInterruptionRequested():
+                emit(0, 0, "Checking video files…")
+                missing += video_scanner.mark_missing_videos(
+                    session, progress=emit, should_stop=self.isInterruptionRequested
+                )
         self.finished_with.emit(missing)
 
 
@@ -1283,6 +1293,7 @@ class RematchChartsThread(QThread):
     def run(self) -> None:  # pragma: no cover - exercised interactively
         total = chart_svc.rematch_all_charts(
             progress=lambda done, total, name: self.progress.emit(done, total, name),
+            should_stop=self.isInterruptionRequested,
         )
         self.finished_with.emit(total)
 

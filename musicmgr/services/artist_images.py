@@ -139,6 +139,7 @@ def import_artist_images(
     overwrite: bool = True,
     copy: bool = True,
     progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> ArtistImageResult:
     """Match every image in `folder` to an artist and record it.
 
@@ -152,7 +153,15 @@ def import_artist_images(
     is materialized into a list up front rather than iterated lazily so
     `total` is known from the start; a folder of artist portraits is small
     enough (nowhere near the scanner's whole-library scale) that this
-    costs nothing worth avoiding."""
+    costs nothing worth avoiding.
+
+    2026-09-22 same-day follow-up (James: "add a real cancel button that
+    stops any process running within Settings") - `should_stop`, checked
+    once per candidate image, `break`s rather than raising: nothing here
+    commits per item (only the one `session.flush()` at the very end, once
+    the loop is done, one way or another), so a break just means fewer
+    artists get `image_path` set in memory before that flush runs - never a
+    rollback of anything already saved."""
     result = ArtistImageResult()
     folder = Path(folder).expanduser()
     if not folder.is_dir():
@@ -167,6 +176,8 @@ def import_artist_images(
     candidates = list(iter_candidates(folder))
     total = len(candidates)
     for i, (raw_name, path) in enumerate(candidates, start=1):
+        if should_stop and should_stop():
+            break
         if progress:
             progress(i, total, path.name)
         try:

@@ -149,6 +149,27 @@ class TestReleasesMissingLyricsRows:
         assert calls[-1] == (1, 1)
 
 
+class TestReleasesMissingLyricsRowsShouldStop:
+    """2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings" - this whole module is read-only, so
+    `should_stop` (checked once per row) just means fewer rows get
+    checked - no partial-write risk to guard against at all."""
+
+    def _add_file(self, session, track, path: Path) -> None:
+        session.add(MediaFile(track_id=track.id, path=str(path)))
+        session.flush()
+
+    def test_should_stop_true_from_the_start_reports_nothing(self, session, tmp_path):
+        _, release, no_lrc = make_track(session, "Track Two", artist="X", album="Album")
+        no_lrc_path = tmp_path / "track2.mp3"
+        no_lrc_path.write_bytes(b"")
+        self._add_file(session, no_lrc, no_lrc_path)
+
+        rows = mh.releases_missing_lyrics_rows(should_stop=lambda: True)
+
+        assert rows == []
+
+
 class TestScanMissingMetadata:
     def test_aggregates_all_four_categories(self, session, tmp_path):
         # missing cover
@@ -189,3 +210,40 @@ class TestScanMissingMetadata:
         } <= phase_names
         # the real lyrics-scan progress tick(s) come after the phase ticks
         assert calls[-1] == (1, 1, "")
+
+    def test_should_stop_true_from_the_start_returns_an_entirely_empty_result(
+        self, session, tmp_path
+    ):
+        # 2026-09-22 same-day follow-up - James: "add a real cancel button
+        # that stops any process running within Settings" - checked before
+        # even the first (fast) phase starts, so nothing gets a chance to
+        # run at all.
+        make_track(session, "Song", artist="A", album="No Cover")
+
+        result = mh.scan_missing_metadata(should_stop=lambda: True)
+
+        assert result.missing_covers == []
+        assert result.missing_bios == []
+        assert result.missing_popularity == []
+        assert result.missing_lyrics == []
+
+    def test_should_stop_after_two_phases_skips_the_rest(self, session, tmp_path):
+        _, no_cover, _ = make_track(session, "Song", artist="A", album="No Cover")
+        no_bio, _, _ = make_track(session, "Song", artist="No Bio")
+        no_pop, _, _ = make_track(session, "Song", artist="No Popularity")
+
+        calls = {"n": 0}
+
+        def should_stop() -> bool:
+            calls["n"] += 1
+            # call 1: before the cover phase - let it through
+            # call 2: before the bio phase - let it through
+            # call 3: before the popularity phase - stop here
+            return calls["n"] > 2
+
+        result = mh.scan_missing_metadata(should_stop=should_stop)
+
+        assert no_cover.id in {r["id"] for r in result.missing_covers}
+        assert no_bio.id in {r["id"] for r in result.missing_bios}
+        assert result.missing_popularity == []
+        assert result.missing_lyrics == []

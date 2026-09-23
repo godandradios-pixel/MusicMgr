@@ -333,6 +333,7 @@ class _FakeMetadataScanThread:
         self.started = False
         self.progress = _FakeSignal()
         self.finished_with = _FakeSignal()
+        self._interruption_requested = False
         _FakeMetadataScanThread.instances.append(self)
 
     def start(self) -> None:
@@ -340,6 +341,12 @@ class _FakeMetadataScanThread:
 
     def isRunning(self) -> bool:
         return False
+
+    def requestInterruption(self) -> None:
+        self._interruption_requested = True
+
+    def isInterruptionRequested(self) -> bool:
+        return self._interruption_requested
 
 
 class TestMissingMetadataDashboard:
@@ -437,6 +444,7 @@ class _FakeThread:
         self.started = False
         self.progress = _FakeSignal()
         self.finished_with = _FakeSignal()
+        self._interruption_requested = False
         _FakeThread.instances.append(self)
 
     def start(self) -> None:
@@ -448,6 +456,15 @@ class _FakeThread:
         # "done" handlers are exercised directly, by calling _on_x_done),
         # so unlike a real QThread this never has a reason to say False.
         return True
+
+    def requestInterruption(self) -> None:
+        # 2026-09-22 - James: "add a real cancel button that stops any
+        # process running within Settings" - the two bits of real QThread
+        # API `_on_cancel_clicked`/`_hide_cancel` actually touch.
+        self._interruption_requested = True
+
+    def isInterruptionRequested(self) -> bool:
+        return self._interruption_requested
 
 
 class TestBusyWith:
@@ -602,3 +619,176 @@ class TestRematchAllThreaded:
 
         assert notifications == ["5 chart entries now point at tracks you own"]
         assert library_changed == [True]
+
+
+class TestCancelButton:
+    """2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings", asked right after being told "Download
+    Artist Profiles" had no way to stop it short of closing the whole app.
+    `_active_cancellable_thread`/`_show_cancel`/`_hide_cancel`/
+    `_on_cancel_clicked` are the plumbing behind the one `self.cancel_btn`
+    - see `_CANCELLABLE_THREAD_ATTRS`'s own docstring for why
+    `_migration_thread` is deliberately left out of all of this."""
+
+    def test_hidden_by_default(self, view):
+        assert view.cancel_btn.isVisible() is False
+
+    def test_active_cancellable_thread_is_none_when_nothing_is_running(self, view):
+        assert view._active_cancellable_thread() is None
+
+    @pytest.mark.parametrize(
+        "attr",
+        [
+            "_thread",
+            "_bio_thread",
+            "_popularity_thread",
+            "_artwork_thread",
+            "_metadata_scan_thread",
+            "_artist_images_thread",
+            "_verify_thread",
+            "_rematch_thread",
+        ],
+    )
+    def test_active_cancellable_thread_finds_whichever_one_is_running(self, view, attr):
+        thread = _FakeThread()
+        setattr(view, attr, thread)
+
+        assert view._active_cancellable_thread() is thread
+
+    def test_migration_thread_is_never_returned_even_while_running(self, view):
+        # the one background job Cancel can't touch - data_migration.migrate
+        # copies files in several discrete steps with no safe mid-flight
+        # stop, so it's simply not in _CANCELLABLE_THREAD_ATTRS at all.
+        view._migration_thread = _FakeThread()
+
+        assert view._active_cancellable_thread() is None
+
+    def test_on_cancel_clicked_requests_interruption_on_the_active_thread(self, view):
+        thread = _FakeThread()
+        view._bio_thread = thread
+        view._show_cancel()
+
+        view._on_cancel_clicked()
+
+        assert thread.isInterruptionRequested() is True
+        assert view.cancel_btn.isEnabled() is False
+
+    def test_on_cancel_clicked_is_a_no_op_when_nothing_is_running(self, view):
+        # nothing running at all - most notably, must not raise just
+        # because there's no thread to call requestInterruption() on.
+        view._on_cancel_clicked()
+
+    def test_on_cancel_clicked_does_nothing_while_only_migration_is_running(self, view):
+        migration_thread = _FakeThread()
+        view._migration_thread = migration_thread
+
+        view._on_cancel_clicked()
+
+        assert migration_thread.isInterruptionRequested() is False
+
+    def test_show_cancel_makes_the_button_visible_and_enabled(self, view):
+        # isVisible() reflects the whole ancestor chain, not just this
+        # widget's own flag - show() the (offscreen, headless) view itself
+        # first so a True case is actually observable here, matching every
+        # other isVisible()-is-True assertion this suite would need.
+        view.show()
+        view.cancel_btn.setEnabled(False)
+
+        view._show_cancel()
+
+        assert view.cancel_btn.isVisible() is True
+        assert view.cancel_btn.isEnabled() is True
+
+    def test_hide_cancel_hides_the_button(self, view):
+        view._show_cancel()
+
+        view._hide_cancel()
+
+        assert view.cancel_btn.isVisible() is False
+
+    def test_hide_cancel_notifies_when_the_given_thread_was_interrupted(self, view):
+        thread = _FakeThread()
+        thread.requestInterruption()
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+
+        view._hide_cancel(thread)
+
+        assert notifications == ["Cancelled — showing partial results"]
+
+    def test_hide_cancel_says_nothing_when_the_thread_finished_on_its_own(self, view):
+        thread = _FakeThread()  # never interrupted
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+
+        view._hide_cancel(thread)
+
+        assert notifications == []
+
+    def test_hide_cancel_with_no_thread_says_nothing(self, view):
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+
+        view._hide_cancel()
+
+        assert notifications == []
+
+    def test_starting_a_bulk_action_shows_the_cancel_button(self, view, monkeypatch):
+        view.show()
+        _FakeThread.instances = []
+        monkeypatch.setattr(settings_module, "VerifyFilesThread", _FakeThread)
+
+        view.verify_files()
+
+        assert view.cancel_btn.isVisible() is True
+
+    def test_finishing_a_bulk_action_hides_the_cancel_button(self, view):
+        view._verify_thread = _FakeThread()
+        view._show_cancel()
+
+        view._on_verify_done(0)
+
+        assert view.cancel_btn.isVisible() is False
+
+    def test_a_cancelled_scan_hides_the_button_without_a_second_notification(self, view):
+        # ScanThread folds "Cancelled — " into its own summary string (see
+        # ScanThread.run()) rather than going through _hide_cancel's own
+        # notify - _on_scan_done deliberately just hides the button here,
+        # so a cancelled scan doesn't say "Cancelled" twice.
+        view._thread = _FakeThread()
+        view._thread.requestInterruption()
+        view._show_cancel()
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+
+        view._on_scan_done("Cancelled — Audio: nothing to do · Video: nothing to do")
+
+        assert view.cancel_btn.isVisible() is False
+        assert notifications == ["Cancelled — Audio: nothing to do · Video: nothing to do"]
+
+    def test_a_cancelled_metadata_scan_is_not_cached(self, view, monkeypatch):
+        monkeypatch.setattr(
+            settings_module.QMessageBox, "information", staticmethod(lambda *a, **k: None)
+        )
+        thread = _FakeMetadataScanThread()
+        thread.requestInterruption()
+        view._metadata_scan_thread = thread
+        monkeypatch.setattr(
+            view, "_open_missing_metadata_dialog", lambda result: None
+        )
+
+        view._on_metadata_scan_done(metadata_health.ScanResult())
+
+        assert view._last_metadata_scan is None
+
+    def test_an_uncancelled_metadata_scan_is_cached_as_before(self, view, monkeypatch):
+        thread = _FakeMetadataScanThread()
+        view._metadata_scan_thread = thread
+        monkeypatch.setattr(
+            view, "_open_missing_metadata_dialog", lambda result: None
+        )
+        result = metadata_health.ScanResult()
+
+        view._on_metadata_scan_done(result)
+
+        assert view._last_metadata_scan is result

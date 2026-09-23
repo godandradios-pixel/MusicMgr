@@ -311,6 +311,31 @@ class TestRematchChart:
         assert calls[-1] == (1, 1)
 
 
+class TestRematchChartShouldStop:
+    """2026-09-22 - James: "add a real cancel button that stops any process
+    running within Settings" - `should_stop`, checked once per entry,
+    `break`s rather than raising; nothing here commits mid-loop (the whole
+    multi-chart run shares one session_scope, committed once at the very
+    end by rematch_all_charts), so a stop just means fewer entries get
+    checked this run."""
+
+    def test_should_stop_true_from_the_start_matches_nothing(self, session):
+        make_owned_track(session, "Thriller", "Michael Jackson")
+        chart = charts.get_or_create_chart(session, "Test")
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2020, 1, 1))
+        session.add(issue)
+        session.flush()
+        session.add(ChartEntry(
+            issue_id=issue.id, rank=1, title="Thriller", artist_name="Michael Jackson",
+            title_key=normalize("Thriller"), artist_key=normalize("Michael Jackson"),
+        ))
+        session.flush()
+
+        matched = charts.rematch_chart(session, chart.id, should_stop=lambda: True)
+
+        assert matched == 0
+
+
 class TestRematchAllCharts:
     """2026-09-22 - James: "does the progress bar also work on ... the
     other settings options that scan" - SettingsView.rematch_all used to
@@ -376,6 +401,53 @@ class TestRematchAllCharts:
 
         phase_names = {name for done, total, name in calls if total == 0}
         assert "Re-matching Named Chart…" in phase_names
+
+    def test_should_stop_true_from_the_start_rematches_no_chart_at_all(self, session):
+        make_owned_track(session, "Thriller", "Michael Jackson")
+        chart = charts.get_or_create_chart(session, "Chart A")
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2020, 1, 1))
+        session.add(issue)
+        session.flush()
+        session.add(ChartEntry(
+            issue_id=issue.id, rank=1, title="Thriller", artist_name="Michael Jackson",
+            title_key=normalize("Thriller"), artist_key=normalize("Michael Jackson"),
+        ))
+        session.flush()
+
+        total = charts.rematch_all_charts(should_stop=lambda: True)
+
+        assert total == 0
+
+    def test_should_stop_partway_through_skips_later_charts(self, session):
+        make_owned_track(session, "Thriller", "Michael Jackson")
+        make_owned_track(session, "Purple Rain", "Prince")
+        chart_a = charts.get_or_create_chart(session, "Chart A")
+        chart_b = charts.get_or_create_chart(session, "Chart B")
+        for chart, title, artist in (
+            (chart_a, "Thriller", "Michael Jackson"),
+            (chart_b, "Purple Rain", "Prince"),
+        ):
+            issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2020, 1, 1))
+            session.add(issue)
+            session.flush()
+            session.add(ChartEntry(
+                issue_id=issue.id, rank=1, title=title, artist_name=artist,
+                title_key=normalize(title), artist_key=normalize(artist),
+            ))
+        session.flush()
+
+        calls = {"n": 0}
+
+        def should_stop() -> bool:
+            calls["n"] += 1
+            # call 1: outer loop, before chart_a - let it through
+            # call 2: rematch_chart's own loop, chart_a's one entry - let it through
+            # call 3: outer loop, before chart_b - stop here
+            return calls["n"] > 2
+
+        total = charts.rematch_all_charts(should_stop=should_stop)
+
+        assert total == 1
 
 
 class TestChartShape:
