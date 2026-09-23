@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QStackedWidget
+from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QStackedWidget, QWidget
 
 from ...db.models import Video
 from ...services import videos as vid_svc
@@ -63,7 +63,16 @@ class VideosView(BaseView):
         # OR artist (see VideoTable.set_filter_text) rather than needing a
         # separate "search by" picker the way Library's four presentations
         # each search their own field.
-        search_row = QHBoxLayout()
+        # wrapped in a widget of its own (2026-09-23) rather than added to
+        # body() as a bare layout, purely so the whole row can be hidden in
+        # one call while the player pane is up - Qt reclaims a hidden
+        # widget's space, but a layout full of individually-hidden widgets
+        # still leaves its own spacing behind (the same reasoning
+        # video_panel.py's `self.controls.setVisible(False)` already
+        # follows).
+        self.search_row = QWidget()
+        search_row = QHBoxLayout(self.search_row)
+        search_row.setContentsMargins(0, 0, 0, 0)
         search_row.setSpacing(8)
 
         self.search_box = QLineEdit()
@@ -92,7 +101,7 @@ class VideosView(BaseView):
         search_row.addWidget(clear_btn)
 
         search_row.addStretch(1)
-        self.body().addLayout(search_row)
+        self.body().addWidget(self.search_row)
 
         # 2026-09-15 same-day follow-up - James: "It's missing the
         # alphabet, how do I touch type letters to search without it" -
@@ -192,6 +201,33 @@ class VideosView(BaseView):
         if letters:
             self.jump_bar.set_available(letters)
 
+    def _set_browse_chrome_visible(self, visible: bool) -> None:
+        """Show/hide everything above the panes - the page title, the
+        "N videos · H:MM:SS" stats, the search row and the A-Z jump bar.
+
+        2026-09-23, James: "allow the video window to be larger". All four
+        of these exist to browse the *table*; while the player pane is up
+        the table isn't on screen at all, so they were costing the picture
+        roughly a third of the window for controls that had nothing to act
+        on. Hidden widgets don't reserve space in Qt, so this is real
+        height handed to `video_widget`'s stretch factor - the same trick
+        the 2026-09-15 "Add folders to scan from Settings…" hint removal
+        and video_panel.py's own hidden `controls` row already used, just
+        applied to the whole browse chrome at once instead of one row.
+        Everything comes straight back on the way out (`_focus_artist`, or
+        the next visit to the table).
+        """
+        self.title.setVisible(visible)
+        self.stats.setVisible(visible)
+        self.search_row.setVisible(visible)
+        if visible:
+            # not a bare setVisible(True) - the jump bar has its own reason
+            # to stay hidden (too few letters to be worth a bar, see
+            # _refresh_jump_bar), which this must not override.
+            self._refresh_jump_bar()
+        else:
+            self.jump_bar.setVisible(False)
+
     # -- navigation -----------------------------------------------------------
 
     def _open_video(self, video_id: int) -> None:
@@ -207,6 +243,7 @@ class VideosView(BaseView):
             return
         self.player_panel.play(vid, path, title, artist)
         self.panes.setCurrentIndex(PANE_PLAYER)
+        self._set_browse_chrome_visible(False)
 
     def _focus_artist(self, artist: str) -> None:
         """A collapsed "N videos" tile from a Library search (2026-09-06) -
@@ -214,4 +251,5 @@ class VideosView(BaseView):
         by Artist and scrolled to that artist's section, rather than the
         player pane `_open_video` uses."""
         self.panes.setCurrentIndex(PANE_TABLE)
+        self._set_browse_chrome_visible(True)
         self.table.focus_artist(artist)

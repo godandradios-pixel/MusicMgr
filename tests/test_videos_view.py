@@ -202,6 +202,81 @@ class TestOpenVideo:
         assert view.panes.currentIndex() == PANE_TABLE
 
 
+class TestBrowseChrome:
+    """2026-09-23: the page title, stats, search row and A-Z jump bar all
+    hide while the player pane is up, so the video gets that height (see
+    VideosView._set_browse_chrome_visible).
+
+    isHidden(), not isVisible(), throughout - same reason as
+    TestJumpBar's own note: nothing here is ever shown in a real window.
+    """
+
+    def _play_something(self, ctx, view, tmp_path, monkeypatch):
+        real_file = tmp_path / "clip.mp4"
+        real_file.write_bytes(b"fake video bytes")
+        with ctx.session() as session:
+            # enough videos that the jump bar would otherwise be showing,
+            # so hiding it is actually being asserted
+            for i in range(10):
+                make_video(session, f"{chr(65 + i)} Song")
+            video = make_video(session, "Playable", path=str(real_file))
+            video_id = video.id
+        view.refresh()
+        monkeypatch.setattr(view.player_panel, "play", lambda *a: None)
+        view._open_video(video_id)
+
+    def test_chrome_is_visible_on_the_table_pane(self, ctx, view):
+        with ctx.session() as session:
+            for i in range(10):
+                make_video(session, f"{chr(65 + i)} Song")
+
+        view.refresh()
+
+        assert view.title.isHidden() is False
+        assert view.stats.isHidden() is False
+        assert view.search_row.isHidden() is False
+        assert view.jump_bar.isHidden() is False
+
+    def test_opening_a_video_hides_all_of_it(self, ctx, view, tmp_path, monkeypatch):
+        self._play_something(ctx, view, tmp_path, monkeypatch)
+
+        assert view.panes.currentIndex() == PANE_PLAYER
+        assert view.title.isHidden() is True
+        assert view.stats.isHidden() is True
+        assert view.search_row.isHidden() is True
+        assert view.jump_bar.isHidden() is True
+
+    def test_focusing_an_artist_brings_it_all_back(self, ctx, view, tmp_path, monkeypatch):
+        self._play_something(ctx, view, tmp_path, monkeypatch)
+
+        view._focus_artist("A Song")
+
+        assert view.panes.currentIndex() == PANE_TABLE
+        assert view.title.isHidden() is False
+        assert view.stats.isHidden() is False
+        assert view.search_row.isHidden() is False
+        assert view.jump_bar.isHidden() is False
+
+    def test_a_short_list_keeps_its_jump_bar_hidden_on_the_way_back(
+        self, ctx, view, tmp_path, monkeypatch
+    ):
+        """Restoring the chrome must not override the jump bar's own
+        "too few letters to bother" rule (_refresh_jump_bar)."""
+        real_file = tmp_path / "clip.mp4"
+        real_file.write_bytes(b"fake video bytes")
+        with ctx.session() as session:
+            video = make_video(session, "Only One", artist="Solo", path=str(real_file))
+            video_id = video.id
+        view.refresh()
+        monkeypatch.setattr(view.player_panel, "play", lambda *a: None)
+        view._open_video(video_id)
+
+        view._focus_artist("Solo")
+
+        assert view.search_row.isHidden() is False
+        assert view.jump_bar.isHidden() is True
+
+
 class TestFocusArtist:
     def test_switches_to_the_table_pane_and_focuses_the_artist_group(self, ctx, view, monkeypatch):
         with ctx.session() as session:

@@ -35,6 +35,20 @@ playback widgets for the fullscreen window - the same "move it out and
 back" idiom already used there for `video_widget`/`self.controls`
 themselves - so it still travels into full-screen and back exactly as
 before; only its embedded home moved.
+
+2026-09-23 follow-up - James: "Can we remove the title above the video and
+allow the video window to be larger. I don't need a 'If I Could Turn Back
+Time - Cher' at the top and then the same in the play window at the
+bottom." The centered `title_label` that used to sit between "‹ Back" and
+"⤢ Full screen" is gone outright (not merely hidden): the PlayerBar
+already shows title + artist for the whole time a video plays (`play()`
+hands it both via `ctx.videoPlaybackStarted`, see enter_video_mode), so
+this was a second copy of the same two strings a few hundred pixels
+apart. The top row now holds only the two buttons, pushed to either edge,
+and gave up its own padding to the picture. VideosView hides the rest of
+the browse chrome (page header, search row, A-Z jump bar) for as long as
+this pane is up - see `_set_browse_chrome_visible` there; between the two
+changes the video widget gets roughly a third of the window back.
 """
 
 from __future__ import annotations
@@ -44,7 +58,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QSlider, QVBoxLayout, QWidget
 
 from ...services.library import format_duration
 from ...services.video_player import VideoController
@@ -76,7 +90,10 @@ class VideoPlayerPanel(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(10)
+        # 6 rather than 10 (2026-09-23) - with the title gone this row is
+        # two buttons and nothing else; no reason to hold the picture that
+        # far off them.
+        root.setSpacing(6)
 
         top = QHBoxLayout()
         # Labeled "‹ Back" rather than "‹ Videos" (2026-09-06) - it no longer
@@ -88,10 +105,10 @@ class VideoPlayerPanel(QWidget):
         back.setFixedWidth(130)
         back.clicked.connect(self.backRequested.emit)
         top.addWidget(back)
-        top.addStretch(1)
-        self.title_label = QLabel("")
-        self.title_label.setStyleSheet("font-size: 19px; font-weight: 600;")
-        top.addWidget(self.title_label)
+        # a centered title label used to live here between the two buttons -
+        # removed 2026-09-23 (see module docstring): the PlayerBar below is
+        # already showing the same title and artist for as long as the video
+        # plays. One stretch now, not two, so the buttons sit at the edges.
         top.addStretch(1)
         # embedded home for the full-screen toggle (2026-09-07 follow-up -
         # see module docstring) - moved out to self.controls' own row while
@@ -163,7 +180,9 @@ class VideoPlayerPanel(QWidget):
     # -- playback ---------------------------------------------------------
 
     def play(self, video_id: int, path: str, title: str, artist: Optional[str]) -> None:
-        self.title_label.setText(" — ".join(x for x in (title, artist) if x))
+        # title/artist aren't drawn here any more (2026-09-23) - they go
+        # straight out to the PlayerBar via videoPlaybackStarted below,
+        # which is the one place on screen that shows them now.
         self.ctx.player.pause()  # don't talk over a video with background music
         self.controller.play_path(path, video_id)
         self.ctx.videoPlaybackStarted.emit(self.controller, title, artist or "")
