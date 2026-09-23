@@ -250,9 +250,24 @@ class LibraryView(BaseView):
     def _build_album_grid(self) -> QWidget:
         # no sort picker here - always by Artist (see "Sort chips removed
         # from Library grids" in architecture.md, 2026-09-05)
+        # art_size=115 (smaller than CoverGrid's own 190px default) -
+        # 2026-09-22, James: "please make the album artwork a bit smaller
+        # so that I can fit 3 rows instead of 2" (screenshot of his Albums
+        # grid showing 2 rows fitting the window, a hint of a clipped 3rd).
+        # Same "shrink art_size, everything else follows" fix the artist
+        # grid below already got (2026-09-07), just a bigger cut - that one
+        # only needed "a bit more per row" horizontally (190 -> 150); this
+        # one needs a whole extra *row* to fit vertically, which costs a
+        # proportionally bigger reduction since TILE_CAPTION/TILE_PAD don't
+        # shrink with it. Sized by measuring a real (offscreen) MainWindow
+        # at a window size matching his screenshot's apparent scaling
+        # (Windows 125% display scaling, going by the ratio of rows that
+        # actually fit there) - 115px keeps a little headroom rather than
+        # landing exactly on the 3-row ceiling, so it isn't a hair's width
+        # from falling back to 2 on a slightly shorter window.
         self.album_grid = CoverGrid(
             sorts=ALBUM_SORTS, noun="album",
-            default_sort="subtitle", show_sort_picker=False,
+            default_sort="subtitle", show_sort_picker=False, art_size=115,
         )
         self.album_grid.tileActivated.connect(
             lambda rid: self._open_release(rid, [
@@ -267,16 +282,26 @@ class LibraryView(BaseView):
     def _build_artist_grid(self) -> QWidget:
         # no sort picker here - always by Name (see "Sort chips removed
         # from Library grids" in architecture.md, 2026-09-05)
-        # art_size=150 (smaller than CoverGrid's own 190px default) - James:
-        # "can we make the artist pictures just a bit smaller? I want to be
-        # able to fit more on the page" (2026-09-07) - fits more portraits
-        # per row/page without shrinking them down to the 130px size the
+        # art_size=115 - 2026-09-22, James, right after the album grid's own
+        # art_size=115 shrink above (see that method's own docstring for the
+        # 190px default -> 115px reasoning): "I like that size of the album
+        # artwork. Please size the artist pictures similar size." Matches
+        # the album grid exactly rather than picking a separately-tuned
+        # circle size, so both grids now read as one consistent size across
+        # the two presentations.
+        #
+        # Previously 150px (James, 2026-09-07: "can we make the artist
+        # pictures just a bit smaller? I want to be able to fit more on the
+        # page") - that value was deliberately kept above the 130px the
         # artist page's own embedded "More from this artist" grid uses
-        # (artist_panel.py), which is small enough to read as a strip
-        # rather than a browsable grid of its own.
+        # (artist_panel.py), reasoning that 130px reads as a strip rather
+        # than a browsable grid of its own. 115px goes below that line
+        # anyway, per this explicit follow-up request; if the portraits end
+        # up feeling too strip-like at this size, this is the value to
+        # revisit.
         self.artist_grid = CoverGrid(
             sorts=ARTIST_SORTS, shape=SHAPE_CIRCLE, noun="artist",
-            default_sort="title", show_sort_picker=False, art_size=150,
+            default_sort="title", show_sort_picker=False, art_size=115,
         )
         self.artist_grid.tileActivated.connect(self._open_artist)
         self.artist_grid.videoActivated.connect(self._activate_video)
