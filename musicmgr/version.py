@@ -1,5 +1,12 @@
 """App version string, for the Settings page's About footer.
 
+2026-09-23 update: MusicMgr now has real releases (GitHub Releases on
+godandradios-pixel/MusicMgr, installed by the in-app updater), so the
+SemVer number in `musicmgr.__version__` leads the label and the commit
+info below is kept alongside it as build detail:
+"1.5.0 (5e3094e - 2026-09-23)". The history below explains the commit
+part, which is still how two builds of the *same* version are told apart.
+
 MusicMgr has no formal release process - James is the only user, there
 are no version-numbered releases, no tags (see `git tag` - empty), and
 nothing else in the codebase tracks a version at all. Rather than hand-
@@ -37,7 +44,7 @@ from __future__ import annotations
 import subprocess
 from typing import Optional
 
-from . import config
+from . import __version__, config
 
 VERSION_FILE = config.ASSETS_DIR / "VERSION"
 
@@ -66,8 +73,16 @@ def _from_file() -> Optional[str]:
     return text or None
 
 
-def get_version() -> str:
+def get_build() -> str:
     return _from_git() or _from_file() or "dev build"
+
+
+def get_version() -> str:
+    return f"{__version__} ({get_build()})"
+
+
+#: the bare release number, for comparisons (services/updater.py)
+RELEASE_VERSION = __version__
 
 
 #: computed once at import time - a version string can't change while

@@ -78,12 +78,41 @@ ASSETS_DIR = _BUNDLE_ROOT / "musicmgr" / "assets"
 SPLASH_IMAGE = ASSETS_DIR / "splash_banner.png"
 APP_ICON = ASSETS_DIR / "app_icon.ico"
 
+#: -- in-app updater (services/updater.py, 2026-09-23) --------------------
+#: The public GitHub repo whose Releases the updater checks. Compiled into
+#: every shipped binary, so changing it strands every install still
+#: pointing at the old one - see claude/2026-09-23-public-repo-setup.md.
+UPDATE_REPO = "godandradios-pixel/MusicMgr"
+#: Ed25519 public keys (base64, one per line, `#` comments allowed) that a
+#: release's SHA256SUMS.txt.sig must verify against before anything is
+#: installed. Written by tools/make_signing_key.py and bundled with the
+#: rest of musicmgr/assets. A list, so a key rotation can ship old + new
+#: together for one release before the old one is retired.
+UPDATE_KEYS_FILE = ASSETS_DIR / "update_keys.txt"
+
+
+def update_public_keys() -> list[str]:
+    try:
+        text = UPDATE_KEYS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [
+        line.strip() for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
 DATA_DIR = _resolve_data_dir()
 DB_PATH = DATA_DIR / "library.db"
 ART_DIR = DATA_DIR / "artwork"
 #: artist portraits, imported from a folder you point the app at
 ARTIST_IMG_DIR = DATA_DIR / "artists"
 LOG_PATH = DATA_DIR / "musicmgr.log"
+#: pre-upgrade copies of library.db, one per version change - see
+#: services/updater.backup_database_if_version_changed
+DB_BACKUP_DIR = DATA_DIR / "backups"
+#: the release version that last opened this data folder
+LAST_RUN_VERSION_FILE = DATA_DIR / "last_run_version.txt"
 
 AUDIO_EXTENSIONS = {
     ".mp3", ".flac", ".m4a", ".mp4", ".aac", ".ogg", ".oga",

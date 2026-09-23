@@ -1,0 +1,3 @@
+# Ed25519 public keys trusted to sign MusicMgr releases (base64, one per line).
+# Written by tools/make_signing_key.py - see config.UPDATE_KEYS_FILE.
+zpy9Eztyrn42c6OfIZ9bGAGxSwNViwk+9oNdSObpDG8=

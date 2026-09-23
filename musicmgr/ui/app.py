@@ -28,6 +28,7 @@ from ..db.session import init_engine, session_scope
 from ..services import charts as chart_svc
 from ..services import library as lib_svc
 from ..services import playlists as pl_svc
+from ..services import updater
 from ..services.player import PlayerController
 from .context import AppContext
 from .theme import stylesheet
@@ -38,6 +39,7 @@ from .views.nowplaying import NowPlayingView
 from .views.playlists import PlaylistsView
 from .views.settings import SettingsView
 from .views.videos import VideosView
+from ..version import RELEASE_VERSION
 
 #: James, 2026-09-06: "remove the Library [item] as a left sidebar item and
 #: make all those sub menus part of the main [nav]" - Artists/Albums/Tracks/
@@ -482,9 +484,41 @@ def _setup_logging() -> None:
     root.setLevel(logging.INFO)
 
 
+#: how long after the window appears before the once-a-day update check
+#: runs - late enough to stay out of the way of startup and the splash
+AUTO_UPDATE_CHECK_DELAY_MS = 10_000
+
+
+def _prepare_for_update_restart(argv: list[str]) -> None:
+    """In-app updates (2026-09-23, services/updater.py). "Restart now"
+    launches the new exe with `--wait-pid <old pid>` and then closes the
+    old one normally - wait for it to be fully gone before anything here
+    opens library.db, so the two never hold the database at once."""
+    pid = updater.parse_wait_pid(argv)
+    if pid is not None:
+        updater.wait_for_pid_exit(pid)
+
+
+def _pre_database_housekeeping() -> None:
+    """Before bootstrap_database() runs any schema migration: tidy up a
+    half-finished update download, and copy library.db aside the first
+    time a new release opens it (see updater.backup_database_if_version_changed
+    - never raises)."""
+    try:
+        updater.cleanup_leftovers(updater.current_executable())
+    except OSError:
+        logging.getLogger(__name__).exception("update cleanup failed")
+    made = updater.backup_database_if_version_changed(
+        config.DB_PATH, config.DB_BACKUP_DIR, config.LAST_RUN_VERSION_FILE, RELEASE_VERSION
+    )
+    if made is not None:
+        logging.getLogger(__name__).info("backed up library.db to %s before first run of %s", made, RELEASE_VERSION)
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(argv if argv is not None else sys.argv)
 
+    _prepare_for_update_restart(argv)
     _setup_logging()
 
     app = QApplication.instance() or QApplication(argv)
@@ -504,6 +538,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if splash is not None:
         app.processEvents()
 
+    _pre_database_housekeeping()
     bootstrap_database()
 
     window = MainWindow()
@@ -521,6 +556,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         window.showMaximized()
     else:
         window.show()
+
+    if "--after-update" in argv:
+        QTimer.singleShot(1500, lambda: window.ctx.notify(f"Updated to MusicMgr {RELEASE_VERSION}"))
+    settings_view = window.views.get("settings")
+    if settings_view is not None:
+        QTimer.singleShot(AUTO_UPDATE_CHECK_DELAY_MS, settings_view.auto_check_for_updates)
     return app.exec()
 
 

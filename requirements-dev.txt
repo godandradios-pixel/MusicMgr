@@ -3,4 +3,4 @@
 # of requirements.txt for that reason).
 -r requirements.txt
 pytest>=7.4
-pyinstaller>=6.6
+pyinstaller>=6.10

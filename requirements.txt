@@ -2,3 +2,5 @@ PySide6>=6.6
 SQLAlchemy>=2.0
 mutagen>=1.47
 requests>=2.31
+cryptography>=42
+packaging>=23
