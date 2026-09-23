@@ -15,3 +15,8 @@ library.db
 # commit was checked out at build time, which goes stale the moment
 # another commit lands).
 musicmgr/assets/VERSION
+
+.commitmsg
+.review.diff
+Claude outputs/
+last_fm.txt
