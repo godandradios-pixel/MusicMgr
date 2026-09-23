@@ -634,10 +634,21 @@ class LibraryView(BaseView):
                     GridTile(
                         key=artist.id,
                         title=artist.name,
+                        # "5 releases · 96", not "5 releases · 96 tracks"
+                        # (2026-09-23, James, from a screenshot of the
+                        # Artists grid: "the tracks text is truncated when
+                        # viewing artists ... or maybe just drop the word
+                        # tracks"). At 115px tiles - see _build_artist_grid
+                        # for why they're that size - the full caption
+                        # elided to "5 releases · 96 tr…", so that word was
+                        # only ever half-drawn. It's also the one word this
+                        # grid can spare: every tile reads
+                        # "<N> releases · <M>", which makes the second
+                        # number unambiguous in context. cover_grid.py's
+                        # caption font came down a point in the same pass.
                         subtitle=(
                             f"{release_count} release"
-                            f"{'s' if release_count != 1 else ''} · "
-                            f"{track_count} track{'s' if track_count != 1 else ''}"
+                            f"{'s' if release_count != 1 else ''} · {track_count}"
                         ),
                         cover_path=artist.image_path or covers.get(artist.id),
                         count=release_count or 0,

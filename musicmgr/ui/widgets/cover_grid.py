@@ -214,7 +214,15 @@ class CoverDelegate(QStyledItemDelegate):
             metrics.elidedText(tile.title, Qt.ElideRight, text_w),
         )
 
-        font.setPixelSize(TOUCH["font_base"] - 2)
+        # -3, not -2 (2026-09-23): the second caption line is the one that
+        # elides first, and since the 115px shrink both Library grids use
+        # (see LibraryView._build_album_grid) it was losing real words -
+        # "5 releases · 96 tr…" in Artists. A point off the subtitle buys
+        # ~8% more characters everywhere without touching the tile size or
+        # the bold title line above, which stays at font_base. The Artists
+        # caption also dropped its trailing "tracks" in the same pass (see
+        # LibraryView._load_artists).
+        font.setPixelSize(TOUCH["font_base"] - 3)
         font.setBold(False)
         painter.setFont(font)
         painter.setPen(QColor(COLORS["text_dim"]))
