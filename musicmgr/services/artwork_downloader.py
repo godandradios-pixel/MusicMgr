@@ -47,7 +47,6 @@ picker or a bulk apply.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -57,7 +56,6 @@ from typing import Callable, Optional, Sequence
 import requests
 from sqlalchemy import select
 
-from .. import config
 from ..db.models import Release, Setting
 from ..db.session import session_scope
 
@@ -285,36 +283,21 @@ def search_artwork_candidates(
     return candidates
 
 
-def _save_cover(data: bytes, release_id: int, ext_hint: Optional[str] = None) -> Optional[str]:
-    """Save cover bytes under config.ART_DIR, deliberately the same
-    digest-named scheme scanner.py's own `_save_cover` uses for a
-    tag-embedded cover - so a moved/portable data\\ folder still resolves
-    a saved cover by filename the same way (see ui/widgets/common.py's
-    `_resolve_art_path`).
+def _save_cover(data: bytes, release: Release, ext_hint: Optional[str] = None) -> Optional[str]:
+    """Save a downloaded or hand-picked cover under the release's
+    name-based file (`artwork\\<Album Artist> - <Title>.jpg` - see
+    services/artwork_names.py, 2026-09-24), replacing whatever picture was
+    there - that's the point of choosing one. The replaced file keeps its
+    name, so the next USB sync carries the new picture to the other PCs.
 
     `ext_hint` (added for `apply_local_image_to_release` - a file James
     picked from his own disk) preserves the source file's own real
-    extension when it's a recognised image type, rather than forcing
-    everything through the jpg/png sniff below - that sniff still covers
-    the Discogs-download path (always jpg or png in practice) and is the
-    fallback if the hint isn't usable."""
+    extension when it's a recognised image type."""
     if not data:
         return None
-    try:
-        config.ensure_dirs()
-        digest = hashlib.sha1(data).hexdigest()[:16]
-        hint = (ext_hint or "").lower()
-        if hint in config.IMAGE_EXTENSIONS:
-            ext = hint
-        else:
-            ext = ".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
-        out = config.ART_DIR / f"release_{release_id}_{digest}{ext}"
-        if not out.exists():
-            out.write_bytes(data)
-        return str(out)
-    except Exception as exc:  # pragma: no cover
-        log.warning("cover save failed: %s", exc)
-        return None
+    from . import artwork_names
+
+    return artwork_names.save_release_cover(release, data, ext_hint=ext_hint, overwrite=True)
 
 
 def apply_artwork_candidate(http: requests.Session, db, release: Release, candidate: ArtworkCandidate) -> ArtworkOutcome:
@@ -324,7 +307,7 @@ def apply_artwork_candidate(http: requests.Session, db, release: Release, candid
     data = _download_image_bytes(http, candidate.image_url)
     if not data:
         return ArtworkOutcome(release.id, release.title, "error", "couldn't download the selected image")
-    path = _save_cover(data, release.id)
+    path = _save_cover(data, release)
     if not path:
         return ArtworkOutcome(release.id, release.title, "error", "couldn't save the image")
     release.cover_path = path
@@ -407,7 +390,7 @@ def apply_local_image_to_release(release_id: int, file_path: str) -> ArtworkOutc
         release = db.get(Release, release_id)
         if release is None:
             return ArtworkOutcome(release_id, "", "error", "release no longer exists")
-        path = _save_cover(data, release.id, ext_hint=src.suffix)
+        path = _save_cover(data, release, ext_hint=src.suffix)
         if not path:
             return ArtworkOutcome(release.id, release.title, "error", "couldn't save the image")
         release.cover_path = path

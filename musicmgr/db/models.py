@@ -879,3 +879,45 @@ class Setting(Base):
 
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
     value: Mapped[Optional[str]] = mapped_column(Text)
+
+
+# --------------------------------------------------------------------------
+# USB sync (2026-09-23)
+# --------------------------------------------------------------------------
+
+
+class SyncPair(Base):
+    """One local folder kept in two-way sync with one folder on a MusicMgr
+    USB drive - see services/usb_sync.py. `usb_rel_path` is relative to the
+    drive's root (the folder holding `MusicMgr\\sync\\drive.json`), so the
+    pair survives the drive turning up as E: one day and F: the next.
+    `kind` is "media" today; "artwork" arrives with name-based artwork
+    (plan: claude/2026-09-23-usb-sync-plan.md §2)."""
+
+    __tablename__ = "sync_pairs"
+    __table_args__ = (UniqueConstraint("drive_id", "local_path", name="uq_sync_pair_local"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    drive_id: Mapped[str] = mapped_column(String(64), index=True)
+    local_path: Mapped[str] = mapped_column(Text)
+    usb_rel_path: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(20), default="media")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_synced_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
+
+
+class SyncBaseline(Base):
+    """The file list both sides of a `SyncPair` agreed on at the end of its
+    last sync - what lets a two-way sync tell "new on the USB" apart from
+    "deleted on this PC" (services/usb_sync.py:compare). `rel_path` uses
+    forward slashes; `mtime_ns` is the file's modified time after the copy
+    (usb_sync sets both sides to the same time)."""
+
+    __tablename__ = "sync_baseline"
+
+    pair_id: Mapped[int] = mapped_column(
+        ForeignKey("sync_pairs.id", ondelete="CASCADE"), primary_key=True
+    )
+    rel_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    size: Mapped[int] = mapped_column(Integer)
+    mtime_ns: Mapped[int] = mapped_column(Integer)

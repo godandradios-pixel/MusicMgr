@@ -53,16 +53,16 @@ class TestCard:
         assert view.update_restart_btn.isHidden()
         assert view.update_install_btn.isHidden()
 
-    def test_defaults_auto_on_prerelease_off(self, view):
-        assert view.update_auto_cb.isChecked()
+    def test_no_startup_check_option_and_prerelease_off(self, view):
+        # 2026-09-24: no update check at startup, so no checkbox for one
+        assert not hasattr(view, "update_auto_cb")
+        assert not hasattr(view, "auto_check_for_updates")
         assert not view.update_prerelease_cb.isChecked()
 
     def test_prefs_persist(self, ctx):
         first = SettingsView(ctx)
-        first.update_auto_cb.setChecked(False)
         first.update_prerelease_cb.setChecked(True)
         second = SettingsView(ctx)
-        assert not second.update_auto_cb.isChecked()
         assert second.update_prerelease_cb.isChecked()
 
     def test_rollback_offered_when_old_exists(self, ctx, tmp_path, monkeypatch):
@@ -77,34 +77,16 @@ class TestCard:
         assert "1.4.0" in v.update_rollback_btn.text()
 
 
-class TestAutoCheck:
-    def test_source_checkout_never_auto_checks(self, view, monkeypatch):
-        calls = []
-        monkeypatch.setattr(view, "check_for_updates", lambda manual=True: calls.append(manual))
-        view.auto_check_for_updates()
-        assert calls == []
+class TestNoStartupNetwork:
+    def test_main_schedules_no_update_check(self):
+        """2026-09-24 - James: "I should never be checking for updates or
+        anything that relies on an internet connection at startup"."""
+        import inspect
 
-    def test_frozen_and_due_checks_quietly(self, frozen_view, monkeypatch):
-        calls = []
-        monkeypatch.setattr(frozen_view, "check_for_updates", lambda manual=True: calls.append(manual))
-        frozen_view.auto_check_for_updates()
-        assert calls == [False]
+        from musicmgr.ui import app
 
-    def test_not_due_skips(self, frozen_view, monkeypatch):
-        import time
-
-        frozen_view._save_update_pref(updater.PREF_LAST_CHECK, str(int(time.time())))
-        calls = []
-        monkeypatch.setattr(frozen_view, "check_for_updates", lambda manual=True: calls.append(manual))
-        frozen_view.auto_check_for_updates()
-        assert calls == []
-
-    def test_turned_off(self, frozen_view, monkeypatch):
-        frozen_view.update_auto_cb.setChecked(False)
-        calls = []
-        monkeypatch.setattr(frozen_view, "check_for_updates", lambda manual=True: calls.append(manual))
-        frozen_view.auto_check_for_updates()
-        assert calls == []
+        src = inspect.getsource(app.main) + inspect.getsource(app.bootstrap_database)
+        assert "check_for_update" not in src and "auto_check" not in src
 
 
 class TestCheckResult:

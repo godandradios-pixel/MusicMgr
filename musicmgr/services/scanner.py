@@ -8,7 +8,6 @@ some formats, embedded art, disc totals).
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import logging
 import os
 import re
@@ -313,20 +312,17 @@ def _fallback_from_path(path: Path, tags: TrackTags) -> TrackTags:
     return tags
 
 
-def _save_cover(data: bytes, release_id: int) -> Optional[str]:
+def _save_cover(data: bytes, release: "Release") -> Optional[str]:
+    """Save a tag-embedded cover under its name-based file
+    (`artwork\\<Album Artist> - <Title>.jpg` - see services/artwork_names.py,
+    2026-09-24). Never overwrites a picture that's already there: a
+    downloaded or hand-picked cover (or one that arrived by USB sync) must
+    survive a rescan."""
     if not data:
         return None
-    try:
-        config.ensure_dirs()
-        digest = hashlib.sha1(data).hexdigest()[:16]
-        ext = ".png" if data[:8] == b"\x89PNG\r\n\x1a\n" else ".jpg"
-        out = config.ART_DIR / f"release_{release_id}_{digest}{ext}"
-        if not out.exists():
-            out.write_bytes(data)
-        return str(out)
-    except Exception as exc:  # pragma: no cover
-        log.warning("cover save failed: %s", exc)
-        return None
+    from . import artwork_names
+
+    return artwork_names.save_release_cover(release, data, overwrite=False)
 
 
 # --------------------------------------------------------------------------
@@ -515,7 +511,7 @@ def import_file(
             )
         )
     if tags.cover and not release.cover_path:
-        release.cover_path = _save_cover(tags.cover, release.id)
+        release.cover_path = _save_cover(tags.cover, release)
 
     # release-level main credit, and the FK the Artists grid actually browses by
     aa = lib.get_or_create_artist(session, album_artist)
@@ -586,6 +582,64 @@ def scan_folder(
         return result
 
     files = list(iter_audio_files(root))
+    _import_files(session, files, result, progress=progress, force=force, should_stop=should_stop)
+
+    folder = session.scalar(select(WatchedFolder).where(WatchedFolder.path == str(root)))
+    if folder is None:
+        folder = WatchedFolder(path=str(root))
+        session.add(folder)
+    folder.last_scan_at = dt.datetime.now(dt.timezone.utc)
+    session.flush()
+    return result
+
+
+# 2026-09-22 - James: "add a real cancel button that stops any process
+# running within Settings". `should_stop` above, when given, is checked
+# once per file, *before* that file's own import starts - deliberately a
+# `break`, never a raise, so this never takes the `session.rollback()` path
+# a few lines up (that path exists only for a genuinely bad file, and
+# throws away every row flushed-but-not-committed in the whole scan so
+# far - see its own comment). A clean break instead leaves whatever's
+# already been imported (flushed or not) to get picked up by the one
+# `session.flush()`/commit this whole scan still ends with normally, same
+# as if the folder's remaining files had simply not been reached yet -
+# they'll just get picked back up, cleanly, on the next scan.
+
+
+def import_paths(
+    session: Session,
+    paths: Iterable[Path | str],
+    result: Optional[ScanResult] = None,
+    progress: Optional[ProgressFn] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> ScanResult:
+    """Import just these audio files - no folder walk, no WatchedFolder
+    bookkeeping. 2026-09-23 (USB sync, services/usb_sync.py): after a sync
+    copies 214 new tracks onto this PC, only those files need reading, not
+    a 100k-file rescan. Same per-folder album-artist decision as
+    `scan_folder` (the copied files are grouped by their own folder), and
+    the same unchanged-file shortcut, so passing an already-imported file
+    is harmless. Non-audio paths are ignored."""
+    result = result or ScanResult()
+    files = [
+        Path(p) for p in paths
+        if Path(p).suffix.lower() in config.AUDIO_EXTENSIONS and Path(p).exists()
+    ]
+    _import_files(session, files, result, progress=progress, should_stop=should_stop)
+    session.flush()
+    return result
+
+
+def _import_files(
+    session: Session,
+    files: list[Path],
+    result: ScanResult,
+    *,
+    progress: Optional[ProgressFn] = None,
+    force: bool = False,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    """The body of `scan_folder`, shared with `import_paths`."""
     total = len(files)
 
     # Only a new or changed file needs its tags read at all. Group just
@@ -657,27 +711,6 @@ def scan_folder(
             progress(idx, total, path.name)
         if idx % 200 == 0:
             session.flush()
-
-    folder = session.scalar(select(WatchedFolder).where(WatchedFolder.path == str(root)))
-    if folder is None:
-        folder = WatchedFolder(path=str(root))
-        session.add(folder)
-    folder.last_scan_at = dt.datetime.now(dt.timezone.utc)
-    session.flush()
-    return result
-
-
-# 2026-09-22 - James: "add a real cancel button that stops any process
-# running within Settings". `should_stop` above, when given, is checked
-# once per file, *before* that file's own import starts - deliberately a
-# `break`, never a raise, so this never takes the `session.rollback()` path
-# a few lines up (that path exists only for a genuinely bad file, and
-# throws away every row flushed-but-not-committed in the whole scan so
-# far - see its own comment). A clean break instead leaves whatever's
-# already been imported (flushed or not) to get picked up by the one
-# `session.flush()`/commit this whole scan still ends with normally, same
-# as if the folder's remaining files had simply not been reached yet -
-# they'll just get picked back up, cleanly, on the next scan.
 
 
 def rescan_all(

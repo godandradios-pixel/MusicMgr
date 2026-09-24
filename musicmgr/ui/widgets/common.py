@@ -262,6 +262,14 @@ def placeholder_pixmap(size: int, seed_text: str = "") -> QPixmap:
 #: (path, size, seed) -> QPixmap. Grids re-render constantly while scrolling;
 #: decoding the same JPEG each time is the difference between smooth and not.
 _ART_CACHE: dict[tuple, QPixmap] = {}
+
+
+def clear_art_cache() -> None:
+    """Forget every loaded cover/portrait. Name-based artwork
+    (services/artwork_names.py) can replace a picture under the same file
+    name - after a USB sync or a relink, drop the cache so the new picture
+    shows without a restart."""
+    _ART_CACHE.clear()
 _ART_CACHE_LIMIT = 600
 
 

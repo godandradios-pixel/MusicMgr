@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from .. import config
 from ..db.session import init_engine, session_scope
+from ..services import artwork_names
 from ..services import charts as chart_svc
 from ..services import library as lib_svc
 from ..services import playlists as pl_svc
@@ -428,17 +429,32 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+#: settings key: the one-time compilation merge has run on this library
+COMPILATION_MERGE_PREF = "compilation_merge_done"
+
+
 def bootstrap_database() -> None:
     """Create the DB and seed the built-in charts and smart playlists."""
     config.ensure_dirs()
     init_engine()
+    # 2026-09-24 (USB sync step 2): rename id-named artwork to MusicBee-style
+    # names once per data folder, after backing up library.db - see
+    # services/artwork_names.py
+    with session_scope() as session:
+        artwork_names.migrate_if_needed(session, db_path=config.DB_PATH)
     with session_scope() as session:
         pl_svc.ensure_default_playlists(session)
         pl_svc.ensure_builtin_playback_playlists(session)
         chart_svc.remove_orphaned_playback_charts(session)
         lib_svc.fix_artist_sort_keys(session)
         lib_svc.backfill_album_artists(session)
-        lib_svc.merge_compilation_duplicates(session)
+        # 3.5 s on the real library (reads every file path) - a one-time
+        # clean-up for databases scanned before the scanner learned about
+        # compilations, so it runs once per data folder, not every start
+        # (2026-09-24, "I don't want it taking a long time at startup")
+        if updater.get_pref(session, COMPILATION_MERGE_PREF) != "1":
+            lib_svc.merge_compilation_duplicates(session)
+            updater.set_pref(session, COMPILATION_MERGE_PREF, "1")
 
 
 def _build_splash() -> Optional[QSplashScreen]:
@@ -482,11 +498,6 @@ def _setup_logging() -> None:
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
-
-
-#: how long after the window appears before the once-a-day update check
-#: runs - late enough to stay out of the way of startup and the splash
-AUTO_UPDATE_CHECK_DELAY_MS = 10_000
 
 
 def _prepare_for_update_restart(argv: list[str]) -> None:
@@ -559,9 +570,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if "--after-update" in argv:
         QTimer.singleShot(1500, lambda: window.ctx.notify(f"Updated to MusicMgr {RELEASE_VERSION}"))
-    settings_view = window.views.get("settings")
-    if settings_view is not None:
-        QTimer.singleShot(AUTO_UPDATE_CHECK_DELAY_MS, settings_view.auto_check_for_updates)
+    # 2026-09-24 - James: "I should never be checking for updates or anything
+    # that relies on an internet connection at startup" - no update check
+    # here any more; Settings → Updates → "Check now" is the only trigger.
     return app.exec()
 
 

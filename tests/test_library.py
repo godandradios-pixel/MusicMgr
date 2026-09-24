@@ -257,3 +257,16 @@ class TestBackfillAlbumArtists:
 
         assert updated == 0
         assert release.album_artist_id is None
+
+
+def test_compilation_merge_runs_once_per_library(db, monkeypatch):
+    """2026-09-24: the 3.5 s compilation clean-up is one-time, not every start."""
+    from musicmgr.services import library as lib_svc
+    from musicmgr.ui import app
+
+    calls = []
+    monkeypatch.setattr(lib_svc, "merge_compilation_duplicates", lambda s: calls.append(1) or 0)
+    monkeypatch.setattr(app, "init_engine", lambda *a, **k: None)
+    app.bootstrap_database()
+    app.bootstrap_database()
+    assert calls == [1]

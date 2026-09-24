@@ -57,6 +57,11 @@ datas += _mutagen_datas
 binaries += _mutagen_binaries
 hiddenimports += _mutagen_hidden
 
+# USB sync (services/usb_sync.py) sends deleted files to the Recycle Bin via
+# send2trash, which picks its Windows backend at import time - name the
+# ctypes one explicitly so the packaged exe always has a working fallback.
+hiddenimports += ["send2trash", "send2trash.win", "send2trash.win.legacy"]
+
 excludes = [
     "PySide6.QtQml",
     "PySide6.QtQuick",

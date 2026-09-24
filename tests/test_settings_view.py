@@ -503,6 +503,26 @@ class TestImportArtistImagesThreaded:
         yield
         _FakeThread.instances = []
 
+    @pytest.fixture(autouse=True)
+    def _answer_replace_question(self, monkeypatch):
+        """2026-09-24: the import now asks whether to replace photos
+        artists already have - answer "No" (fill gaps only)."""
+        self.asked = []
+        monkeypatch.setattr(
+            settings_module.QMessageBox, "question",
+            staticmethod(lambda *a, **k: self.asked.append(a) or settings_module.QMessageBox.No),
+        )
+
+    def test_default_import_fills_gaps_only(self, view, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            settings_module.QFileDialog, "getExistingDirectory",
+            staticmethod(lambda *a, **k: str(tmp_path)),
+        )
+        monkeypatch.setattr(settings_module, "ArtistImagesImportThread", _FakeThread)
+        view.import_artist_images()
+        assert self.asked
+        assert _FakeThread.instances[0].kwargs.get("overwrite") is False
+
     def test_no_folder_chosen_starts_nothing(self, view, monkeypatch):
         monkeypatch.setattr(
             settings_module.QFileDialog, "getExistingDirectory",

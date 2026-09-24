@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import re
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional
@@ -124,13 +123,13 @@ def _best_fuzzy(key: str, index: dict[str, Artist]) -> Optional[tuple[Artist, fl
 
 
 def _store(source: Path, artist: Artist) -> str:
-    """Copy the image into the app's data folder under a stable name."""
-    config.ensure_dirs()
-    safe = re.sub(r"[^\w\-]+", "_", artist.name).strip("_")[:60] or "artist"
-    dest = config.ARTIST_IMG_DIR / f"{artist.id}_{safe}{source.suffix.lower()}"
-    if dest.resolve() != source.resolve():
-        shutil.copy2(source, dest)
-    return str(dest)
+    """Copy the image into the app's data folder as `artists\\<Artist>.jpg`
+    - the MusicBee naming (services/artwork_names.py, 2026-09-24), so the
+    same file name means the same artist on every PC and the folder can be
+    synced as-is."""
+    from . import artwork_names
+
+    return artwork_names.save_artist_image(artist, source)
 
 
 def import_artist_images(

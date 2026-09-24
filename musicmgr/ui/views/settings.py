@@ -139,7 +139,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QThread, QUrl, Qt, Signal
+from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -166,12 +166,15 @@ from ...db.session import reset_database, session_scope
 from ...services import artist_bio_downloader as bio_dl
 from ...services import artist_images as art_svc
 from ...services import artwork_downloader as artwork_dl
+from ...services import artwork_names
 from ...services import data_migration
 from ...services import library as lib
 from ...services import scanner
 from ...services import lastfm_popularity as popularity_dl
 from ...services import metadata_health
 from ...services import updater
+from ...services import library_state
+from ...services import usb_sync
 from ...services import video_scanner
 from ...services import videos as vid_svc
 from ...services.library import format_duration
@@ -187,9 +190,17 @@ from ..widgets.common import (
     RematchChartsThread,
     SearchBar,
     TouchButton,
+    clear_art_cache,
     TouchList,
     VerifyFilesThread,
     dim_label,
+)
+from ..widgets.usb_sync import (
+    UsbCompareThread,
+    UsbPairsDialog,
+    UsbSyncDialog,
+    UsbSyncThread,
+    human_size,
 )
 from .base import BaseView
 
@@ -885,6 +896,14 @@ class SettingsView(BaseView):
             "Search…",
             self.search_missing_artwork,
         )
+        # 2026-09-24 (USB sync step 2) - see services/artwork_names.py
+        add_tool_row(
+            "Relink artwork",
+            "Point albums and artists at their pictures in the artwork and artists folders "
+            "(runs by itself after a USB sync).",
+            "Relink",
+            self.relink_artwork,
+        )
         add_tool_row(
             "Verify files",
             "Check that every track's file can still be found on disk.",
@@ -975,15 +994,15 @@ class SettingsView(BaseView):
         self.update_status.setWordWrap(True)
         updates_layout.addWidget(self.update_status)
 
-        self.update_auto_cb = QCheckBox("Check for updates when MusicMgr starts (at most once a day)")
-        self.update_auto_cb.toggled.connect(
-            lambda on: self._save_update_pref(updater.PREF_AUTO_CHECK, on)
-        )
+        # 2026-09-24 - James: "I should never be checking for updates or
+        # anything that relies on an internet connection at startup". The
+        # once-a-day startup check (and its "Check for updates when
+        # MusicMgr starts" checkbox) is gone; "Check now" is the only way a
+        # check ever happens.
         self.update_prerelease_cb = QCheckBox("Include pre-release versions")
         self.update_prerelease_cb.toggled.connect(
             lambda on: self._save_update_pref(updater.PREF_INCLUDE_PRERELEASE, on)
         )
-        updates_layout.addWidget(self.update_auto_cb)
         updates_layout.addWidget(self.update_prerelease_cb)
 
         self.update_progress = QProgressBar()
@@ -1022,6 +1041,107 @@ class SettingsView(BaseView):
         self._load_update_prefs()
         self._refresh_update_controls()
 
+        # ---- USB sync (2026-09-23) ----
+        # James: "I would like to eliminate GoodSync from my workflow...
+        # a check for new music against my USB thumb drive", two-way for
+        # music, videos and movies. See services/usb_sync.py and
+        # claude/2026-09-23-usb-sync-plan.md.
+        usb_label = QLabel("USB sync")
+        usb_label.setObjectName("Crumb")
+        body.addWidget(usb_label)
+
+        usb_card = QFrame()
+        usb_card.setObjectName("Card")
+        usb_layout = QVBoxLayout(usb_card)
+        usb_layout.setContentsMargins(20, 14, 20, 14)
+        usb_layout.setSpacing(8)
+        self.usb_drive_label = QLabel("")
+        self.usb_drive_label.setStyleSheet("font-weight: 600;")
+        usb_layout.addWidget(self.usb_drive_label)
+        self.usb_pairs_label = dim_label("")
+        self.usb_pairs_label.setWordWrap(True)
+        usb_layout.addWidget(self.usb_pairs_label)
+        self.usb_status = dim_label("")
+        self.usb_status.setWordWrap(True)
+        usb_layout.addWidget(self.usb_status)
+        self.usb_auto_cb = QCheckBox("Check when the USB drive is plugged in")
+        self.usb_auto_cb.toggled.connect(
+            lambda on: self._save_update_pref(usb_sync.PREF_AUTO_CHECK, on)
+        )
+        usb_layout.addWidget(self.usb_auto_cb)
+        # 2026-09-24 - James: "do I have the option to sync Jukebox entries
+        # or to ignore?" -> "Add check boxes for all 4". Per PC; see
+        # services/library_state.py:sync_library_state's `include`.
+        data_row = QHBoxLayout()
+        data_row.addWidget(dim_label("Also sync library data:"))
+        self.usb_data_cbs: dict[str, QCheckBox] = {}
+        for cat, text in (
+            (library_state.PLAYS, "Plays"),
+            (library_state.RATINGS, "Ratings"),
+            (library_state.PLAYLISTS, "Playlists"),
+            (library_state.JUKEBOX, "Jukebox"),
+        ):
+            cb = QCheckBox(text)
+            cb.toggled.connect(lambda on, cat=cat: self._save_usb_data_choice(cat, on))
+            self.usb_data_cbs[cat] = cb
+            data_row.addWidget(cb)
+        data_row.addStretch(1)
+        usb_layout.addLayout(data_row)
+        self.usb_progress = QProgressBar()
+        self.usb_progress.setObjectName("ProgressWarm")
+        self.usb_progress.setVisible(False)
+        usb_layout.addWidget(self.usb_progress)
+
+        usb_buttons = QHBoxLayout()
+        self.usb_check_btn = TouchButton("Check USB now", primary=True)
+        self.usb_check_btn.setObjectName("PrimaryWarm")
+        self.usb_check_btn.clicked.connect(lambda: self.check_usb(auto=False))
+        self.usb_review_btn = TouchButton("Review…", primary=True)
+        self.usb_review_btn.setObjectName("PrimaryWarm")
+        self.usb_review_btn.clicked.connect(self.review_usb_plan)
+        self.usb_cancel_btn = TouchButton("Cancel")
+        self.usb_cancel_btn.clicked.connect(self._cancel_usb)
+        self.usb_setup_btn = TouchButton("Set up this drive…")
+        self.usb_setup_btn.clicked.connect(self.setup_usb_drive)
+        self.usb_pairs_btn = TouchButton("Folder pairs…")
+        self.usb_pairs_btn.clicked.connect(self.edit_usb_pairs)
+        self.usb_empty_btn = TouchButton("Empty _deleted…")
+        self.usb_empty_btn.clicked.connect(self.empty_usb_deleted)
+        for b in (
+            self.usb_check_btn, self.usb_review_btn, self.usb_cancel_btn,
+            self.usb_setup_btn, self.usb_pairs_btn, self.usb_empty_btn,
+        ):
+            usb_buttons.addWidget(b)
+        usb_buttons.addStretch(1)
+        usb_layout.addLayout(usb_buttons)
+        body.addWidget(usb_card)
+
+        self._usb_compare_thread: Optional[UsbCompareThread] = None
+        self._usb_sync_thread: Optional[UsbSyncThread] = None
+        #: the drive found by the last poll, if any
+        self._usb_drive: Optional[usb_sync.Drive] = None
+        #: False until the first poll after launch has run - see poll_usb
+        self._usb_polled_once = False
+        #: an auto-check's result, waiting behind "Review…"
+        self._usb_pending_plan: Optional[usb_sync.ComparePlan] = None
+        with self.ctx.session() as db:
+            auto = updater.get_bool_pref(db, usb_sync.PREF_AUTO_CHECK, True)
+            chosen = library_state.enabled_categories(db)
+        self.usb_auto_cb.blockSignals(True)
+        self.usb_auto_cb.setChecked(auto)
+        self.usb_auto_cb.blockSignals(False)
+        for cat, cb in self.usb_data_cbs.items():
+            cb.blockSignals(True)
+            cb.setChecked(cat in chosen)
+            cb.blockSignals(False)
+        #: looks for the drive every few seconds - see poll_usb
+        self._usb_timer = QTimer(self)
+        self._usb_timer.setInterval(5000)
+        self._usb_timer.timeout.connect(self.poll_usb)
+        self._usb_timer.start()
+        self._refresh_usb_controls()
+        QTimer.singleShot(1500, self.poll_usb)
+
         ctx.libraryChanged.connect(self.refresh)
         ctx.videosChanged.connect(self.refresh)
 
@@ -1049,6 +1169,8 @@ class SettingsView(BaseView):
             (self._artist_images_thread, "Artist images are importing — wait for it to finish first"),
             (self._verify_thread, "Files are being verified — wait for it to finish first"),
             (self._rematch_thread, "Charts are re-matching — wait for it to finish first"),
+            (getattr(self, "_usb_compare_thread", None), "The USB is being checked — wait for it to finish first"),
+            (getattr(self, "_usb_sync_thread", None), "The USB is syncing — wait for it to finish first"),
         ):
             if thread is not None and thread.isRunning():
                 return busy_message
@@ -1074,6 +1196,8 @@ class SettingsView(BaseView):
         "_artist_images_thread",
         "_verify_thread",
         "_rematch_thread",
+        "_usb_compare_thread",
+        "_usb_sync_thread",
     )
 
     def _active_cancellable_thread(self) -> Optional[QThread]:
@@ -1081,7 +1205,7 @@ class SettingsView(BaseView):
         None if nothing cancellable is running right now (including "the
         thing running is the migration, which Cancel can't touch")."""
         for attr in self._CANCELLABLE_THREAD_ATTRS:
-            thread = getattr(self, attr)
+            thread = getattr(self, attr, None)
             if thread is not None and thread.isRunning():
                 return thread
         return None
@@ -1110,6 +1234,313 @@ class SettingsView(BaseView):
         self.ctx.notify("Cancelling — finishing the current item…")
 
 
+    def relink_artwork(self) -> None:
+        """Maintenance → Relink artwork: point every release/artist at its
+        name-based picture (artwork\\<Artist> - <Title>.jpg,
+        artists\\<Artist>.jpg). The USB sync does this by itself after
+        pictures arrive; this is for files dropped in by hand."""
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+        with self.ctx.session() as db:
+            result = artwork_names.relink(db)
+        clear_art_cache()
+        self.ctx.notify(result.summary())
+        if result.covers or result.artist_images:
+            self.ctx.libraryChanged.emit()
+
+    # -- USB sync (2026-09-23) -------------------------------------------------
+    # See services/usb_sync.py. The flow: poll_usb notices the drive (every
+    # 5 s), check_usb walks and compares both sides in UsbCompareThread,
+    # UsbSyncDialog shows what it found, and UsbSyncThread copies what James
+    # left checked and then imports just those files into the library.
+
+    def _save_usb_data_choice(self, category: str, on: bool) -> None:
+        with self.ctx.session() as db:
+            library_state.set_category_enabled(db, category, on)
+
+    def _find_usb_drives(self) -> list:
+        """Overridable seam for tests."""
+        return usb_sync.find_drives()
+
+    def _usb_running(self) -> bool:
+        return any(
+            t is not None and t.isRunning()
+            for t in (self._usb_compare_thread, self._usb_sync_thread)
+        )
+
+    def poll_usb(self) -> None:
+        """Notice the drive being plugged in or pulled out. A newly seen
+        drive gets a quiet check when "Check when the USB drive is plugged
+        in" is on - it never copies anything without a review."""
+        try:
+            drives = self._find_usb_drives()
+        except Exception:  # never let a poll take the page down
+            logging.getLogger(__name__).exception("USB poll failed")
+            drives = []
+        drive = drives[0] if drives else None
+        previous = self._usb_drive.drive_id if self._usb_drive else None
+        current = drive.drive_id if drive else None
+        self._usb_drive = drive
+        first_poll = not self._usb_polled_once
+        self._usb_polled_once = True
+        if current == previous and not first_poll:
+            return
+        if current is None:
+            self._usb_pending_plan = None
+            self.usb_status.setText("")
+        self._refresh_usb_controls()
+        # The first poll after launch only notes a drive that's already in:
+        # walking a terabyte at startup is exactly the slow start James
+        # doesn't want (2026-09-24). Plugging the drive in while MusicMgr
+        # runs still triggers the quiet check.
+        if first_poll:
+            return
+        if drive is not None and self.usb_auto_cb.isChecked() and not self._busy_with():
+            self.check_usb(auto=True)
+
+    def _refresh_usb_controls(self) -> None:
+        drive = self._usb_drive
+        running = self._usb_running()
+        self.usb_setup_btn.setEnabled(not running)
+        self.usb_cancel_btn.setVisible(running)
+        if not running:
+            self.usb_cancel_btn.setEnabled(True)
+        self.usb_review_btn.setVisible(self._usb_pending_plan is not None and not running)
+        if drive is None:
+            self.usb_drive_label.setText("No MusicMgr USB drive connected")
+            self.usb_pairs_label.setText(
+                "Plug in the USB drive, or choose \"Set up this drive…\" to make one."
+            )
+            for b in (self.usb_check_btn, self.usb_pairs_btn, self.usb_empty_btn):
+                b.setEnabled(False)
+            return
+        self.usb_drive_label.setText(f"USB drive: {drive.describe()}")
+        with self.ctx.session() as db:
+            pairs = [p for p in usb_sync.ensure_default_pairs(db, drive) if p.enabled]
+            names = []
+            for pair in pairs:
+                when = (
+                    f" (last synced {pair.last_synced_at:%Y-%m-%d %H:%M})" if pair.last_synced_at else ""
+                )
+                names.append(f"{pair.local_path} ↔ USB\\{pair.usb_rel_path}{when}")
+        self.usb_pairs_label.setText(
+            "\n".join(names) if names else
+            "No folder pairs yet - choose \"Folder pairs…\" to add one."
+        )
+        self.usb_check_btn.setEnabled(not running and bool(names))
+        self.usb_pairs_btn.setEnabled(not running)
+        deleted = usb_sync.usb_deleted_dir(drive)
+        has_deleted = deleted.is_dir() and any(deleted.iterdir())
+        self.usb_empty_btn.setEnabled(not running and has_deleted)
+        self.usb_empty_btn.setVisible(has_deleted)
+
+    def check_usb(self, auto: bool = False) -> None:
+        """"Check USB now" (auto=False, opens the review straight away) or
+        the plug-in check (auto=True, leaves a "Review…" button)."""
+        if self._usb_running():
+            if not auto:
+                self.ctx.notify("The USB is already being checked")
+            return
+        busy = self._busy_with()
+        if busy:
+            if not auto:
+                self.ctx.notify(busy)
+            return
+        if self._usb_drive is None:
+            self.poll_usb()
+        drive = self._usb_drive
+        if drive is None:
+            if not auto:
+                self.ctx.notify("No MusicMgr USB drive found — plug it in, or set it up first")
+            return
+        self._usb_pending_plan = None
+        thread = UsbCompareThread(drive, auto=auto, parent=self)
+        thread.progress.connect(self.usb_status.setText)
+        thread.finished_with.connect(lambda plan, error: self._on_usb_compare_done(plan, error, auto))
+        self._usb_compare_thread = thread
+        self.usb_status.setText("Checking the USB…")
+        self.usb_progress.setRange(0, 0)
+        self.usb_progress.setVisible(True)
+        self._show_cancel()
+        thread.start()
+        self._refresh_usb_controls()
+
+    def _on_usb_compare_done(self, plan, error, auto: bool) -> None:
+        thread = self._usb_compare_thread
+        self.usb_progress.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        if thread is not None:
+            thread.wait()
+        self._usb_compare_thread = None
+        if error:
+            self.usb_status.setText(f"USB check failed: {error}")
+            if not auto:
+                self.ctx.notify("USB check failed")
+            self._refresh_usb_controls()
+            return
+        if plan.cancelled:
+            self.usb_status.setText("USB check cancelled")
+            self._refresh_usb_controls()
+            return
+        problems = [e for pp in plan.pairs for e in pp.errors]
+        if not plan.all_items():
+            self.usb_status.setText(
+                "Everything is in sync" + (f" · {'; '.join(problems)}" if problems else "")
+            )
+            if not auto:
+                self.ctx.notify("USB: everything is in sync")
+            # Still run a quiet sync: a first sync of identical folders has a
+            # file list to record, and plays/ratings/playlists/the Jukebox
+            # (services/library_state.py) are exchanged on every sync.
+            self._start_usb_sync(plan, quiet=True)
+            return
+        self._usb_pending_plan = plan
+        self.usb_status.setText(f"USB: {plan.summary()}")
+        self._refresh_usb_controls()
+        if auto:
+            self.ctx.notify(f"USB: {plan.summary()} — review it in Settings → USB sync")
+        else:
+            self.review_usb_plan()
+
+    def _make_usb_dialog(self, plan) -> UsbSyncDialog:
+        """Overridable seam for tests."""
+        return UsbSyncDialog(plan, parent=self)
+
+    def review_usb_plan(self) -> None:
+        plan = self._usb_pending_plan
+        if plan is None:
+            return
+        if self._busy_with():
+            self.ctx.notify(self._busy_with())
+            return
+        dialog = self._make_usb_dialog(plan)
+        if dialog.exec() == QDialog.Accepted:
+            self._start_usb_sync(plan)
+
+    def _start_usb_sync(self, plan, quiet: bool = False) -> None:
+        thread = UsbSyncThread(plan, parent=self)
+        thread.progress.connect(self._on_usb_progress)
+        thread.finished_with.connect(
+            lambda result, message, error: self._on_usb_sync_done(result, message, error, quiet)
+        )
+        self._usb_sync_thread = thread
+        self._usb_pending_plan = None
+        if not quiet:
+            self.usb_status.setText("Syncing…")
+            self.usb_progress.setRange(0, 1000)
+            self.usb_progress.setValue(0)
+            self.usb_progress.setVisible(True)
+            self._show_cancel()
+        thread.start()
+        self._refresh_usb_controls()
+
+    def _on_usb_progress(self, done: int, total: int, name: str) -> None:
+        if total > 0:
+            self.usb_progress.setValue(int(1000 * min(done, total) / total))
+            self.usb_status.setText(f"Copying {name} — {human_size(done)} of {human_size(total)}")
+
+    def _on_usb_sync_done(self, result, message: str, error, quiet: bool = False) -> None:
+        thread = self._usb_sync_thread
+        self.usb_progress.setVisible(False)
+        self.cancel_btn.setVisible(False)
+        if thread is not None:
+            thread.wait()
+        self._usb_sync_thread = None
+        if error:
+            self.usb_status.setText(f"USB sync failed: {error}")
+            self.ctx.notify("USB sync failed")
+        elif not quiet:
+            text = result.summary()
+            if message:
+                text += f" · {message}"
+            if result.errors:
+                text += "\n" + "\n".join(result.errors[:5])
+            self.usb_status.setText(text)
+            self.ctx.notify(f"USB sync: {result.summary()}")
+        notes = getattr(result, "library_notes", None) if result is not None else None
+        data_changed = notes is not None and notes.summary() != "Library data already in sync"
+        if quiet and data_changed:
+            self.usb_status.setText(f"Everything is in sync · {notes.summary()}")
+            self.ctx.notify(f"USB: {notes.summary()}")
+        if data_changed:
+            self.ctx.libraryChanged.emit()
+            self.ctx.playlistsChanged.emit()
+        if result is not None and getattr(result, "artwork_changed", False):
+            clear_art_cache()
+        if result is not None and (result.new_local_paths or result.removed_local_paths):
+            self.ctx.libraryChanged.emit()
+            self.ctx.videosChanged.emit()
+        self._refresh_usb_controls()
+
+    def _cancel_usb(self) -> None:
+        for thread in (self._usb_compare_thread, self._usb_sync_thread):
+            if thread is not None and thread.isRunning():
+                thread.requestInterruption()
+                self.usb_cancel_btn.setEnabled(False)
+                self.ctx.notify("Cancelling — finishing the current file…")
+
+    def _pick_usb_root(self) -> str:  # pragma: no cover - file dialog
+        return QFileDialog.getExistingDirectory(self, "Choose the USB drive (its top folder)")
+
+    def setup_usb_drive(self) -> None:
+        """Write the MusicMgr marker to a drive James picks, so it's found
+        whatever letter it gets. Existing folders are left exactly as they
+        are; watched folders get paired with same-named folders on it."""
+        path = self._pick_usb_root()
+        if not path:
+            return
+        root = Path(path)
+        if root.anchor and Path(root.anchor) != root:
+            confirm = QMessageBox.question(
+                self,
+                "Set up USB drive",
+                f"{root} isn't the top folder of a drive. Use it as the sync root anyway? "
+                "Folder pairs are matched by name inside it.",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
+        try:
+            drive = usb_sync.write_marker(root, "MusicMgr USB")
+        except OSError as exc:
+            QMessageBox.warning(self, "Set up USB drive", f"Couldn't write to {root}: {exc}")
+            return
+        self._usb_drive = drive
+        self._refresh_usb_controls()
+        self.ctx.notify(f"{drive.describe()} is set up for USB sync")
+
+    def edit_usb_pairs(self) -> None:
+        if self._usb_drive is None:
+            return
+        UsbPairsDialog(self._usb_drive, parent=self).exec()
+        self._usb_pending_plan = None
+        self._refresh_usb_controls()
+
+    def empty_usb_deleted(self) -> None:
+        if self._usb_drive is None:
+            return
+        folder = usb_sync.usb_deleted_dir(self._usb_drive)
+        if not folder.is_dir():
+            return
+        size = usb_sync.folder_size(folder)
+        confirm = QMessageBox.question(
+            self,
+            "Empty _deleted",
+            f"Permanently delete the {human_size(size)} of files the USB sync set aside in "
+            f"{folder}? These are files deleted from the USB (or replaced in a conflict) "
+            "during earlier syncs.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        import shutil
+
+        shutil.rmtree(folder, ignore_errors=True)
+        self.ctx.notify("USB _deleted folder emptied")
+        self._refresh_usb_controls()
+
     # -- updates (2026-09-23) --------------------------------------------------
     # Overridable seams for tests (and nothing else): the running exe, and
     # where "Restart now" hands off to.
@@ -1118,9 +1549,8 @@ class SettingsView(BaseView):
 
     def _load_update_prefs(self) -> None:
         with self.ctx.session() as db:
-            auto = updater.get_bool_pref(db, updater.PREF_AUTO_CHECK, True)
             pre = updater.get_bool_pref(db, updater.PREF_INCLUDE_PRERELEASE, False)
-        for cb, value in ((self.update_auto_cb, auto), (self.update_prerelease_cb, pre)):
+        for cb, value in ((self.update_prerelease_cb, pre),):
             cb.blockSignals(True)
             cb.setChecked(value)
             cb.blockSignals(False)
@@ -1157,10 +1587,9 @@ class SettingsView(BaseView):
             self.update_status.setText(blocker or "")
 
     def check_for_updates(self, manual: bool = True) -> None:
-        """"Check now" (manual=True) or the once-a-day startup check
-        (manual=False, via auto_check_for_updates). A manual check reports
-        every outcome; an automatic one stays silent unless there's
-        something to offer."""
+        """"Check now". (`manual=False` - a quiet check that only speaks up
+        when there's something to offer - is kept for callers, but nothing
+        runs one at startup any more: 2026-09-24, no network at startup.)"""
         if self._update_check_thread is not None and self._update_check_thread.isRunning():
             return
         if manual:
@@ -1171,16 +1600,6 @@ class SettingsView(BaseView):
         )
         self._update_check_thread.start()
         self._refresh_update_controls()
-
-    def auto_check_for_updates(self) -> None:
-        """Called once, shortly after launch, by MainWindow. Only a packaged
-        build checks on its own (a source checkout updates with git), and
-        at most once per updater.AUTO_CHECK_INTERVAL_S."""
-        if self._current_exe() is None or not self.update_auto_cb.isChecked():
-            return
-        if not updater.auto_check_due(self._get_update_pref(updater.PREF_LAST_CHECK)):
-            return
-        self.check_for_updates(manual=False)
 
     def _on_update_check_done(self, result: "updater.CheckResult", manual: bool) -> None:
         import time as _time
@@ -1559,6 +1978,10 @@ class SettingsView(BaseView):
         if self._thread is not None and self._thread.isRunning():
             self.ctx.notify("A scan is already running")
             return
+        for usb_thread in (self._usb_compare_thread, self._usb_sync_thread):
+            if usb_thread is not None and usb_thread.isRunning():
+                self.ctx.notify("The USB sync is running — wait for it to finish before scanning")
+                return
         if self._migration_thread is not None and self._migration_thread.isRunning():
             self.ctx.notify("A data move is running — wait for it to finish before scanning")
             return
@@ -1640,6 +2063,18 @@ class SettingsView(BaseView):
         )
         if not folder:
             return
+        # 2026-09-24 (USB sync step 2) - importing MusicBee's
+        # "Artist Pictures\Thumb" folder should fill gaps, not replace
+        # photos James already chose, unless he says so.
+        replace = QMessageBox.question(
+            self,
+            "Artist images",
+            "Replace photos your artists already have?\n\n"
+            "No: only artists without a photo get one (recommended for a "
+            "MusicBee Artist Pictures\\Thumb folder).",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) == QMessageBox.Yes
         if self._artist_images_thread is not None and self._artist_images_thread.isRunning():
             self.ctx.notify("Already importing artist images")
             return
@@ -1651,7 +2086,7 @@ class SettingsView(BaseView):
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.progress_label.setText("Starting…")
-        self._artist_images_thread = ArtistImagesImportThread(folder, parent=self)
+        self._artist_images_thread = ArtistImagesImportThread(folder, overwrite=replace, parent=self)
         self._artist_images_thread.progress.connect(self._on_artist_images_progress)
         self._artist_images_thread.finished_with.connect(self._on_artist_images_done)
         self._artist_images_thread.start()

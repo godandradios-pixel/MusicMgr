@@ -173,6 +173,33 @@ def scan_video_folder(
     return result
 
 
+
+def import_video_paths(
+    session: Session,
+    paths: Iterable[Path | str],
+    result: Optional[ScanResult] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> ScanResult:
+    """Import just these video files - no folder walk, no WatchedFolder
+    bookkeeping. The video twin of scanner.import_paths (2026-09-23, USB
+    sync). Non-video paths are ignored; an unchanged file is skipped."""
+    result = result or ScanResult()
+    for p in paths:
+        if should_stop and should_stop():
+            break
+        path = Path(p)
+        if path.suffix.lower() not in config.VIDEO_EXTENSIONS or not path.exists():
+            continue
+        try:
+            import_video_file(session, path, result)
+        except Exception as exc:  # keep going on one bad file
+            log.exception("failed to import %s", path)
+            result.errors.append(f"{path.name}: {exc}")
+            session.rollback()
+        result.scanned += 1
+    session.flush()
+    return result
+
 def rescan_all_videos(
     session: Session, progress: Optional[ProgressFn] = None, *, force: bool = False
 ) -> ScanResult:
