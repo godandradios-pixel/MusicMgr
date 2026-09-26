@@ -245,6 +245,14 @@ QPushButton {{
     font-weight: 500;
 }}
 QPushButton:hover {{ background: {c['surface_hi']}; }}
+/* make_compact() below (artist page) - a property
+   selector, so it layers over #Primary's colors rather than replacing them. */
+QPushButton[compact="true"] {{
+    min-height: {t['compact_button_height']}px;
+    max-height: {t['compact_button_height']}px;
+    padding: 0 16px;
+    border-radius: 8px;
+}}
 /* 2026-09-13 follow-up (James: "clean up the remaining red/orange lines
    and text in the app ... need to be in the brown pallete"): every
    remaining `accent`/`accent_dim`/`accent_soft` use in this file (and
@@ -797,3 +805,16 @@ QToolTip {{
 }}
 QMessageBox, QDialog {{ background: {c['bg']}; }}
 """
+
+
+def make_compact(button):
+    """Shorter button (TOUCH["compact_button_height"], 40px vs the usual
+    52px) for pages where vertical space matters more than a jukebox-panel-
+    sized touch target - 2026-09-26, James on the artist page: "Play
+    Everything button is too big". A dynamic property rather than another
+    objectName, so it layers over #Primary instead of replacing it (see the
+    `QPushButton[compact="true"]` rule in stylesheet()). Returns the button
+    for inline use."""
+    button.setProperty("compact", True)
+    button.setMinimumHeight(TOUCH["compact_button_height"])
+    return button

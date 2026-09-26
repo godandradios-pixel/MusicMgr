@@ -149,6 +149,11 @@ TOUCH = {
     #: are actually on it rather than a guess that goes stale the next
     #: time one changes.
     "nav_item_height": 48,
+    #: theme.make_compact() - 2026-09-26, James on the artist page:
+    #: "Play Everything button is too big". The artist page's header
+    #: actions and its section-header buttons (Edit bio, Fetch popularity)
+    #: use it; everything else keeps button_height - 12.
+    "compact_button_height": 40,
     "art_size": 168,
     "font_base": 15,
     "font_title": 22,

@@ -36,6 +36,7 @@ from .common import (
 )
 from .cover_grid import GridTile
 from .gatefold_coverflow import GatefoldCoverflow
+from ..theme import make_compact
 
 #: how many of an artist's most-played tracks the Top Tracks list shows -
 #: a taste, not a full sortable browse (Title Details already does that,
@@ -371,11 +372,13 @@ class ArtistDetailPanel(QWidget):
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
-        play = TouchButton("Play everything", primary=True)
+        # compact (40px, was 52px) - 2026-09-26, James: "Play Everything
+        # button is too big" - see theme.make_compact.
+        play = make_compact(TouchButton("Play everything", primary=True))
         play.clicked.connect(lambda: self.play(shuffle=False))
-        shuffle = TouchButton("Shuffle")
+        shuffle = make_compact(TouchButton("Shuffle"))
         shuffle.clicked.connect(lambda: self.play(shuffle=True))
-        queue = TouchButton("Add to queue")
+        queue = make_compact(TouchButton("Add to queue"))
         queue.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
         for b in (play, shuffle, queue):
             actions.addWidget(b)
@@ -386,10 +389,19 @@ class ArtistDetailPanel(QWidget):
         # the biography below is what fills out the rest of this column.
         left_column.addWidget(header, 0, Qt.AlignLeft)
 
+        # "Edit bio" shares the heading's line instead of taking a row of
+        # its own inside BioPanel (2026-09-26, James: "we are taking an
+        # entire row with the Edit Bio button") - same heading + compact
+        # button shape as the Top Tracks column's "Fetch popularity".
+        self.bio = BioPanel(ctx, inline_edit=False)
+        bio_row = QHBoxLayout()
+        bio_row.setSpacing(8)
         bio_label = QLabel("Biography")
         bio_label.setObjectName("Crumb")
-        left_column.addWidget(bio_label)
-        self.bio = BioPanel(ctx)
+        bio_row.addWidget(bio_label)
+        bio_row.addStretch(1)
+        bio_row.addWidget(self.bio.edit_button)
+        left_column.addLayout(bio_row)
         # no fixed height anymore - stretches to fill whatever the Top
         # Tracks column beside it makes this row tall, less the header card
         # above. BioPanel's own internal QScrollArea still handles a
@@ -417,7 +429,7 @@ class ArtistDetailPanel(QWidget):
         # always visible, unlike BioPanel's "Fetch bio" (which only shows up
         # in its empty state) - Top Tracks can already have play_count-based
         # content to show, so there's no empty state to hang this button on.
-        self.fetch_popularity_btn = TouchButton("Fetch popularity")
+        self.fetch_popularity_btn = make_compact(TouchButton("Fetch popularity"))
         self.fetch_popularity_btn.clicked.connect(self._on_fetch_popularity_clicked)
         top_row.addWidget(self.fetch_popularity_btn)
         top_tracks_layout.addLayout(top_row)

@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from ...db.models import Artist
 from ...services import artist_bio_downloader as bio_dl
+from ..theme import make_compact
 from .common import BioDownloadThread, EmptyState, TouchButton
 
 #: restored after a failed/negative fetch attempt, since that leaves a
@@ -94,7 +95,13 @@ class EditBioDialog(QDialog):
 
 
 class BioPanel(QWidget):
-    def __init__(self, ctx, parent=None) -> None:
+    """`inline_edit=False` (2026-09-26, James: "we are taking an entire row
+    with the Edit Bio button") leaves the "Edit bio" button out of this
+    widget's own layout - the caller places `edit_button` itself (the
+    artist page puts it on the same line as its "Biography" heading).
+    Visibility/enabled state is still managed here either way."""
+
+    def __init__(self, ctx, parent=None, inline_edit: bool = True) -> None:
         super().__init__(parent)
         self.ctx = ctx
         self._artist_id: Optional[int] = None
@@ -112,12 +119,15 @@ class BioPanel(QWidget):
         # button), "Edit bio" sits in its own row above the stack so it's
         # reachable whether or not a bio is already showing - fixing a
         # wrong one and writing one from scratch are the same dialog.
-        actions = QHBoxLayout()
-        actions.addStretch(1)
         self._edit_btn = TouchButton("Edit bio")
+        if not inline_edit:
+            make_compact(self._edit_btn)
         self._edit_btn.clicked.connect(self._on_edit_clicked)
-        actions.addWidget(self._edit_btn)
-        layout.addLayout(actions)
+        if inline_edit:
+            actions = QHBoxLayout()
+            actions.addStretch(1)
+            actions.addWidget(self._edit_btn)
+            layout.addLayout(actions)
 
         self._empty = EmptyState(
             "No biography on file",
@@ -140,6 +150,10 @@ class BioPanel(QWidget):
         self._stack.addWidget(self._empty)  # 0
         self._stack.addWidget(self._scroll)  # 1
         layout.addWidget(self._stack)
+
+    @property
+    def edit_button(self) -> TouchButton:
+        return self._edit_btn
 
     def set_bio(self, profile: Optional[str]) -> None:
         """Show `profile` text without touching which artist a "Fetch bio"
