@@ -333,9 +333,11 @@ from __future__ import annotations
 
 from typing import Callable, Optional, Sequence
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QDrag, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -358,6 +360,7 @@ from ...config import TOUCH
 from ...db.models import Track
 from ...services import jukebox as jkb_svc
 from ..context import AppContext
+from ..theme import COLORS
 from ..widgets.common import ChipButton, EmptyState, TouchButton, dim_label
 from ..widgets.jukebox_strip import SLOT_MIME_TYPE, JukeboxStripWidget
 from .base import BaseView
@@ -962,6 +965,20 @@ class JukeboxOrganizeDialog(QDialog):
 #: seconds" doesn't feel like it's ignoring the touch.
 GENRE_CHIP_LONG_PRESS_MS = 600
 
+#: custom MIME type carrying a dragged genre chip's name (UTF-8) - 2026-09-26
+#: drag-to-reorder (see _GenreChip). Distinct from jukebox_strip.py's
+#: SLOT_MIME_TYPE so a card can't be dropped on a chip or vice versa.
+GENRE_MIME_TYPE = "application/x-musicmgr-jukebox-genre"
+
+
+def _decode_genre(mime: QMimeData) -> Optional[str]:
+    if not mime.hasFormat(GENRE_MIME_TYPE):
+        return None
+    try:
+        return bytes(mime.data(GENRE_MIME_TYPE)).decode("utf-8") or None
+    except UnicodeDecodeError:
+        return None
+
 
 class _GenreChip(ChipButton):
     """One genre chip on the Jukebox page's filter row - `ChipButton` (the
@@ -999,6 +1016,16 @@ class _GenreChip(ChipButton):
 
     renameRequested = Signal()
     deleteRequested = Signal()
+    #: (dragged genre, genre it was dropped on, dropped on its right half) -
+    #: 2026-09-26 drag-to-reorder, James: "I'd like to drag n drop move the
+    #: genres at the top to reorder". Press a chip and slide it sideways
+    #: past the drag threshold to pick it up; drop it on another chip's
+    #: left or right half to land before or after it. A bar on that edge
+    #: shows where it'll go while hovering. JukeboxView turns this into
+    #: services.jukebox.move_genre. A quick tap and a long press (rename)
+    #: are unchanged - any movement already cancelled the long-press timer,
+    #: and a drag swallows the click that would otherwise follow.
+    reorderRequested = Signal(str, str, bool)
 
     def __init__(self, text: str, parent=None) -> None:
         super().__init__(text, parent)
@@ -1006,20 +1033,124 @@ class _GenreChip(ChipButton):
         self._press_timer = QTimer(self)
         self._press_timer.setSingleShot(True)
         self._press_timer.timeout.connect(self._on_long_press_timeout)
+        self._drag_start_pos = None
+        #: None, "left" or "right" - which edge the drop-position bar is
+        #: painted on while another chip hovers over this one
+        self._drop_side: Optional[str] = None
+        #: (target genre, after) recorded by the chip this one was dropped
+        #: on - emitted as reorderRequested only once this chip's own
+        #: drag.exec() has returned (see _start_drag)
+        self._pending_drop: Optional[tuple[str, bool]] = None
+        self.setAcceptDrops(True)
+
+    @property
+    def genre(self) -> str:
+        return self.property("genre") or self.text()
 
     def mousePressEvent(self, event) -> None:  # noqa: D102 - Qt override
         if event.button() == Qt.LeftButton:
             self._long_press_fired = False
+            self._drag_start_pos = event.position().toPoint()
             self._press_timer.start(GENRE_CHIP_LONG_PRESS_MS)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: D102 - Qt override
         if self._press_timer.isActive():
             self._press_timer.stop()
+        if (
+            self._drag_start_pos is not None
+            and not self._long_press_fired
+            and event.buttons() & Qt.LeftButton
+        ):
+            moved = (event.position().toPoint() - self._drag_start_pos).manhattanLength()
+            if moved >= QApplication.startDragDistance():
+                self._drag_start_pos = None
+                self._start_drag()
+                return
         super().mouseMoveEvent(event)
+
+    def _start_drag(self) -> None:
+        """Same QDrag shape as jukebox_strip.py's card drag. `exec()` runs
+        its own event loop until release, and the release it consumes
+        never reaches this button - so the pressed-down look is cleared by
+        hand afterwards, and `_long_press_fired` is reused to swallow a
+        stray release/click if one does arrive.
+
+        The drop target only *records* where this chip landed
+        (`_pending_drop`); the reorder signal goes out from here, after
+        `exec()` returns. Emitting it from inside the target's dropEvent
+        would rebuild the whole chip row (and deleteLater this very chip)
+        while this method is still on the stack inside the drag's nested
+        event loop - Windows' drag loop can process that deferred delete
+        before exec() returns."""
+        self._pending_drop = None
+        mime = QMimeData()
+        mime.setData(GENRE_MIME_TYPE, self.genre.encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(self.grab())
+        drag.setHotSpot(self.mapFromGlobal(QCursor.pos()))
+        self._long_press_fired = True
+        drag.exec(Qt.MoveAction)
+        self.setDown(False)
+        pending, self._pending_drop = self._pending_drop, None
+        if pending is not None:
+            self.reorderRequested.emit(self.genre, pending[0], pending[1])
+
+    def _side_for(self, x: float) -> str:
+        return "right" if x >= self.width() / 2 else "left"
+
+    def _set_drop_side(self, side: Optional[str]) -> None:
+        if side != self._drop_side:
+            self._drop_side = side
+            self.update()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: D102 - Qt override
+        source = _decode_genre(event.mimeData())
+        if source is not None and source != self.genre:
+            event.acceptProposedAction()
+            self._set_drop_side(self._side_for(event.position().x()))
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: D102 - Qt override
+        source = _decode_genre(event.mimeData())
+        if source is not None and source != self.genre:
+            event.acceptProposedAction()
+            self._set_drop_side(self._side_for(event.position().x()))
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: D102 - Qt override
+        self._set_drop_side(None)
+
+    def dropEvent(self, event) -> None:  # noqa: D102 - Qt override
+        self._set_drop_side(None)
+        source = _decode_genre(event.mimeData())
+        if source is None or source == self.genre:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        dragged = event.source()
+        if isinstance(dragged, _GenreChip):
+            dragged._pending_drop = (self.genre, self._side_for(event.position().x()) == "right")
+
+    def paintEvent(self, event) -> None:  # noqa: D102 - Qt override
+        super().paintEvent(event)
+        if self._drop_side is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(COLORS["jukebox_key_hi"]))
+        bar_w = 4
+        x = 0 if self._drop_side == "left" else self.width() - bar_w
+        painter.drawRoundedRect(x, 4, bar_w, self.height() - 8, 2, 2)
+        painter.end()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: D102 - Qt override
         self._press_timer.stop()
+        self._drag_start_pos = None
         if self._long_press_fired:
             # swallow the click a long press already handled - see the
             # class docstring - rather than also toggling checked state.
@@ -1478,6 +1609,7 @@ class JukeboxView(BaseView):
                 lambda c=chip, g=genre: self._begin_rename_genre(c, g)
             )
             chip.deleteRequested.connect(lambda g=genre: self._on_delete_genre_requested(g))
+            chip.reorderRequested.connect(self._on_genre_reorder_requested)
             self._genre_chips.addButton(chip)
             self.chip_row.insertWidget(self._stretch_index(), chip)
 
@@ -1582,6 +1714,27 @@ class JukeboxView(BaseView):
         self._build_genre_chips()
         self._page = 0
         self.refresh()
+
+    def _on_genre_reorder_requested(self, source: str, target: str, after: bool) -> None:
+        """A chip was dragged onto another (see `_GenreChip.reorderRequested`)
+        - lands `source` just before `target`, or just after it when
+        dropped on `target`'s right half. The board showing and its page
+        don't change; only the row order does, so this rebuilds the chips
+        but skips `refresh()`."""
+        if self._genre_editor is not None:
+            return
+        with self.ctx.session() as session:
+            genres = list(jkb_svc.get_jukebox_genres(session))
+            if source not in genres or target not in genres:
+                return
+            index = genres.index(target) + (1 if after else 0)
+            # positions after the dragged chip shift left by one once it's
+            # lifted out of the row
+            if genres.index(source) < index:
+                index -= 1
+            moved = jkb_svc.move_genre(session, source, index)
+        if moved:
+            self._build_genre_chips()
 
     def _on_delete_genre_requested(self, genre: str) -> None:
         """Fired by a chip's `deleteRequested` ("Delete genre…" on its

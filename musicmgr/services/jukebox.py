@@ -319,6 +319,30 @@ def rename_genre(session: Session, old_name: str, new_name: str) -> bool:
     return True
 
 
+def move_genre(session: Session, name: str, new_index: int) -> bool:
+    """Moves one chip to a new position in the row - 2026-09-26, James:
+    "I'd like to drag n drop move the genres at the top to reorder." The
+    drag gesture lives in `ui/views/jukebox.py` (`_GenreChip`); this is
+    the write it triggers. `new_index` is the chip's position in the
+    *resulting* list, clamped to the row's bounds. Only the order changes -
+    no `JukeboxSlot.genre` is touched, since the names themselves don't.
+
+    Returns False as a no-op if `name` isn't a current genre (the row
+    changed underneath the drag) or the chip would land where it already
+    is; True once the reordered list is flushed."""
+    genres = list(get_jukebox_genres(session))
+    if name not in genres:
+        return False
+    old_index = genres.index(name)
+    new_index = max(0, min(len(genres) - 1, new_index))
+    if new_index == old_index:
+        return False
+    genres.pop(old_index)
+    genres.insert(new_index, name)
+    _save_jukebox_genres(session, genres)
+    return True
+
+
 def delete_genre(session: Session, name: str) -> bool:
     """Removes one chip outright - James: "Ability to add, delete and
     rename a genre." Every card still filed under it is reassigned rather

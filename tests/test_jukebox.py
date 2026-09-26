@@ -196,6 +196,48 @@ class TestGetJukeboxGenres:
         assert jb.get_jukebox_genres(session)[-1] == "Jazz"  # not reseeded
 
 
+class TestMoveGenre:
+    """2026-09-26 drag-to-reorder on the genre chip row."""
+
+    def test_moves_a_genre_to_the_new_index(self, session):
+        genres = list(jb.get_jukebox_genres(session))
+        last = genres[-1]
+
+        assert jb.move_genre(session, last, 0) is True
+        assert jb.get_jukebox_genres(session) == tuple([last] + genres[:-1])
+
+    def test_moves_toward_the_end(self, session):
+        genres = list(jb.get_jukebox_genres(session))
+        first = genres[0]
+
+        assert jb.move_genre(session, first, 2) is True
+        expected = genres[1:3] + [first] + genres[3:]
+        assert jb.get_jukebox_genres(session) == tuple(expected)
+
+    def test_an_out_of_range_index_is_clamped(self, session):
+        genres = list(jb.get_jukebox_genres(session))
+
+        assert jb.move_genre(session, genres[0], 999) is True
+        assert jb.get_jukebox_genres(session)[-1] == genres[0]
+
+    def test_same_position_is_a_no_op(self, session):
+        genres = jb.get_jukebox_genres(session)
+
+        assert jb.move_genre(session, genres[1], 1) is False
+        assert jb.get_jukebox_genres(session) == genres
+
+    def test_unknown_genre_is_a_no_op(self, session):
+        genres = jb.get_jukebox_genres(session)
+
+        assert jb.move_genre(session, "Polka", 0) is False
+        assert jb.get_jukebox_genres(session) == genres
+
+    def test_only_the_order_changes(self, session):
+        genres = list(jb.get_jukebox_genres(session))
+        jb.move_genre(session, genres[0], len(genres) - 1)
+        assert sorted(jb.get_jukebox_genres(session)) == sorted(genres)
+
+
 class TestAddGenre:
     def test_appends_a_new_genre_to_the_end(self, session):
         added = jb.add_genre(session, "Jazz")

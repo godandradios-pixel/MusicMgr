@@ -48,6 +48,7 @@ from musicmgr.services import library as lib
 from musicmgr.services.matching import normalize
 from musicmgr.db.models import Track
 from musicmgr.ui.views.jukebox import (
+    GENRE_MIME_TYPE,
     JukeboxPickerDialog,
     JukeboxView,
     _GenreChip,
@@ -621,3 +622,114 @@ class TestGenreChipRow:
         assert prompted == []
         assert len(messages) == 1
         assert jb.get_jukebox_genres(session) == (last,)
+
+
+class TestGenreChipDragReorder:
+    """2026-09-26 - James: "I'd like to drag n drop move the genres at the
+    top to reorder." The drop target records where the dragged chip landed
+    (`_pending_drop`) and the dragged chip emits `reorderRequested` once
+    its drag finishes; `JukeboxView._on_genre_reorder_requested` turns that
+    into `services.jukebox.move_genre`."""
+
+    def test_chips_accept_drops(self, ctx, session):
+        view = JukeboxView(ctx)
+        assert chip_for(view, "Rock").acceptDrops()
+
+    def test_dropping_on_the_left_half_lands_before_the_target(self, ctx, session):
+        view = JukeboxView(ctx)
+        genres = list(jb.get_jukebox_genres(session))
+        source, target = genres[-1], genres[0]
+
+        view._on_genre_reorder_requested(source, target, False)
+
+        assert list(jb.get_jukebox_genres(session))[:2] == [source, target]
+        assert [c.property("genre") for c in view._genre_chips.buttons()] == list(
+            jb.get_jukebox_genres(session)
+        )
+
+    def test_dropping_on_the_right_half_lands_after_the_target(self, ctx, session):
+        view = JukeboxView(ctx)
+        genres = list(jb.get_jukebox_genres(session))
+        source, target = genres[0], genres[2]
+
+        view._on_genre_reorder_requested(source, target, True)
+
+        new = list(jb.get_jukebox_genres(session))
+        assert new.index(source) == new.index(target) + 1
+        assert new[:3] == [genres[1], genres[2], genres[0]]
+
+    def test_dropping_before_the_next_chip_is_a_no_op(self, ctx, session):
+        view = JukeboxView(ctx)
+        genres = list(jb.get_jukebox_genres(session))
+
+        view._on_genre_reorder_requested(genres[0], genres[1], False)
+
+        assert list(jb.get_jukebox_genres(session)) == genres
+
+    def test_the_checked_genre_stays_checked_after_a_move(self, ctx, session):
+        view = JukeboxView(ctx)
+        genres = list(jb.get_jukebox_genres(session))
+        checked = view._genre
+
+        view._on_genre_reorder_requested(genres[-1], genres[0], False)
+
+        assert view._genre == checked
+        assert chip_for(view, checked).isChecked()
+
+    def test_a_drop_records_the_target_on_the_dragged_chip(self, ctx, session):
+        view = JukeboxView(ctx)
+        genres = list(jb.get_jukebox_genres(session))
+        dragged, target = chip_for(view, genres[-1]), chip_for(view, genres[0])
+        target.resize(100, 40)
+        mime = QMimeData()
+        mime.setData(GENRE_MIME_TYPE, genres[-1].encode("utf-8"))
+
+        class _Drop:
+            def mimeData(self):
+                return mime
+
+            def source(self):
+                return dragged
+
+            def position(self):
+                from PySide6.QtCore import QPointF
+                return QPointF(80, 20)  # right half
+
+            def acceptProposedAction(self):
+                pass
+
+            def ignore(self):
+                pass
+
+        target.dropEvent(_Drop())
+
+        assert dragged._pending_drop == (genres[0], True)
+
+    def test_dropping_a_chip_on_itself_is_ignored(self, ctx, session):
+        view = JukeboxView(ctx)
+        chip = chip_for(view, "Rock")
+        mime = QMimeData()
+        mime.setData(GENRE_MIME_TYPE, b"Rock")
+        seen = []
+
+        class _Drop:
+            def mimeData(self):
+                return mime
+
+            def source(self):
+                return chip
+
+            def position(self):
+                from PySide6.QtCore import QPointF
+                return QPointF(5, 5)
+
+            def acceptProposedAction(self):
+                seen.append("accepted")
+
+            def ignore(self):
+                seen.append("ignored")
+
+        chip.dropEvent(_Drop())
+
+        assert seen == ["ignored"]
+        assert chip._pending_drop is None
