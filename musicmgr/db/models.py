@@ -502,6 +502,10 @@ class PlaylistFolder(Base):
     parent_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("playlist_folders.id", ondelete="SET NULL"), index=True
     )
+    #: 2026-09-26 - an image James picked for this folder's tile on the
+    #: Playlists page (services/playlists.py:set_folder_image). NULL = show
+    #: a mosaic built from the covers of the playlists inside it instead.
+    cover_path: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 
     parent: Mapped[Optional["PlaylistFolder"]] = relationship(

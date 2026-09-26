@@ -48,7 +48,13 @@ _COLUMN_ADDITIONS = {
         # one playback playlist per slug, so the missing DB-level constraint
         # on an old database is not load-bearing.
         ("slug", "VARCHAR(120)"),
+        ("cover_path", "TEXT"),
     ],
+    # 2026-09-26 tile grid on the Playlists page: a chosen folder image.
+    # (playlists.cover_path has been in the model since the table was
+    # created; listed here too only as the same kind of cheap defensive
+    # guard "tracks.rating" below is.)
+    "playlist_folders": [("cover_path", "TEXT")],
     "charts": [("folder_id", "INTEGER REFERENCES chart_folders(id)")],
     # defensive, not a dated addition - Track.rating has been in the model
     # since before Title Details existed to read it (2026-09-05), but a

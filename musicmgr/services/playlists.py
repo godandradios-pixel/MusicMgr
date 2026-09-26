@@ -212,6 +212,98 @@ def folder_counts(session: Session, folder_id: int) -> tuple[int, int]:
     return playlists, subfolders
 
 
+# --------------------------------------------------------------------------
+# tile artwork (2026-09-26 - the Playlists page's drill-down tile grid)
+# --------------------------------------------------------------------------
+
+#: how many different album covers a playlist/folder tile's mosaic uses
+MOSAIC_COVERS = 4
+
+
+def cover_paths_for_tracks(tracks: Iterable[Track], limit: int = MOSAIC_COVERS) -> list[str]:
+    """The first `limit` *different* album covers among `tracks`, in
+    playlist order - what a playlist tile's 2x2 mosaic is built from
+    (James: "Maybe have a folder allow an image to press"). One cover per
+    release, so a playlist that opens with three songs from one album
+    doesn't show that album three times."""
+    seen_releases: set[int] = set()
+    seen_paths: set[str] = set()
+    paths: list[str] = []
+    for track in tracks:
+        release = track.release
+        if release is None or not release.cover_path:
+            continue
+        if release.id in seen_releases or release.cover_path in seen_paths:
+            continue
+        seen_releases.add(release.id)
+        seen_paths.add(release.cover_path)
+        paths.append(release.cover_path)
+        if len(paths) >= limit:
+            break
+    return paths
+
+
+def _store_tile_image(file_path: str) -> str:
+    """Copies an image James picked into the artwork folder under a name
+    derived from its bytes (so picking the same file twice reuses one
+    copy) and returns the stored path. Raises ValueError for anything that
+    isn't a readable, non-empty image file."""
+    import hashlib
+    from pathlib import Path
+
+    from .. import config
+
+    src = Path(file_path)
+    ext = src.suffix.lower()
+    if ext not in config.IMAGE_EXTENSIONS:
+        raise ValueError("that isn't an image file")
+    try:
+        data = src.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"couldn't read that file: {exc}") from exc
+    if not data:
+        raise ValueError("that file is empty")
+    config.ART_DIR.mkdir(parents=True, exist_ok=True)
+    dest = config.ART_DIR / f"playlist_{hashlib.sha1(data).hexdigest()[:16]}{ext}"
+    if not dest.exists():
+        dest.write_bytes(data)
+    return str(dest)
+
+
+def set_playlist_image(session: Session, playlist_id: int, file_path: Optional[str]) -> None:
+    """Use `file_path` as this playlist's tile image, or pass None to go
+    back to the automatic cover mosaic. Raises ValueError for a bad file."""
+    playlist = session.get(Playlist, playlist_id)
+    if playlist is None:
+        return
+    playlist.cover_path = _store_tile_image(file_path) if file_path else None
+    session.flush()
+
+
+def set_folder_image(session: Session, folder_id: int, file_path: Optional[str]) -> None:
+    """Folder counterpart of `set_playlist_image`."""
+    folder = session.get(PlaylistFolder, folder_id)
+    if folder is None:
+        return
+    folder.cover_path = _store_tile_image(file_path) if file_path else None
+    session.flush()
+
+
+def folder_path(session: Session, folder_id: Optional[int]) -> list[PlaylistFolder]:
+    """Root-first chain of folders ending at `folder_id` - backs the
+    Playlists page breadcrumb. Empty for the top level (None) or a folder
+    that no longer exists; stops if the parent chain ever loops."""
+    chain: list[PlaylistFolder] = []
+    seen: set[int] = set()
+    current = session.get(PlaylistFolder, folder_id) if folder_id is not None else None
+    while current is not None and current.id not in seen:
+        seen.add(current.id)
+        chain.append(current)
+        current = current.parent
+    chain.reverse()
+    return chain
+
+
 def add_tracks(
     session: Session, playlist_id: int, track_ids: Iterable[int]
 ) -> int:

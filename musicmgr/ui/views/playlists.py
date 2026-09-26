@@ -1,5 +1,9 @@
-"""Playlist browser: manual lists, smart rules, and frozen chart snapshots -
-organised into a folder tree, the same shape MusicBee's playlist pane uses.
+"""Playlist browser: manual lists, smart rules, and frozen chart snapshots,
+organised into folders.
+
+2026-09-26: shown as a drill-down tile grid (folders and playlists as
+tappable artwork tiles, a breadcrumb to walk back out) rather than the
+MusicBee-style folder tree it started as - see PlaylistsView's docstring.
 """
 
 from __future__ import annotations
@@ -8,31 +12,49 @@ import json
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QScrollArea,
-    QSplitter,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from ... import config
 from ...db.models import Playlist, PlaylistFolder
 from ...services import playlists as pl_svc
 from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS
-from ..widgets.common import FolderPickerDialog, TouchButton, TouchList, TouchTree, dim_label
+from ..widgets.common import (
+    Breadcrumb,
+    EmptyState,
+    FolderPickerDialog,
+    TouchButton,
+    TouchList,
+    dim_label,
+)
+from ..widgets.playlist_grid import (
+    KIND_FOLDER,
+    KIND_PLAYLIST,
+    PlaylistGrid,
+    PlaylistTile,
+    tile_pixmap,
+)
 from .base import BaseView
 
 KIND_LABEL = {
@@ -434,15 +456,49 @@ class SmartPlaylistDialog(QDialog):
         return self.name_edit.text().strip(), spec
 
 
+#: touch-sized rows for the tile menu (long-press / right-click) - the
+#: default QMenu row is a mouse-sized ~24px
+_TOUCH_MENU_STYLE = "QMenu::item { padding: 14px 32px; font-size: 16px; }"
+
+
 class PlaylistsView(BaseView):
+    """Playlists as a drill-down tile grid - 2026-09-26 (James: "I would
+    like playlist to have larger touch areas like Artist, Album or
+    Jukebox... any ideas of how we can have a better touch screen interface
+    for Playlists"). Replaces the MusicBee-style folder tree + side panel.
+
+    Two pages in `self.stack`:
+      * browse - one folder level as tiles (`PlaylistGrid`): subfolders
+        first, then playlists. Tapping a folder drills into it; the
+        breadcrumb above walks back out ("Playlists › Billboard Hot 100 ›
+        2020-29"), so nesting depth never costs screen space.
+      * playlist - a full-width page for one playlist, like the album
+        page: artwork, name, big Play / Shuffle / Queue, then the tracks.
+
+    Rename / Move / Choose image / Delete live on each tile's menu (long
+    press or right-click) and on the playlist page's "More…" button,
+    instead of the old fixed button row under the tree. New playlists and
+    folders are created inside whichever folder is showing.
+
+    See ui/widgets/playlist_grid.py for how tile artwork is chosen (a
+    chosen image, else a 2x2 mosaic of album covers, else a placeholder).
+    """
+
     title_text = "Playlists"
+
+    PAGE_BROWSE, PAGE_PLAYLIST = 0, 1
 
     def __init__(self, ctx: AppContext, parent=None) -> None:
         super().__init__(ctx, parent)
-        self._selected_type: Optional[str] = None  # "folder" | "playlist"
-        self._selected_id: Optional[int] = None
-        self._expanded_folder_ids: set[int] = set()
+        #: the folder the grid is showing (None = top level)
+        self._folder_id: Optional[int] = None
+        #: the playlist page's playlist, or None while browsing
+        self._playlist_id: Optional[int] = None
         self._tracks: list = []
+        #: index-matched to the breadcrumb's crumbs (see _set_breadcrumb)
+        self._crumb_actions: list = []
+        #: [(folder_id, name), ...] root-first, for the folder showing
+        self._chain: list[tuple[int, str]] = []
 
         new_btn = TouchButton("New playlist", primary=True)
         new_btn.clicked.connect(self.create_manual)
@@ -454,54 +510,61 @@ class PlaylistsView(BaseView):
         self.header.addWidget(smart_btn)
         self.header.addWidget(folder_btn)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(10)
+        self.breadcrumb = Breadcrumb()
+        self.breadcrumb.crumbActivated.connect(self._on_crumb)
+        self.body().addWidget(self.breadcrumb)
 
-        left = QWidget()
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(0, 0, 0, 0)
-        ll.setSpacing(8)
-        lbl = QLabel("Your playlists")
-        lbl.setObjectName("Crumb")
-        ll.addWidget(lbl)
-        self.playlist_tree = TouchTree()
-        self.playlist_tree.itemActivatedPayload.connect(self._on_node_selected)
-        self.playlist_tree.itemExpanded.connect(self._on_expand_changed)
-        self.playlist_tree.itemCollapsed.connect(self._on_expand_changed)
-        ll.addWidget(self.playlist_tree, 1)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_browse_page())  # PAGE_BROWSE
+        self.stack.addWidget(self._build_playlist_page())  # PAGE_PLAYLIST
+        self.body().addWidget(self.stack, 1)
 
-        tree_actions = QHBoxLayout()
-        tree_actions.setSpacing(8)
-        rename_btn = TouchButton("Rename")
-        rename_btn.clicked.connect(self.rename_selected)
-        move_btn = TouchButton("Move to folder…")
-        move_btn.clicked.connect(self.move_selected)
-        delete_node_btn = TouchButton("Delete")
-        delete_node_btn.clicked.connect(self.delete_selected)
-        for b in (rename_btn, move_btn, delete_node_btn):
-            tree_actions.addWidget(b)
-        ll.addLayout(tree_actions)
-        splitter.addWidget(left)
+        ctx.playlistsChanged.connect(self.refresh)
+        ctx.libraryChanged.connect(self.refresh)
 
-        right = QWidget()
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(8)
+    # -- construction ------------------------------------------------------
+
+    def _build_browse_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.grid = PlaylistGrid()
+        self.grid.tileActivated.connect(self._on_tile_activated)
+        self.grid.contextRequested.connect(self._on_tile_context)
+        self.grid_empty = EmptyState(
+            "This folder is empty",
+            "Use New playlist or New folder above to add something here.",
+        )
+        self.browse_stack = QStackedWidget()
+        self.browse_stack.addWidget(self.grid)  # 0
+        self.browse_stack.addWidget(self.grid_empty)  # 1
+        layout.addWidget(self.browse_stack, 1)
+        return page
+
+    def _build_playlist_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
 
         head = QHBoxLayout()
-        self.detail_title = QLabel("Select a playlist")
-        self.detail_title.setStyleSheet("font-size: 19px; font-weight: 600;")
-        head.addWidget(self.detail_title)
-        head.addStretch(1)
-        self.detail_meta = dim_label("")
-        head.addWidget(self.detail_meta)
-        rl.addLayout(head)
+        head.setSpacing(18)
+        self.detail_art = QLabel()
+        self.detail_art.setFixedSize(DETAIL_ART, DETAIL_ART)
+        head.addWidget(self.detail_art, 0, Qt.AlignTop)
 
+        meta = QVBoxLayout()
+        meta.setSpacing(4)
+        self.detail_title = QLabel("")
+        self.detail_title.setStyleSheet("font-size: 26px; font-weight: 700;")
+        self.detail_title.setWordWrap(True)
+        meta.addWidget(self.detail_title)
+        self.detail_meta = dim_label("")
+        meta.addWidget(self.detail_meta)
         self.detail_desc = QLabel("")
         self.detail_desc.setObjectName("Subtitle")
         self.detail_desc.setWordWrap(True)
-        rl.addWidget(self.detail_desc)
+        meta.addWidget(self.detail_desc)
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
@@ -515,182 +578,195 @@ class PlaylistsView(BaseView):
         self.edit_btn.clicked.connect(self.edit_smart)
         self.remove_btn = TouchButton("Remove track")
         self.remove_btn.clicked.connect(self._remove_selected)
-        for b in (self.play_btn, self.shuffle_btn, self.queue_btn, self.edit_btn, self.remove_btn):
+        self.more_btn = TouchButton("More…")
+        self.more_btn.clicked.connect(self._on_more_clicked)
+        for b in (self.play_btn, self.shuffle_btn, self.queue_btn, self.edit_btn,
+                  self.remove_btn, self.more_btn):
             actions.addWidget(b)
         actions.addStretch(1)
-        rl.addLayout(actions)
+        meta.addSpacing(6)
+        meta.addLayout(actions)
+        head.addLayout(meta, 1)
+        layout.addLayout(head)
 
         self.track_list = TouchList()
         self.track_list.itemActivatedPayload.connect(self._on_track_tapped)
-        rl.addWidget(self.track_list, 1)
-        splitter.addWidget(right)
-        # James: give the "Your playlists" column more room - the built-in
-        # "Most Played - This Week"/"Most Played - This Month" names (see
-        # services/playlists.py's MOST_PLAYED_DEFS) were the longest
-        # leaves in this tree and didn't fit 340px next to TouchTree's own
-        # fixed 56px count column, eliding down to "Most Played - T..."
-        # for both.
-        #
-        # 2026-09-17 follow-up (James: still truncated at 420px) - "Most
-        # Played - All Time" (23 chars) fit there, but the two-chars-
-        # longer "This Week"/"This Month" variants didn't quite, by a
-        # handful of pixels this sandbox can't measure directly (no way
-        # to run the real Qt layout here - see the module's other verify-
-        # by-in-memory-DB workarounds). Rather than nudge the number again
-        # and risk the same near-miss, 500px leaves real headroom past the
-        # longest current name instead of just clearing it. Kept the same
-        # 1240 total so the right-hand track list doesn't end up any
-        # narrower than before - just a differently split QSplitter
-        # (still user-draggable further either way, via the handle
-        # between the two panes).
-        splitter.setSizes([500, 740])
-        self.body().addWidget(splitter, 1)
-
-        ctx.playlistsChanged.connect(self.refresh)
-        ctx.libraryChanged.connect(self.refresh)
+        layout.addWidget(self.track_list, 1)
+        return page
 
     # -- loading -------------------------------------------------------------
 
     def refresh(self) -> None:
-        playlists_by_folder: dict[Optional[int], list[Playlist]] = {}
-        track_counts: dict[int, int] = {}
+        cache: dict[int, list] = {}
         with self.ctx.session() as session:
             pl_svc.ensure_default_playlists(session)
             pl_svc.ensure_builtin_playback_playlists(session)
             folders = pl_svc.list_folders(session)
             playlists = pl_svc.list_playlists(session)
-            for playlist in playlists:
-                playlists_by_folder.setdefault(playlist.folder_id, []).append(playlist)
-                track_counts[playlist.id] = len(pl_svc.playlist_tracks(session, playlist.id))
 
-        self.playlist_tree.blockSignals(True)
-        self.playlist_tree.clear()
-        self._add_tree_level(self.playlist_tree, None, folders, playlists_by_folder, track_counts)
-        self.playlist_tree.blockSignals(False)
+            if self._folder_id is not None and self._folder_id not in {f.id for f in folders}:
+                self._folder_id = None
+            if self._playlist_id is not None and self._playlist_id not in {p.id for p in playlists}:
+                self._playlist_id = None
 
-        folder_ids = {f.id for f in folders}
-        playlist_ids = {p.id for p in playlists}
-        still_there = (
-            (self._selected_type == "folder" and self._selected_id in folder_ids)
-            or (self._selected_type == "playlist" and self._selected_id in playlist_ids)
-        )
-        if still_there:
-            found = self.playlist_tree.select_node(
-                lambda n: n.get("type") == self._selected_type
-                and n.get("id") == self._selected_id
-            )
+            tiles = self._build_tiles(session, folders, playlists, cache)
+            chain = [(f.id, f.name) for f in pl_svc.folder_path(session, self._folder_id)]
+
+        self.grid.set_tiles(tiles)
+        self.browse_stack.setCurrentIndex(0 if tiles else 1)
+        self._chain = chain
+        if self._playlist_id is not None:
+            self._load_playlist_detail(self._playlist_id)
+            self.stack.setCurrentIndex(self.PAGE_PLAYLIST)
         else:
-            found = self.playlist_tree.select_node(lambda n: n.get("type") == "playlist")
-            if not found:
-                found = self.playlist_tree.select_node(lambda n: n.get("type") == "folder")
-            if found:
-                payload = self.playlist_tree.current_payload() or {}
-                self._selected_type = payload.get("type")
-                self._selected_id = payload.get("id")
-        if not found:
-            self._selected_type = None
-            self._selected_id = None
-        self._load_detail()
+            self._tracks = []
+            self.stack.setCurrentIndex(self.PAGE_BROWSE)
+            self._set_breadcrumb()
 
-    def _add_tree_level(
-        self,
-        parent_widget,
-        parent_id: Optional[int],
-        folders: list[PlaylistFolder],
-        playlists_by_folder: dict[Optional[int], list[Playlist]],
-        track_counts: dict[int, int],
-    ) -> None:
-        children = sorted(
-            (f for f in folders if f.parent_id == parent_id), key=lambda f: f.name.lower()
-        )
-        for folder in children:
-            item = self.playlist_tree.add_folder(
-                parent_widget,
-                folder.name,
-                {"id": folder.id},
-                expanded=folder.id in self._expanded_folder_ids,
-            )
-            self._add_tree_level(item, folder.id, folders, playlists_by_folder, track_counts)
+    def _tracks_for(self, session, playlist_id: int, cache: dict) -> list:
+        if playlist_id not in cache:
+            cache[playlist_id] = pl_svc.playlist_tracks(session, playlist_id)
+        return cache[playlist_id]
+
+    def _build_tiles(self, session, folders, playlists, cache) -> list[PlaylistTile]:
+        """Tiles for the folder currently showing: its subfolders (A-Z),
+        then its playlists (pinned first, then A-Z - the tree's old order)."""
+        by_parent: dict[Optional[int], list[PlaylistFolder]] = {}
+        for folder in folders:
+            by_parent.setdefault(folder.parent_id, []).append(folder)
+        playlists_by_folder: dict[Optional[int], list[Playlist]] = {}
+        for playlist in playlists:
+            playlists_by_folder.setdefault(playlist.folder_id, []).append(playlist)
+
+        tiles: list[PlaylistTile] = []
+        for folder in sorted(by_parent.get(self._folder_id, []), key=lambda f: f.name.lower()):
+            n_lists = len(playlists_by_folder.get(folder.id, []))
+            n_sub = len(by_parent.get(folder.id, []))
+            parts = []
+            if n_sub:
+                parts.append(f"{n_sub} folder{'s' if n_sub != 1 else ''}")
+            if n_lists:
+                parts.append(f"{n_lists} playlist{'s' if n_lists != 1 else ''}")
+            tiles.append(PlaylistTile(
+                kind=KIND_FOLDER,
+                id=folder.id,
+                title=folder.name,
+                subtitle=" · ".join(parts) or "Empty",
+                cover_paths=self._folder_covers(
+                    session, folder.id, by_parent, playlists_by_folder, cache
+                ),
+                custom_path=folder.cover_path,
+            ))
         for playlist in sorted(
-            playlists_by_folder.get(parent_id, []),
+            playlists_by_folder.get(self._folder_id, []),
             key=lambda p: (not p.is_pinned, p.name.lower()),
         ):
-            label = ("▶ " if playlist.kind == Playlist.KIND_PLAYBACK else "") + playlist.name
-            self.playlist_tree.add_leaf(
-                parent_widget,
-                label,
-                {"type": "playlist", "id": playlist.id, "kind": playlist.kind},
-                meta=str(track_counts.get(playlist.id, 0)),
+            tracks = self._tracks_for(session, playlist.id, cache)
+            n = len(tracks)
+            tiles.append(PlaylistTile(
+                kind=KIND_PLAYLIST,
+                id=playlist.id,
+                title=playlist.name,
+                subtitle=f"{n} song{'s' if n != 1 else ''}",
+                cover_paths=pl_svc.cover_paths_for_tracks(tracks),
+                custom_path=playlist.cover_path,
+                playlist_kind=playlist.kind,
+            ))
+        return tiles
+
+    def _folder_covers(self, session, folder_id, by_parent, playlists_by_folder, cache) -> list[str]:
+        """Up to four different covers for a folder's mosaic: from the
+        playlists directly inside it first, then its subfolders' (breadth
+        first), stopping as soon as four are found - a folder holding a
+        hundred chart snapshots only ever resolves the first few."""
+        paths: list[str] = []
+        queue = [folder_id]
+        seen: set[int] = set()
+        while queue and len(paths) < pl_svc.MOSAIC_COVERS:
+            fid = queue.pop(0)
+            if fid in seen:
+                continue
+            seen.add(fid)
+            for playlist in sorted(
+                playlists_by_folder.get(fid, []), key=lambda p: (not p.is_pinned, p.name.lower())
+            ):
+                if playlist.cover_path:
+                    candidates = [playlist.cover_path]
+                else:
+                    candidates = pl_svc.cover_paths_for_tracks(
+                        self._tracks_for(session, playlist.id, cache)
+                    )
+                for path in candidates:
+                    if path not in paths:
+                        paths.append(path)
+                        if len(paths) >= pl_svc.MOSAIC_COVERS:
+                            return paths
+            queue.extend(
+                f.id for f in sorted(by_parent.get(fid, []), key=lambda f: f.name.lower())
             )
+        return paths
 
-    def _on_expand_changed(self, item) -> None:
-        payload = self.playlist_tree.payload_of(item) or {}
-        if payload.get("type") != "folder":
-            return
-        if item.isExpanded():
-            self._expanded_folder_ids.add(payload.get("id"))
-        else:
-            self._expanded_folder_ids.discard(payload.get("id"))
+    def _set_breadcrumb(self, playlist_name: Optional[str] = None) -> None:
+        """"Playlists › folder › subfolder [› playlist]" - hidden entirely
+        at the top level, where the page title already says "Playlists"."""
+        labels = ["Playlists"] + [name for _fid, name in self._chain]
+        actions = [lambda: self._go_to_folder(None)] + [
+            (lambda fid=fid: self._go_to_folder(fid)) for fid, _name in self._chain
+        ]
+        if playlist_name is not None:
+            labels.append(playlist_name)
+            actions.append(lambda: None)
+        if len(labels) == 1:
+            labels, actions = [], []
+        self._crumb_actions = actions
+        self.breadcrumb.set_path(labels)
 
-    def _on_node_selected(self, payload: Optional[dict]) -> None:
-        if not payload:
-            return
-        self._selected_type = payload.get("type")
-        self._selected_id = payload.get("id")
-        self._load_detail()
+    def _on_crumb(self, index: int) -> None:
+        if 0 <= index < len(self._crumb_actions):
+            self._crumb_actions[index]()
+
+    def _go_to_folder(self, folder_id: Optional[int]) -> None:
+        self._folder_id = folder_id
+        self._playlist_id = None
+        self.refresh()
+
+    def _on_tile_activated(self, payload: dict) -> None:
+        if payload.get("type") == KIND_FOLDER:
+            self._go_to_folder(payload.get("id"))
+        elif payload.get("type") == KIND_PLAYLIST:
+            self._open_playlist(payload.get("id"))
+
+    def _open_playlist(self, playlist_id: int) -> None:
+        self._playlist_id = playlist_id
+        self._load_playlist_detail(playlist_id)
+        if self._playlist_id is not None:
+            self.stack.setCurrentIndex(self.PAGE_PLAYLIST)
 
     def _current_folder_context(self) -> Optional[int]:
-        """Where a newly created playlist or folder should land: alongside
-        whatever's currently selected."""
-        if self._selected_type == "folder":
-            return self._selected_id
-        if self._selected_type == "playlist":
-            with self.ctx.session() as session:
-                playlist = session.get(Playlist, self._selected_id)
-                return playlist.folder_id if playlist is not None else None
-        return None
-
-    def _load_detail(self) -> None:
-        self._tracks = []
-        if self._selected_type == "folder" and self._selected_id is not None:
-            self._load_folder_detail(self._selected_id)
-        elif self._selected_type == "playlist" and self._selected_id is not None:
-            self._load_playlist_detail(self._selected_id)
-        else:
-            self.detail_title.setText("Select a playlist")
-            self.detail_desc.setText("")
-            self.detail_meta.setText("")
-            self.track_list.set_rows([])
-            self._set_playlist_actions_enabled(False)
-
-    def _load_folder_detail(self, folder_id: int) -> None:
-        with self.ctx.session() as session:
-            folder = session.get(PlaylistFolder, folder_id)
-            if folder is None:
-                self._selected_type = self._selected_id = None
-                self._load_detail()
-                return
-            name = folder.name
-            playlists, subfolders = pl_svc.folder_counts(session, folder_id)
-        self.detail_title.setText(name)
-        self.detail_desc.setText("Folder")
-        self.detail_meta.setText(
-            f"{playlists} playlist{'s' if playlists != 1 else ''} · "
-            f"{subfolders} subfolder{'s' if subfolders != 1 else ''}"
-        )
-        self.track_list.set_rows([])
-        self._set_playlist_actions_enabled(False)
+        """Where a newly created playlist or folder should land: the folder
+        the grid is showing (the open playlist's folder, on its page)."""
+        return self._folder_id
 
     def _load_playlist_detail(self, playlist_id: int) -> None:
         rows = []
         with self.ctx.session() as session:
             playlist = session.get(Playlist, playlist_id)
             if playlist is None:
-                self._selected_type = self._selected_id = None
-                self._load_detail()
+                self._playlist_id = None
+                self.stack.setCurrentIndex(self.PAGE_BROWSE)
+                self._set_breadcrumb()
                 return
-            self.detail_title.setText(playlist.name)
+            # a playlist opened from elsewhere, or just moved, may live in a
+            # different folder than the one the grid was showing
+            if playlist.folder_id != self._folder_id:
+                self._folder_id = playlist.folder_id
+                self._chain = [
+                    (f.id, f.name) for f in pl_svc.folder_path(session, self._folder_id)
+                ]
+            name = playlist.name
+            self.detail_title.setText(name)
             self.detail_desc.setText(playlist.description or "")
+            self.detail_desc.setVisible(bool(playlist.description))
             is_playback = playlist.kind == Playlist.KIND_PLAYBACK
             total = 0
             if is_playback:
@@ -724,23 +800,86 @@ class PlaylistsView(BaseView):
                     "key": track.id,
                 })
             self.detail_meta.setText(
-                f"{len(tracks)} tracks · {format_duration(total)} · "
+                f"{len(tracks)} songs · {format_duration(total)} · "
                 f"{KIND_LABEL.get(playlist.kind, playlist.kind)}"
             )
             kind = playlist.kind
+            tile = PlaylistTile(
+                kind=KIND_PLAYLIST,
+                id=playlist.id,
+                title=name,
+                cover_paths=pl_svc.cover_paths_for_tracks(tracks),
+                custom_path=playlist.cover_path,
+                playlist_kind=kind,
+            )
+        self.detail_art.setPixmap(_rounded(tile_pixmap(tile, DETAIL_ART)))
         self.track_list.set_rows(rows)
-        self._set_playlist_actions_enabled(
-            True, editable=kind == Playlist.KIND_MANUAL, smart=kind == Playlist.KIND_SMART
-        )
+        has_tracks = bool(self._tracks)
+        self.play_btn.setEnabled(has_tracks)
+        self.shuffle_btn.setEnabled(has_tracks)
+        self.queue_btn.setEnabled(has_tracks)
+        # only the actions that apply to this kind of playlist are shown at
+        # all, rather than sitting there disabled
+        self.edit_btn.setVisible(kind == Playlist.KIND_SMART)
+        self.remove_btn.setVisible(kind == Playlist.KIND_MANUAL)
+        self._set_breadcrumb(name)
 
-    def _set_playlist_actions_enabled(
-        self, enabled: bool, editable: bool = False, smart: bool = False
-    ) -> None:
-        self.play_btn.setEnabled(enabled)
-        self.shuffle_btn.setEnabled(enabled)
-        self.queue_btn.setEnabled(enabled)
-        self.edit_btn.setEnabled(smart)
-        self.remove_btn.setEnabled(editable)
+    # -- tile / playlist menu ------------------------------------------------
+
+    def _on_tile_context(self, payload: dict, global_pos) -> None:
+        self._build_node_menu(payload).exec(global_pos)
+
+    def _on_more_clicked(self) -> None:
+        if self._playlist_id is None:
+            return
+        menu = self._build_node_menu({"type": KIND_PLAYLIST, "id": self._playlist_id}, on_page=True)
+        menu.exec(self.more_btn.mapToGlobal(self.more_btn.rect().bottomLeft()))
+
+    def _build_node_menu(self, payload: dict, on_page: bool = False) -> QMenu:
+        """The tile menu (long press / right-click) - also the playlist
+        page's "More…". Split out from exec() so tests can trigger an
+        action by its text, same as the Jukebox chip/card menus."""
+        node_type, node_id = payload.get("type"), payload.get("id")
+        menu = QMenu(self)
+        menu.setStyleSheet(_TOUCH_MENU_STYLE)
+        with self.ctx.session() as session:
+            if node_type == KIND_FOLDER:
+                node = session.get(PlaylistFolder, node_id)
+                kind = ""
+            else:
+                node = session.get(Playlist, node_id)
+                kind = node.kind if node is not None else ""
+            has_image = bool(node is not None and node.cover_path)
+        if node is None:
+            return menu
+
+        if node_type == KIND_FOLDER:
+            menu.addAction("Open", lambda: self._go_to_folder(node_id))
+        elif not on_page:
+            menu.addAction("Play", lambda: self._play_node(node_id, shuffle=False))
+            menu.addAction("Shuffle", lambda: self._play_node(node_id, shuffle=True))
+        menu.addSeparator()
+        menu.addAction("Rename…", lambda: self._rename(node_type, node_id))
+        menu.addAction("Move to folder…", lambda: self._move(node_type, node_id))
+        menu.addAction("Choose image…", lambda: self._choose_image(node_type, node_id))
+        if has_image:
+            menu.addAction("Use automatic image", lambda: self._clear_image(node_type, node_id))
+        if node_type == KIND_PLAYLIST and kind == Playlist.KIND_SMART and not on_page:
+            menu.addAction("Edit rules…", lambda: self._edit_smart_id(node_id))
+        if not (node_type == KIND_PLAYLIST and kind == Playlist.KIND_PLAYBACK):
+            menu.addSeparator()
+            label = "Delete folder…" if node_type == KIND_FOLDER else "Delete playlist…"
+            menu.addAction(label, lambda: self._delete(node_type, node_id))
+        return menu
+
+    def _play_node(self, playlist_id: int, shuffle: bool) -> None:
+        with self.ctx.session() as session:
+            tracks = pl_svc.playlist_tracks(session, playlist_id)
+        if not tracks:
+            self.ctx.notify("That playlist is empty")
+            return
+        self.ctx.player.set_shuffle(shuffle)
+        self.ctx.play_tracks(tracks, start=0, source=f"playlist:{playlist_id}")
 
     # -- playlist actions -------------------------------------------------------------
 
@@ -772,10 +911,12 @@ class PlaylistsView(BaseView):
         self.refresh()
 
     def edit_smart(self) -> None:
-        if self._selected_type != "playlist" or self._selected_id is None:
-            return
+        if self._playlist_id is not None:
+            self._edit_smart_id(self._playlist_id)
+
+    def _edit_smart_id(self, playlist_id: int) -> None:
         with self.ctx.session() as session:
-            playlist = session.get(Playlist, self._selected_id)
+            playlist = session.get(Playlist, playlist_id)
             if playlist is None or playlist.kind != Playlist.KIND_SMART:
                 return
             name, rules = playlist.name, playlist.rules
@@ -786,7 +927,7 @@ class PlaylistsView(BaseView):
             new_name, spec = dialog.values()
             with self.ctx.session() as session:
                 pl_svc.resolve_smart(session, json.dumps(spec))
-                playlist = session.get(Playlist, self._selected_id)
+                playlist = session.get(Playlist, playlist_id)
                 playlist.name = new_name or playlist.name
                 playlist.rules = json.dumps(spec, indent=2)
         except Exception as exc:
@@ -796,10 +937,10 @@ class PlaylistsView(BaseView):
 
     def _remove_selected(self) -> None:
         payload = self.track_list.current_payload()
-        if payload is None or self._selected_type != "playlist" or self._selected_id is None:
+        if payload is None or self._playlist_id is None:
             return
         with self.ctx.session() as session:
-            playlist = session.get(Playlist, self._selected_id)
+            playlist = session.get(Playlist, self._playlist_id)
             if playlist is None or playlist.kind != Playlist.KIND_MANUAL:
                 self.ctx.notify("Only manual playlists can be edited by hand")
                 return
@@ -807,7 +948,7 @@ class PlaylistsView(BaseView):
                 if item.track_id == payload.get("key"):
                     session.delete(item)
                     break
-        self._load_detail()
+        self._load_playlist_detail(self._playlist_id)
 
     def _on_track_tapped(self, payload: Optional[dict]) -> None:
         if not payload:
@@ -821,64 +962,57 @@ class PlaylistsView(BaseView):
         if not self._tracks:
             return
         self.ctx.player.set_shuffle(False)
-        self.ctx.play_tracks(self._tracks, start=start, source=f"playlist:{self._selected_id}")
+        self.ctx.play_tracks(self._tracks, start=start, source=f"playlist:{self._playlist_id}")
 
     def _shuffle(self) -> None:
         if not self._tracks:
             return
         self.ctx.player.set_shuffle(True)
-        self.ctx.play_tracks(self._tracks, start=0, source=f"playlist:{self._selected_id}")
+        self.ctx.play_tracks(self._tracks, start=0, source=f"playlist:{self._playlist_id}")
 
-    # -- folder actions -------------------------------------------------------------
+    # -- folder / node actions -----------------------------------------------------
 
     def create_folder(self) -> None:
         name, ok = QInputDialog.getText(self, "New folder", "Folder name:")
         if not ok or not name.strip():
             return
-        parent_id = self._current_folder_context()
         with self.ctx.session() as session:
-            pl_svc.create_folder(session, name.strip(), parent_id=parent_id)
-        if parent_id is not None:
-            self._expanded_folder_ids.add(parent_id)
+            pl_svc.create_folder(session, name.strip(), parent_id=self._current_folder_context())
         self.ctx.notify(f"Created folder “{name.strip()}”")
         self.refresh()
 
-    def rename_selected(self) -> None:
-        if self._selected_type == "folder" and self._selected_id is not None:
-            with self.ctx.session() as session:
-                folder = session.get(PlaylistFolder, self._selected_id)
-                current = folder.name if folder else ""
-            name, ok = QInputDialog.getText(self, "Rename folder", "Folder name:", text=current)
-            if not ok or not name.strip():
-                return
-            with self.ctx.session() as session:
-                pl_svc.rename_folder(session, self._selected_id, name.strip())
-            self.refresh()
-        elif self._selected_type == "playlist" and self._selected_id is not None:
-            with self.ctx.session() as session:
-                playlist = session.get(Playlist, self._selected_id)
-                current = playlist.name if playlist else ""
-            name, ok = QInputDialog.getText(self, "Rename playlist", "Playlist name:", text=current)
-            if not ok or not name.strip():
-                return
-            with self.ctx.session() as session:
-                pl_svc.rename_playlist(session, self._selected_id, name.strip())
-            self.refresh()
-        else:
-            self.ctx.notify("Select a playlist or folder first")
-
-    def move_selected(self) -> None:
-        if self._selected_type not in ("folder", "playlist") or self._selected_id is None:
-            self.ctx.notify("Select a playlist or folder first")
+    def _rename(self, node_type: str, node_id: int) -> None:
+        with self.ctx.session() as session:
+            model = PlaylistFolder if node_type == KIND_FOLDER else Playlist
+            node = session.get(model, node_id)
+            current = node.name if node else ""
+        what = "folder" if node_type == KIND_FOLDER else "playlist"
+        name, ok = QInputDialog.getText(
+            self, f"Rename {what}", f"{what.capitalize()} name:", text=current
+        )
+        if not ok or not name.strip():
             return
         with self.ctx.session() as session:
-            folders = pl_svc.list_folders(session)
-            if self._selected_type == "folder":
-                current_folder_id = session.get(PlaylistFolder, self._selected_id).parent_id
-                exclude_ids = pl_svc.folder_and_descendant_ids(session, self._selected_id)
+            if node_type == KIND_FOLDER:
+                pl_svc.rename_folder(session, node_id, name.strip())
             else:
-                playlist = session.get(Playlist, self._selected_id)
-                current_folder_id = playlist.folder_id if playlist else None
+                pl_svc.rename_playlist(session, node_id, name.strip())
+        self.refresh()
+
+    def _move(self, node_type: str, node_id: int) -> None:
+        with self.ctx.session() as session:
+            folders = pl_svc.list_folders(session)
+            if node_type == KIND_FOLDER:
+                folder = session.get(PlaylistFolder, node_id)
+                if folder is None:
+                    return
+                current_folder_id = folder.parent_id
+                exclude_ids = pl_svc.folder_and_descendant_ids(session, node_id)
+            else:
+                playlist = session.get(Playlist, node_id)
+                if playlist is None:
+                    return
+                current_folder_id = playlist.folder_id
                 exclude_ids = None
 
         dialog = FolderPickerDialog(self, folders, current_folder_id, exclude_ids)
@@ -886,20 +1020,43 @@ class PlaylistsView(BaseView):
             return
         target_id = dialog.selected_folder_id()
         with self.ctx.session() as session:
-            if self._selected_type == "folder":
+            if node_type == KIND_FOLDER:
                 try:
-                    pl_svc.move_folder(session, self._selected_id, target_id)
+                    pl_svc.move_folder(session, node_id, target_id)
                 except ValueError as exc:
                     QMessageBox.warning(self, "Can't move folder", str(exc))
                     return
             else:
-                pl_svc.move_playlist(session, self._selected_id, target_id)
-        if target_id is not None:
-            self._expanded_folder_ids.add(target_id)
+                pl_svc.move_playlist(session, node_id, target_id)
         self.refresh()
 
-    def delete_selected(self) -> None:
-        if self._selected_type == "folder" and self._selected_id is not None:
+    def _choose_image(self, node_type: str, node_id: int) -> None:
+        patterns = " ".join(f"*{ext}" for ext in sorted(config.IMAGE_EXTENSIONS))
+        what = "folder" if node_type == KIND_FOLDER else "playlist"
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, f"Choose an image for this {what}", "", f"Images ({patterns})"
+        )
+        if not file_path:
+            return
+        self._set_image(node_type, node_id, file_path)
+
+    def _clear_image(self, node_type: str, node_id: int) -> None:
+        self._set_image(node_type, node_id, None)
+
+    def _set_image(self, node_type: str, node_id: int, file_path: Optional[str]) -> None:
+        try:
+            with self.ctx.session() as session:
+                if node_type == KIND_FOLDER:
+                    pl_svc.set_folder_image(session, node_id, file_path)
+                else:
+                    pl_svc.set_playlist_image(session, node_id, file_path)
+        except ValueError as exc:
+            self.ctx.notify(f"Couldn't use that image: {exc}")
+            return
+        self.refresh()
+
+    def _delete(self, node_type: str, node_id: int) -> None:
+        if node_type == KIND_FOLDER:
             confirm = QMessageBox.question(
                 self,
                 "Delete folder",
@@ -909,28 +1066,43 @@ class PlaylistsView(BaseView):
             if confirm != QMessageBox.Yes:
                 return
             with self.ctx.session() as session:
-                pl_svc.delete_folder(session, self._selected_id)
-            self._selected_type = self._selected_id = None
+                pl_svc.delete_folder(session, node_id)
             self.refresh()
-        elif self._selected_type == "playlist" and self._selected_id is not None:
-            with self.ctx.session() as session:
-                playlist = session.get(Playlist, self._selected_id)
-                if playlist is not None and playlist.kind == Playlist.KIND_PLAYBACK:
-                    self.ctx.notify(
-                        "Built-in playback playlists can't be deleted - move "
-                        "them into a folder instead"
-                    )
-                    return
-            confirm = QMessageBox.question(
-                self, "Delete playlist", "Delete this playlist? Tracks stay in your library."
-            )
-            if confirm != QMessageBox.Yes:
+            return
+        with self.ctx.session() as session:
+            playlist = session.get(Playlist, node_id)
+            if playlist is not None and playlist.kind == Playlist.KIND_PLAYBACK:
+                self.ctx.notify(
+                    "Built-in playback playlists can't be deleted - move "
+                    "them into a folder instead"
+                )
                 return
-            with self.ctx.session() as session:
-                playlist = session.get(Playlist, self._selected_id)
-                if playlist is not None:
-                    session.delete(playlist)
-            self._selected_type = self._selected_id = None
-            self.refresh()
-        else:
-            self.ctx.notify("Select a playlist or folder first")
+        confirm = QMessageBox.question(
+            self, "Delete playlist", "Delete this playlist? Tracks stay in your library."
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        with self.ctx.session() as session:
+            playlist = session.get(Playlist, node_id)
+            if playlist is not None:
+                session.delete(playlist)
+        if self._playlist_id == node_id:
+            self._playlist_id = None
+        self.refresh()
+
+
+#: the playlist page's artwork edge, px
+DETAIL_ART = 140
+
+
+def _rounded(pix: QPixmap, radius: int = 12) -> QPixmap:
+    out = QPixmap(pix.size())
+    out.fill(Qt.transparent)
+    painter = QPainter(out)
+    painter.setRenderHint(QPainter.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(0, 0, pix.width(), pix.height(), radius, radius)
+    painter.setClipPath(path)
+    painter.drawPixmap(0, 0, pix)
+    painter.end()
+    return out

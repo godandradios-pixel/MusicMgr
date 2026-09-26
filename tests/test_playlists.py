@@ -604,3 +604,72 @@ class TestBuiltinPlaybackPlaylists:
         tracks = lib_pl.playlist_tracks(session, playlist.id)
 
         assert [t.title for t in tracks] == ["Hit"]
+
+
+class TestTileArtwork:
+    """2026-09-26 tile grid on the Playlists page: mosaic covers, chosen
+    images and the breadcrumb's folder chain."""
+
+    def test_cover_paths_are_distinct_per_release_and_capped_at_four(self, session):
+        tracks = []
+        for i in range(6):
+            for j in range(2):  # two songs from each album
+                t = make_track(session, f"Song {i}-{j}", album=f"Album {i}")
+                t.release.cover_path = f"/covers/{i}.jpg"
+                tracks.append(t)
+
+        paths = lib_pl.cover_paths_for_tracks(tracks)
+
+        assert paths == [f"/covers/{i}.jpg" for i in range(4)]
+
+    def test_tracks_without_covers_are_skipped(self, session):
+        bare = make_track(session, "Bare", album="No Cover")
+        covered = make_track(session, "Covered", album="Has Cover")
+        covered.release.cover_path = "/covers/x.jpg"
+
+        assert lib_pl.cover_paths_for_tracks([bare, covered]) == ["/covers/x.jpg"]
+
+    def test_set_and_clear_playlist_image(self, session, tmp_path, monkeypatch):
+        from musicmgr import config
+
+        monkeypatch.setattr(config, "ART_DIR", tmp_path / "art")
+        src = tmp_path / "pic.png"
+        src.write_bytes(b"\x89PNG fake bytes")
+        playlist = lib_pl.create_playlist(session, "Mix")
+
+        lib_pl.set_playlist_image(session, playlist.id, str(src))
+        stored = playlist.cover_path
+        assert stored and stored.startswith(str(tmp_path / "art"))
+        assert (tmp_path / "art").exists()
+
+        lib_pl.set_playlist_image(session, playlist.id, None)
+        assert playlist.cover_path is None
+
+    def test_set_folder_image(self, session, tmp_path, monkeypatch):
+        from musicmgr import config
+
+        monkeypatch.setattr(config, "ART_DIR", tmp_path / "art")
+        src = tmp_path / "pic.jpg"
+        src.write_bytes(b"jpeg-ish")
+        folder = lib_pl.create_folder(session, "Charts")
+
+        lib_pl.set_folder_image(session, folder.id, str(src))
+
+        assert folder.cover_path and folder.cover_path.endswith(".jpg")
+
+    def test_a_non_image_file_is_rejected(self, session, tmp_path):
+        src = tmp_path / "notes.txt"
+        src.write_text("hello")
+        playlist = lib_pl.create_playlist(session, "Mix")
+
+        with pytest.raises(ValueError):
+            lib_pl.set_playlist_image(session, playlist.id, str(src))
+        assert playlist.cover_path is None
+
+    def test_folder_path_is_root_first(self, session):
+        a = lib_pl.create_folder(session, "Billboard")
+        b = lib_pl.create_folder(session, "2020-29", parent_id=a.id)
+        c = lib_pl.create_folder(session, "2021", parent_id=b.id)
+
+        assert [f.name for f in lib_pl.folder_path(session, c.id)] == ["Billboard", "2020-29", "2021"]
+        assert lib_pl.folder_path(session, None) == []
