@@ -25,7 +25,7 @@ import math
 from typing import Optional, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -121,7 +121,10 @@ class _CoverflowCanvas(QWidget):
         self._press_target = 0.0
         self._dragged = False
 
-        self.setFixedHeight(panel_size + 34)
+        # 2026-09-26 (James: "too much wasted space") - was panel_size + 34;
+        # the focused panel's drop shadow only reaches ~10px past its own
+        # bottom edge (see _paint_panel), so +20 still clears it.
+        self.setFixedHeight(panel_size + 20)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(Qt.OpenHandCursor)
@@ -266,6 +269,52 @@ class _CoverflowCanvas(QWidget):
             outline.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 6, 6)
             outline.end()
 
+    def _paint_caption(self, painter, tile, half: float, alpha: float) -> None:
+        """The open release's title (and year, when known) painted over
+        the bottom of its own cover on a dark gradient band - 2026-09-26
+        (James: "too much wasted space"), replacing the caption line that
+        used to sit on its own row under the canvas. Called from
+        _paint_panel in that panel's own (scaled, clipped) coordinates, so
+        the band follows the cover's rounded corners. `alpha` fades it out
+        as the panel leaves focus mid-animation."""
+        size = self._panel_size
+        pad = 8.0
+        title_font = QFont(painter.font())
+        title_font.setPixelSize(max(11, round(size * 0.092)))
+        title_font.setBold(True)
+        year_font = QFont(painter.font())
+        year_font.setPixelSize(max(10, round(size * 0.078)))
+        title_fm = QFontMetrics(title_font)
+        year_fm = QFontMetrics(year_font)
+        year_text = str(tile.year) if tile.year else ""
+
+        text_h = title_fm.height() + (year_fm.height() if year_text else 0)
+        band_h = text_h + pad * 2 + 10  # +10 of gradient lead-in above the text
+        band = QRectF(-half, half - band_h, size, band_h)
+        grad = QLinearGradient(band.topLeft(), band.bottomLeft())
+        grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+        grad.setColorAt(0.35, QColor(0, 0, 0, int(170 * alpha)))
+        grad.setColorAt(1.0, QColor(0, 0, 0, int(215 * alpha)))
+        painter.fillRect(band, grad)
+
+        width = int(size - pad * 2)
+        y = half - pad - text_h
+        painter.setFont(title_font)
+        painter.setPen(QColor(255, 255, 255, int(255 * alpha)))
+        painter.drawText(
+            QRectF(-half + pad, y, width, title_fm.height()),
+            Qt.AlignHCenter | Qt.AlignVCenter,
+            title_fm.elidedText(tile.title or "", Qt.ElideRight, width),
+        )
+        if year_text:
+            painter.setFont(year_font)
+            painter.setPen(QColor(255, 255, 255, int(190 * alpha)))
+            painter.drawText(
+                QRectF(-half + pad, y + title_fm.height(), width, year_fm.height()),
+                Qt.AlignHCenter | Qt.AlignVCenter,
+                year_text,
+            )
+
     def _paint_panel(self, painter, tile, cx, cy, scale, cos_t, fold_t, half, index) -> None:
         pix = cover_pixmap(tile.cover_path, self._panel_size, tile.title, crop=False)
         op = max(0.45, 1 - min(abs(index - self._scroll_pos) / 5, 1) * 0.45)
@@ -302,6 +351,12 @@ class _CoverflowCanvas(QWidget):
         if fold_t > 0.02:
             painter.setPen(QColor(0, 0, 0, int(min(fold_t * 2.2, 1) * 140)))
             painter.drawLine(QPointF(0, -half * 0.94), QPointF(0, half * 0.94))
+
+        # caption overlay on the open release only, fading out quickly as it
+        # slides away from focus (gone by ~0.4 of a step)
+        caption_alpha = 1.0 - min(abs(index - self._scroll_pos) * 2.5, 1.0)
+        if caption_alpha > 0.01:
+            self._paint_caption(painter, tile, half, caption_alpha)
 
         painter.restore()
 
@@ -398,8 +453,11 @@ class GatefoldCoverflow(QWidget):
     releases - same `set_tiles(list[GridTile])` and `tileActivated(int)`
     surface, so callers swap the class name and constructor kwargs only.
 
-    Own layout is the canvas flanked by large prev/next arrow buttons, plus
-    a caption underneath naming the currently-open release (2026-09-15,
+    Own layout is the canvas flanked by large prev/next arrow buttons. The
+    open release's title/year is painted over the bottom of its own cover
+    (2026-09-26, James: "too much wasted space" - see
+    _CoverflowCanvas._paint_caption). Before that, a caption underneath
+    named the currently-open release (2026-09-15,
     James: "move the title of the album below the album" - it used to sit
     in a header bar above the strip, disconnected from the cover it
     actually named; centered under the canvas it lines up with the open
@@ -456,9 +514,13 @@ class GatefoldCoverflow(QWidget):
         canvas_row.addWidget(self.next_btn, 0, Qt.AlignVCenter)
         root.addLayout(canvas_row, 0)
 
+        # still kept up to date (see _on_focus_changed) but no longer laid
+        # out - the caption is painted onto the open cover now (see the
+        # class docstring), which saves the row this label used to take.
         self.focus_label = dim_label("")
         self.focus_label.setAlignment(Qt.AlignHCenter)
-        root.addWidget(self.focus_label, 0, Qt.AlignHCenter)
+        self.focus_label.setParent(self)
+        self.focus_label.hide()
 
         self.count_label = QLabel("")
         self.count_label.setObjectName("Dim")
