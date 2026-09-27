@@ -342,6 +342,83 @@ def reorder(session: Session, playlist_id: int, ordered_item_ids: Sequence[int])
     session.flush()
 
 
+def search_tracks(
+    session: Session,
+    artist_query: str = "",
+    track_query: str = "",
+    limit: int = 50,
+) -> list[dict]:
+    """Artist + title search for the playlist "Add songs…" / "Replace
+    song…" picker (2026-09-27 - James: "how can I edit a playlist by
+    replacing a song with a search for another song", then "please build
+    both"). Feeds the same `JukeboxPickerDialog` the Jukebox uses, so it
+    returns the same dict shape as `services/jukebox.py:
+    search_addable_tracks` and matches the same way (`artist_display
+    ilike`, `title_key like`, ANDed, both blank -> nothing).
+
+    Unlike the jukebox search it keeps tracks with no resolvable album
+    artist (compilation tracks etc.) - a playlist can hold any track, it
+    doesn't need an artist card to file it under. `artist_id` is the
+    album artist when there is one, else 0; the playlist view ignores it.
+    `artist_name` is the track's own artist, which is what the playlist's
+    track list shows. Sorted by (artist, album, title)."""
+    artist_query = artist_query.strip()
+    track_query = track_query.strip()
+    if not artist_query and not track_query:
+        return []
+    stmt = (
+        select(Track)
+        .options(selectinload(Track.release))
+        .order_by(Track.title)
+        .limit(limit)
+    )
+    if artist_query:
+        stmt = stmt.where(Track.artist_display.ilike(f"%{artist_query}%"))
+    if track_query:
+        stmt = stmt.where(Track.title_key.like(f"%{normalize(track_query)}%"))
+    results: list[dict] = []
+    for track in session.scalars(stmt).unique():
+        release = track.release
+        results.append(
+            {
+                "track_id": track.id,
+                "title": track.title,
+                "artist_name": track.artist_display or "",
+                "artist_id": (release.album_artist_id if release is not None else None) or 0,
+                "album": release.title if release is not None else "",
+            }
+        )
+    results.sort(
+        key=lambda r: (r["artist_name"].lower(), r["album"].lower(), r["title"].lower())
+    )
+    return results
+
+
+def replace_track_at(
+    session: Session, playlist_id: int, index: int, old_track_id: int, new_track_id: int
+) -> bool:
+    """Swap the song at 0-based `index` of a manual playlist for
+    `new_track_id`, keeping its position (2026-09-27 "Replace song…").
+    `old_track_id` guards against the list having changed underneath the
+    view: if the item at `index` isn't that track, the first item that is
+    gets replaced instead. Returns False if nothing matched."""
+    playlist = session.get(Playlist, playlist_id)
+    if playlist is None or playlist.kind != Playlist.KIND_MANUAL:
+        return False
+    items = list(playlist.items)
+    target = None
+    if 0 <= index < len(items) and items[index].track_id == old_track_id:
+        target = items[index]
+    else:
+        target = next((i for i in items if i.track_id == old_track_id), None)
+    if target is None:
+        return False
+    target.track_id = new_track_id
+    target.added_at = dt.datetime.now()
+    session.flush()
+    return True
+
+
 def playlist_tracks(session: Session, playlist_id: int) -> list[Track]:
     playlist = session.get(Playlist, playlist_id)
     if playlist is None:

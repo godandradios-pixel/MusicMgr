@@ -48,6 +48,7 @@ from ..widgets.common import (
     TouchList,
     dim_label,
 )
+from .jukebox import JukeboxPickerDialog
 from ..widgets.playlist_grid import (
     KIND_FOLDER,
     KIND_PLAYLIST,
@@ -576,12 +577,20 @@ class PlaylistsView(BaseView):
         self.queue_btn.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
         self.edit_btn = TouchButton("Edit rules")
         self.edit_btn.clicked.connect(self.edit_smart)
+        # 2026-09-27 - James: "how can I edit a playlist by replacing a
+        # song with a search for another song" / "please build both". Both
+        # open the Jukebox's artist + title picker (JukeboxPickerDialog,
+        # genre box hidden) over pl_svc.search_tracks.
+        self.add_btn = TouchButton("Add songs…")
+        self.add_btn.clicked.connect(self._add_songs)
+        self.replace_btn = TouchButton("Replace song…")
+        self.replace_btn.clicked.connect(self._replace_selected)
         self.remove_btn = TouchButton("Remove track")
         self.remove_btn.clicked.connect(self._remove_selected)
         self.more_btn = TouchButton("More…")
         self.more_btn.clicked.connect(self._on_more_clicked)
         for b in (self.play_btn, self.shuffle_btn, self.queue_btn, self.edit_btn,
-                  self.remove_btn, self.more_btn):
+                  self.add_btn, self.replace_btn, self.remove_btn, self.more_btn):
             actions.addWidget(b)
         actions.addStretch(1)
         meta.addSpacing(6)
@@ -822,6 +831,9 @@ class PlaylistsView(BaseView):
         # all, rather than sitting there disabled
         self.edit_btn.setVisible(kind == Playlist.KIND_SMART)
         self.remove_btn.setVisible(kind == Playlist.KIND_MANUAL)
+        self.add_btn.setVisible(kind == Playlist.KIND_MANUAL)
+        self.replace_btn.setVisible(kind == Playlist.KIND_MANUAL)
+        self.replace_btn.setEnabled(has_tracks)
         self._set_breadcrumb(name)
 
     # -- tile / playlist menu ------------------------------------------------
@@ -949,6 +961,99 @@ class PlaylistsView(BaseView):
                     session.delete(item)
                     break
         self._load_playlist_detail(self._playlist_id)
+
+    #: most songs "Add songs…" takes in one go
+    ADD_MAX_PICKS = 25
+
+    def _search_playlist_tracks(self, artist_query: str, track_query: str) -> list[dict]:
+        """JukeboxPickerDialog's search callback for Add/Replace."""
+        with self.ctx.session() as session:
+            return pl_svc.search_tracks(session, artist_query, track_query)
+
+    def _add_songs(self) -> None:
+        """"Add songs…" - search and tick up to ADD_MAX_PICKS songs; they
+        go on the end of the playlist in the order they were ticked. Songs
+        already in the playlist are skipped."""
+        if self._playlist_id is None:
+            return
+        dialog = JukeboxPickerDialog(
+            self,
+            self._search_playlist_tracks,
+            max_picks=self.ADD_MAX_PICKS,
+            title="Add songs to playlist",
+            show_genre=False,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        picked = [track_id for track_id, _artist_id in dialog.selected_picks()]
+        if not picked:
+            return
+        with self.ctx.session() as session:
+            playlist = session.get(Playlist, self._playlist_id)
+            if playlist is None or playlist.kind != Playlist.KIND_MANUAL:
+                self.ctx.notify("Only manual playlists can be edited by hand")
+                return
+            existing = {item.track_id for item in playlist.items}
+            new_ids = [tid for tid in picked if tid not in existing]
+            if new_ids:
+                pl_svc.add_tracks(session, self._playlist_id, new_ids)
+        skipped = len(picked) - len(new_ids)
+        msg = f"Added {len(new_ids)} song{'s' if len(new_ids) != 1 else ''}"
+        if skipped:
+            msg += f" ({skipped} already in the playlist)"
+        self.ctx.notify(msg)
+        self._load_playlist_detail(self._playlist_id)
+
+    def _replace_selected(self) -> None:
+        """"Replace song…" - swap the selected song for one found by
+        search, in the same spot in the list."""
+        payload = self.track_list.current_payload()
+        if self._playlist_id is None:
+            return
+        if payload is None:
+            self.ctx.notify("Select the song to replace first")
+            return
+        old_track_id = payload.get("key")
+        try:
+            index = int(payload.get("lead", "0")) - 1
+        except ValueError:
+            index = -1
+        old_title = payload.get("primary", "")
+        dialog = JukeboxPickerDialog(
+            self,
+            self._search_playlist_tracks,
+            max_picks=1,
+            title=f"Replace “{old_title}”" if old_title else "Replace song",
+            show_genre=False,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        picks = dialog.selected_rows()
+        if not picks:
+            return
+        new_track_id = picks[0]["track_id"]
+        new_title = picks[0]["title"]
+        if new_track_id == old_track_id:
+            return
+        with self.ctx.session() as session:
+            playlist = session.get(Playlist, self._playlist_id)
+            if playlist is None or playlist.kind != Playlist.KIND_MANUAL:
+                self.ctx.notify("Only manual playlists can be edited by hand")
+                return
+            if any(item.track_id == new_track_id for item in playlist.items):
+                self.ctx.notify(f"“{new_title}” is already in this playlist")
+                return
+            ok = pl_svc.replace_track_at(
+                session, self._playlist_id, index, old_track_id, new_track_id
+            )
+        if not ok:
+            self.ctx.notify("Couldn't find that song in the playlist any more")
+        else:
+            self.ctx.notify(f"Replaced with “{new_title}”")
+        self._load_playlist_detail(self._playlist_id)
+        # keep the replaced row selected so several swaps in a row are easy
+        if 0 <= index < self.track_list.count():
+            self.track_list.setCurrentRow(index)
 
     def _on_track_tapped(self, payload: Optional[dict]) -> None:
         if not payload:
