@@ -12,6 +12,10 @@
       2. pip install -r requirements-dev.txt   (keeps PyInstaller etc. current;
                                skip with -SkipInstall once your env is set up)
       3. pyinstaller MusicMgr.spec   ->   dist\MusicMgr.exe   (single file)
+      4. copy dist\MusicMgr.exe to the USB drive (E:\MusicMgr by default),
+         so Install-MusicMgr.bat on the drive always installs the newest
+         build. Skipped with a warning if the drive isn't plugged in;
+         skip on purpose with -SkipUsb.
 
 .PARAMETER SkipPull
     Skip the git pull step and build from whatever is currently checked out.
@@ -22,6 +26,13 @@
 .PARAMETER Clean
     Delete the build\ and dist\ folders first, forcing a full rebuild
     instead of PyInstaller's incremental cache.
+
+.PARAMETER UsbPath
+    Folder on the USB drive that receives the new MusicMgr.exe.
+    Default: E:\MusicMgr.
+
+.PARAMETER SkipUsb
+    Don't copy the new build to the USB drive.
 
 .PARAMETER NoPause
     Don't wait for a keypress at the end (useful for Task Scheduler /
@@ -34,6 +45,8 @@
     .\build.ps1 -SkipInstall
 .EXAMPLE
     .\build.ps1 -Clean
+.EXAMPLE
+    .\build.ps1 -UsbPath F:\MusicMgr
 #>
 
 [CmdletBinding()]
@@ -41,6 +54,8 @@ param(
     [switch]$SkipPull,
     [switch]$SkipInstall,
     [switch]$Clean,
+    [string]$UsbPath = "E:\MusicMgr",
+    [switch]$SkipUsb,
     [switch]$NoPause
 )
 
@@ -129,6 +144,43 @@ try {
 
     $size = [math]::Round((Get-Item $exePath).Length / 1MB, 1)
     Write-Step "Build complete: $exePath ($size MB)"
+
+    # Step 4: refresh the USB copy. The drive only carries the exe for
+    # Install-MusicMgr.bat (MusicMgr never runs from the USB), so this is
+    # a plain file copy. Copied to a temp name first and then swapped in,
+    # so a pulled drive or full disk mid-copy can't leave a half-written
+    # MusicMgr.exe behind; the previous one is kept as MusicMgr.exe.old
+    # until the next build.
+    if ($SkipUsb) {
+        Write-Step "Skipping USB copy (-SkipUsb)"
+    }
+    elseif (-not (Test-Path $UsbPath -PathType Container)) {
+        Write-Host ""
+        Write-Host "USB folder $UsbPath not found - drive not plugged in? Skipping USB copy." -ForegroundColor Yellow
+    }
+    else {
+        Write-Step "Copying MusicMgr.exe to $UsbPath"
+        $usbExe = Join-Path $UsbPath "MusicMgr.exe"
+        $usbTmp = "$usbExe.new"
+        $usbOld = "$usbExe.old"
+        try {
+            Copy-Item $exePath $usbTmp -Force
+            if ((Get-Item $usbTmp).Length -ne (Get-Item $exePath).Length) {
+                throw "size mismatch after copy"
+            }
+            if (Test-Path $usbExe) {
+                if (Test-Path $usbOld) { Remove-Item $usbOld -Force }
+                Rename-Item $usbExe (Split-Path $usbOld -Leaf)
+            }
+            Rename-Item $usbTmp (Split-Path $usbExe -Leaf)
+            Write-Host "USB updated: $usbExe (previous kept as MusicMgr.exe.old)" -ForegroundColor Green
+        }
+        catch {
+            if (Test-Path $usbTmp) { Remove-Item $usbTmp -Force -ErrorAction SilentlyContinue }
+            # the build itself succeeded - report the USB problem but don't fail
+            Write-Host "USB copy failed: $_  (dist\MusicMgr.exe is still good)" -ForegroundColor Yellow
+        }
+    }
 }
 catch {
     Write-Host ""
