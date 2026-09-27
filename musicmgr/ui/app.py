@@ -64,8 +64,8 @@ NAV_ITEMS = [
     # a few lines down for exactly that, it just isn't one of these
     # buttons any more. See ctx.videosBackRequested's own docstring for
     # what changed in the embedded player's "‹ Back" button to match.
-    ("charts", "Charts"),
     ("playlists", "Playlists"),
+    ("charts", "Charts"),
     ("settings", "Settings"),
 ]
 
