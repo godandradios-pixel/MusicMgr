@@ -42,6 +42,7 @@ from ..db.models import (
     ChartFolder,
     ChartIssue,
     Playlist,
+    PlaylistFolder,
     PlaylistItem,
     Setting,
     Track,
@@ -804,6 +805,119 @@ def chart_run(session: Session, chart_id: int, track_id: int) -> list[ChartEntry
         .order_by(ChartIssue.chart_date)
     )
     return list(session.scalars(stmt))
+
+
+def decade_label(year: int) -> str:
+    """1957 -> "1950-59", the decade folder naming James already uses for
+    his Billboard playlists (Billboard Hot 100 / 1980-89 / 1980)."""
+    start = year - year % 10
+    return f"{start}-{str(start + 9)[-2:]}"
+
+
+def edition_playlist_name(issue: ChartIssue) -> str:
+    """A year-end edition (dated Dec 31) is just its year, "1957", like
+    James's existing chart playlists; anything else keeps its full date."""
+    d = issue.chart_date
+    return str(d.year) if (d.month, d.day) == (12, 31) else d.isoformat()
+
+
+def plan_chart_playlists(session: Session, chart_id: int) -> tuple[int, int]:
+    """(editions with at least one song in the library, editions total) -
+    what "Save all as playlists" is about to do, for its confirm prompt."""
+    coverage = issue_coverage_by_chart(session, chart_id)
+    issues = list_issues(session, chart_id)
+    owned = sum(1 for i in issues if coverage.get(i.id, (0, 0))[0] > 0)
+    return owned, len(issues)
+
+
+def snapshot_chart_to_folder(
+    session: Session, chart_id: int, folder_id: Optional[int]
+) -> dict[str, int]:
+    """"Save all as playlists" (2026-09-27 - James: "we already have the
+    playlist fm in the charts, I just need to create the playlists from
+    there"). One playlist per edition of the chart, filed as
+
+        <folder_id> / 1950-59 / 1957
+
+    - decade subfolders are found or created, and each playlist holds the
+    edition's matched songs in chart order, same as "Save as playlist"
+    (`snapshot_to_playlist`) does for a single edition. Editions with no
+    songs in the library are skipped.
+
+    Re-running refreshes the playlists it made before (matched by
+    `source_issue_id`), so fixing a match on the Charts page and saving
+    again updates them. A playlist of the same name that *didn't* come from
+    this edition - one James made himself - is left alone and counted as
+    `kept`. Returns counts: created, updated, kept, skipped (no songs)."""
+    counts = {"created": 0, "updated": 0, "kept": 0, "skipped": 0}
+    folder_cache: dict[str, int] = {}
+
+    def decade_folder(label: str) -> int:
+        if label not in folder_cache:
+            folder = session.scalar(
+                select(PlaylistFolder).where(
+                    func.lower(PlaylistFolder.name) == label.lower(),
+                    PlaylistFolder.parent_id.is_(None) if folder_id is None
+                    else PlaylistFolder.parent_id == folder_id,
+                )
+            )
+            if folder is None:
+                folder = PlaylistFolder(name=label, parent_id=folder_id)
+                session.add(folder)
+                session.flush()
+            folder_cache[label] = folder.id
+        return folder_cache[label]
+
+    chart = session.get(Chart, chart_id)
+    if chart is None:
+        raise ValueError(f"no chart {chart_id}")
+    for issue in sorted(list_issues(session, chart_id), key=lambda i: i.chart_date):
+        track_ids: list[int] = []
+        for entry in issue_entries(session, issue.id):
+            if entry.track_id is not None and entry.track_id not in track_ids:
+                track_ids.append(entry.track_id)
+        if not track_ids:
+            counts["skipped"] += 1
+            continue
+        target_folder = decade_folder(decade_label(issue.chart_date.year))
+        name = edition_playlist_name(issue)
+        playlist = session.scalar(
+            select(Playlist).where(
+                Playlist.source_issue_id == issue.id,
+                Playlist.folder_id == target_folder,
+            )
+        )
+        if playlist is None:
+            same_name = session.scalar(
+                select(Playlist).where(
+                    func.lower(Playlist.name) == name.lower(),
+                    Playlist.folder_id == target_folder,
+                )
+            )
+            if same_name is not None:
+                counts["kept"] += 1
+                continue
+            playlist = Playlist(
+                name=name,
+                kind=Playlist.KIND_CHART,
+                source_issue_id=issue.id,
+                folder_id=target_folder,
+            )
+            session.add(playlist)
+            session.flush()
+            counts["created"] += 1
+        else:
+            for item in list(playlist.items):
+                session.delete(item)
+            session.flush()
+            counts["updated"] += 1
+        for pos, track_id in enumerate(track_ids):
+            session.add(PlaylistItem(playlist_id=playlist.id, track_id=track_id, position=pos))
+        playlist.description = (
+            f"Positions 1-{len(track_ids)} from {chart.name}, {issue.chart_date}"
+        )
+        session.flush()
+    return counts
 
 
 def snapshot_to_playlist(

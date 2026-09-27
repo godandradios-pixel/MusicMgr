@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...db.models import Chart, ChartEntry, ChartFolder, ChartIssue, Track
+from ...db.models import Chart, ChartEntry, ChartFolder, ChartIssue, PlaylistFolder, Track
 from ...services import charts as chart_svc
 from ...services import scanner as scanner_svc
 from ..context import AppContext
@@ -239,6 +239,11 @@ class MatchTrackDialog(QDialog):
         self.accept()
 
 
+class _FolderRow:
+    def __init__(self, id: int, name: str, parent_id: Optional[int]) -> None:
+        self.id, self.name, self.parent_id = id, name, parent_id
+
+
 class ChartsView(BaseView):
     title_text = "Charts"
 
@@ -343,6 +348,10 @@ class ChartsView(BaseView):
         self.queue_btn.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
         self.save_btn = TouchButton("Save as playlist")
         self.save_btn.clicked.connect(self._save_playlist)
+        # 2026-09-27 - every edition of the chart at once, one playlist per
+        # year in decade folders (chart_svc.snapshot_chart_to_folder)
+        self.save_all_btn = TouchButton("Save all as playlists…")
+        self.save_all_btn.clicked.connect(self._save_all_playlists)
         self.rematch_btn = TouchButton("Re-match library")
         self.rematch_btn.clicked.connect(self._rematch)
         # Manually fix (or fill in) one position's match - acts on
@@ -357,7 +366,7 @@ class ChartsView(BaseView):
         self.delete_issue_btn = TouchButton("Delete edition")
         self.delete_issue_btn.clicked.connect(self.delete_selected_issue)
         for b in (
-            self.play_btn, self.queue_btn, self.save_btn, self.rematch_btn,
+            self.play_btn, self.queue_btn, self.save_btn, self.save_all_btn, self.rematch_btn,
             self.fix_match_btn, self.delete_issue_btn,
         ):
             actions.addWidget(b)
@@ -563,6 +572,7 @@ class ChartsView(BaseView):
         self.play_btn.setEnabled(enabled)
         self.queue_btn.setEnabled(enabled)
         self.save_btn.setEnabled(enabled)
+        self.save_all_btn.setEnabled(enabled)
         self.rematch_btn.setEnabled(enabled)
 
     def _load_entries(self) -> None:
@@ -681,6 +691,61 @@ class ChartsView(BaseView):
             name = playlist.name
         self.ctx.playlistsChanged.emit()
         self.ctx.notify(f"Saved playlist “{name}”")
+
+    def _save_all_playlists(self) -> None:
+        """"Save all as playlists…" - asks which playlist folder to put
+        them in (pre-selecting the one whose name matches this chart's own
+        Charts folder, e.g. "Rock", when there's exactly one), confirms the
+        count, then files one playlist per edition under decade folders."""
+        if self._chart_id is None:
+            return
+        with self.ctx.session() as session:
+            chart = session.get(Chart, self._chart_id)
+            if chart is None:
+                return
+            chart_folder = session.get(ChartFolder, chart.folder_id) if chart.folder_id else None
+            label = f"{chart.name} ({chart_folder.name})" if chart_folder else chart.name
+            owned, total = chart_svc.plan_chart_playlists(session, chart.id)
+            folders = [
+                _FolderRow(f.id, f.name, f.parent_id)
+                for f in session.query(PlaylistFolder).all()
+            ]
+            guess = None
+            if chart_folder is not None:
+                same = [f for f in folders if f.name.lower() == chart_folder.name.lower()]
+                guess = same[0].id if len(same) == 1 else None
+        if owned == 0:
+            self.ctx.notify("None of this chart's editions have songs in your library yet")
+            return
+        dialog = FolderPickerDialog(
+            self, folders, guess, title=f"Save “{label}” as playlists in…"
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        target_id = dialog.selected_folder_id()
+        where = next((f.name for f in folders if f.id == target_id), "the top level")
+        skipped = total - owned
+        confirm = QMessageBox.question(
+            self,
+            "Save all as playlists",
+            f"Make {owned} playlist{'s' if owned != 1 else ''} in “{where}”, one per "
+            f"edition, grouped into decade folders (1950-59, …)?"
+            + (f"\n\n{skipped} edition{'s' if skipped != 1 else ''} with no songs in "
+               f"your library will be skipped." if skipped else "")
+            + "\n\nPlaylists this made before are refreshed; any other playlist "
+            "with the same name is left alone.",
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        with self.ctx.session() as session:
+            counts = chart_svc.snapshot_chart_to_folder(session, self._chart_id, target_id)
+        self.ctx.playlistsChanged.emit()
+        parts = [f"{counts['created']} created"]
+        if counts["updated"]:
+            parts.append(f"{counts['updated']} refreshed")
+        if counts["kept"]:
+            parts.append(f"{counts['kept']} already there, left alone")
+        self.ctx.notify(f"Playlists in “{where}”: " + ", ".join(parts))
 
     def delete_selected_issue(self) -> None:
         """Removes just the selected edition - the fix for a single bad
