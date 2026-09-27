@@ -9,10 +9,13 @@
     Steps:
       1. git pull            (stops on conflicts/merge errors - resolve
                                those yourself, then re-run)
-      2. pip install -r requirements-dev.txt   (keeps PyInstaller etc. current;
+      2. asks which version this build is (Enter keeps the current
+         __version__ in musicmgr\__init__.py; type e.g. 1.6.1 to change it).
+         Skipped with -Version, -NoPause, or under GitHub Actions.
+      3. pip install -r requirements-dev.txt   (keeps PyInstaller etc. current;
                                skip with -SkipInstall once your env is set up)
-      3. pyinstaller MusicMgr.spec   ->   dist\MusicMgr.exe   (single file)
-      4. copy dist\MusicMgr.exe to the USB drive (E:\MusicMgr by default),
+      4. pyinstaller MusicMgr.spec   ->   dist\MusicMgr.exe   (single file)
+      5. copy dist\MusicMgr.exe to the USB drive (E:\MusicMgr by default),
          so Install-MusicMgr.bat on the drive always installs the newest
          build. Skipped with a warning if the drive isn't plugged in;
          skip on purpose with -SkipUsb.
@@ -26,6 +29,9 @@
 .PARAMETER Clean
     Delete the build\ and dist\ folders first, forcing a full rebuild
     instead of PyInstaller's incremental cache.
+
+.PARAMETER Version
+    Set __version__ to this (X.Y.Z) without asking.
 
 .PARAMETER UsbPath
     Folder on the USB drive that receives the new MusicMgr.exe.
@@ -47,6 +53,8 @@
     .\build.ps1 -Clean
 .EXAMPLE
     .\build.ps1 -UsbPath F:\MusicMgr
+.EXAMPLE
+    .\build.ps1 -Version 1.6.1
 #>
 
 [CmdletBinding()]
@@ -54,6 +62,7 @@ param(
     [switch]$SkipPull,
     [switch]$SkipInstall,
     [switch]$Clean,
+    [string]$Version,
     [string]$UsbPath = "E:\MusicMgr",
     [switch]$SkipUsb,
     [switch]$NoPause
@@ -92,6 +101,57 @@ try {
     }
     else {
         Write-Step "Skipping git pull (-SkipPull)"
+    }
+
+    # Version for this build. musicmgr\__init__.py's __version__ is the
+    # single source of truth (the updater compares release tags to it and
+    # release.yml refuses a tag that doesn't match), so this edits that
+    # line. Never prompts under CI or with -NoPause - release.yml runs
+    # this script with -SkipPull -NoPause and must build the committed
+    # version as-is.
+    $initPath = Join-Path $RepoRoot "musicmgr\__init__.py"
+    $initText = [System.IO.File]::ReadAllText($initPath)
+    $versionPattern = '(?m)^__version__\s*=\s*"([^"]+)"'
+    $match = [regex]::Match($initText, $versionPattern)
+    if (-not $match.Success) {
+        throw "Couldn't find __version__ in musicmgr\__init__.py"
+    }
+    $currentVersion = $match.Groups[1].Value
+    $newVersion = $currentVersion
+    $interactive = -not ($NoPause -or $env:GITHUB_ACTIONS -or $env:CI)
+
+    if ($Version) {
+        $newVersion = $Version.Trim().TrimStart("v")
+    }
+    elseif ($interactive) {
+        $suggest = $currentVersion
+        if ($currentVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
+            $suggest = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
+        }
+        Write-Step "Version"
+        Write-Host "Current version: $currentVersion"
+        while ($true) {
+            $answer = Read-Host "Version for this build (Enter keeps $currentVersion, or type e.g. $suggest)"
+            $answer = $answer.Trim().TrimStart("v")
+            if (-not $answer) { break }
+            if ($answer -match '^\d+\.\d+\.\d+$') { $newVersion = $answer; break }
+            Write-Host "Use the form X.Y.Z, e.g. $suggest" -ForegroundColor Yellow
+        }
+    }
+
+    if ($newVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "Version '$newVersion' isn't in the form X.Y.Z"
+    }
+    if ($newVersion -ne $currentVersion) {
+        if ([version]$newVersion -lt [version]$currentVersion) {
+            Write-Host "Note: $newVersion is lower than the current $currentVersion" -ForegroundColor Yellow
+        }
+        $updated = [regex]::Replace($initText, $versionPattern, "__version__ = `"$newVersion`"", 1)
+        [System.IO.File]::WriteAllText($initPath, $updated, (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "__version__ set to $newVersion in musicmgr\__init__.py" -ForegroundColor Green
+    }
+    else {
+        Write-Host "Building version $currentVersion"
     }
 
     if (-not $SkipInstall) {
@@ -143,7 +203,7 @@ try {
     }
 
     $size = [math]::Round((Get-Item $exePath).Length / 1MB, 1)
-    Write-Step "Build complete: $exePath ($size MB)"
+    Write-Step "Build complete: $exePath ($size MB) - version $newVersion"
 
     # Step 4: refresh the USB copy. The drive only carries the exe for
     # Install-MusicMgr.bat (MusicMgr never runs from the USB), so this is
@@ -180,6 +240,19 @@ try {
             # the build itself succeeded - report the USB problem but don't fail
             Write-Host "USB copy failed: $_  (dist\MusicMgr.exe is still good)" -ForegroundColor Yellow
         }
+    }
+
+    if ($newVersion -ne $currentVersion) {
+        # the version bump is only on disk - it becomes a release once it's
+        # committed and tagged (release.yml builds from the tag)
+        Write-Host ""
+        Write-Host "Version changed $currentVersion -> $newVersion. To release it:" -ForegroundColor Cyan
+        Write-Host "  git add musicmgr/__init__.py"
+        Write-Host "  git commit -m `"Bump version to $newVersion`""
+        Write-Host "  git push"
+        Write-Host "  git tag v$newVersion"
+        Write-Host "  git push origin v$newVersion"
+        Write-Host "  (then, once CI's draft is up: venv\Scripts\python tools\sign_release.py v$newVersion)"
     }
 }
 catch {
