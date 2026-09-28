@@ -351,9 +351,9 @@ class TestPlaylistImages:
             assert pl.cover_path == str(pc1.data / "artwork" / green_name)
             assert folder.cover_path is None
 
-    def test_chart_playlist_image_waits_for_the_playlist(self, two_pcs, tmp_path):
-        """Chart playlists don't sync themselves - but their image does,
-        and it's held on the drive until that PC has the playlist."""
+    def test_chart_playlist_arrives_with_its_image(self, two_pcs, tmp_path):
+        """Chart playlists sync themselves since 2026-09-28, so the picture
+        comes over in the same sync as the playlist."""
         from musicmgr.services import playlists as pl_svc
 
         pc1, pc2, drive = two_pcs
@@ -367,17 +367,11 @@ class TestPlaylistImages:
             pl_svc.set_playlist_image(s, pl.id, str(red))
             red_name = Path(pl.cover_path).name
         pc1.sync()
-        assert pc2.sync().images_in == 0          # PC2 has no such playlist
-        assert pc2.sync().images_in == 0
-        pc1.sync()                                 # PC1's image survives PC2's syncs
-        with db_session.session_scope() as s:
-            assert Path(s.scalar(select(Playlist)).cover_path).name == red_name
-        pc2.use()
-        with db_session.session_scope() as s:
-            s.add(Playlist(name="Hot 100 1984", kind=Playlist.KIND_CHART))
-        assert pc2.sync().images_in == 1
+        notes = pc2.sync()
+        assert notes.playlists_in == ["Hot 100 1984"] and notes.images_in == 1
         with db_session.session_scope() as s:
             pl = s.scalar(select(Playlist).where(Playlist.name == "Hot 100 1984"))
+            assert pl.kind == Playlist.KIND_CHART
             assert pl.cover_path == str(pc2.data / "artwork" / red_name)
             assert Path(pl.cover_path).is_file()
 
@@ -432,3 +426,112 @@ class TestPlaylistImages:
         with db_session.session_scope() as s:
             assert s.scalar(select(Playlist).where(Playlist.name == "Mix")).cover_path is not None
         assert ls.load_state(path)["images"]
+
+
+# --------------------------------------------------------------------------
+# chart playlists and folders (2026-09-28: "it didn't update Billboard Hot
+# Country folder and playlists" on PC2)
+# --------------------------------------------------------------------------
+
+
+def _chart(s, pc, folder_id, name, rels):
+    pl = Playlist(name=name, kind=Playlist.KIND_CHART, folder_id=folder_id)
+    s.add(pl)
+    s.flush()
+    for pos, rel in enumerate(rels):
+        s.add(PlaylistItem(playlist_id=pl.id, track_id=pc.track(s, rel).id, position=pos))
+    return pl
+
+
+def _tree(s) -> dict[str, list]:
+    """{playlist key: [kind, track titles]} and folder paths, as this PC has them."""
+    out = {}
+    for key, pl in ls._keyed_playlists(s).items():
+        out[key] = [pl.kind, [i.track.title for i in pl.items]]
+    return out
+
+
+class TestChartsAndFolders:
+    def test_chart_folder_tree_travels(self, two_pcs):
+        from musicmgr.services import playlists as pl_svc
+
+        pc1, pc2, drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            country = pl_svc.create_folder(s, "Billboard Hot Country")
+            c80 = pl_svc.create_folder(s, "1980-89", country.id)
+            rock = pl_svc.create_folder(s, "Playback Rock")
+            r80 = pl_svc.create_folder(s, "1980-89", rock.id)
+            pl_svc.create_folder(s, "Empty for now")
+            _chart(s, pc1, c80.id, "1984", [SONGS[2], SONGS[0]])
+            _chart(s, pc1, c80.id, "1985", [SONGS[1]])
+            _chart(s, pc1, r80.id, "1984", [SONGS[0]])     # same name, other folder
+            pl_svc.ensure_builtin_playback_playlists(s)
+            want = _tree(s)
+        assert "Billboard Hot Country/1980-89/1984" in want
+        assert "Playback Rock/1980-89/1984" in want
+        pc1.sync()
+        notes = pc2.sync()
+        assert "Empty for now" in notes.folders_in
+        assert len(notes.playlists_in) == 3
+        with db_session.session_scope() as s:
+            assert _tree(s) == want
+            assert set(ls._folders_by_path(s)) == {
+                "Billboard Hot Country", "Billboard Hot Country/1980-89",
+                "Playback Rock", "Playback Rock/1980-89", "Empty for now"}
+            # the Most Played playlists are each PC's own, built from its plays
+            assert s.scalar(select(Playlist).where(Playlist.kind == Playlist.KIND_PLAYBACK)) is None
+        assert pc1.sync().summary() == "Library data already in sync"
+        assert pc2.sync().summary() == "Library data already in sync"
+
+    def test_folder_deleted_on_one_pc_goes_on_the_other(self, two_pcs):
+        from musicmgr.services import playlists as pl_svc
+
+        pc1, pc2, drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            old = pl_svc.create_folder(s, "Old charts")
+            pl_svc.create_folder(s, "Gone too")
+            _chart(s, pc1, old.id, "1990", [SONGS[0]])
+        pc1.sync()
+        pc2.sync()
+        with db_session.session_scope() as s:              # on PC2
+            for folder in list(s.scalars(select(ls.PlaylistFolder))):
+                pl_svc.delete_folder(s, folder.id)          # contents move up
+        pc2.sync()
+        notes = pc1.sync()
+        assert notes.folders_removed == ["Gone too", "Old charts"]
+        with db_session.session_scope() as s:
+            assert ls._folders_by_path(s) == {}
+            assert list(ls._keyed_playlists(s)) == ["1990"]
+
+    def test_state_from_before_folder_keys_moves_nothing(self, two_pcs):
+        """A drive and base written by the previous MusicMgr (playlists keyed
+        by name, no folders) must not look like deletions."""
+        import gzip
+
+        from musicmgr.services import playlists as pl_svc
+
+        pc1, pc2, drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            fav = pl_svc.create_folder(s, "Favourites")
+            s.add(Playlist(name="Road Trip", kind=Playlist.KIND_MANUAL, folder_id=fav.id))
+            s.add(Playlist(name="Top level", kind=Playlist.KIND_MANUAL))
+        pc1.sync()
+        # rewrite both copies the way the old version wrote them
+        for path in (ls.usb_state_path(drive), ls.base_state_path(drive)):
+            with gzip.open(path, "rt", encoding="utf-8") as fh:
+                data = json.load(fh)
+            data.pop("playlist_keys")
+            data.pop(ls.FOLDERS)
+            data["playlists"] = {v.pop("name"): v for v in data["playlists"].values()}
+            with gzip.open(path, "wt", encoding="utf-8") as fh:
+                json.dump(data, fh)
+        notes = pc1.sync()
+        assert notes.playlists_in == [] and notes.playlists_removed == []
+        with db_session.session_scope() as s:
+            assert set(ls._keyed_playlists(s)) == {"Favourites/Road Trip", "Top level"}
+        assert pc2.sync().playlists_in == ["Favourites/Road Trip", "Top level"]
+        with db_session.session_scope() as s:
+            assert set(ls._keyed_playlists(s)) == {"Favourites/Road Trip", "Top level"}

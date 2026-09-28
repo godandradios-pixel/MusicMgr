@@ -6,7 +6,8 @@ library.db - never the database file itself:
 
 - **plays** (play_events, plus play_count / skip_count / last_played_at)
 - **ratings** (tracks.rating)
-- **playlists** (manual and smart ones, with their folder path)
+- **playlists** (manual, smart and chart ones, with their folder path) and
+  the **playlist folders** themselves (2026-09-28 - see below)
 - **the Jukebox board** (cards, genre chips)
 - **playlist and folder images** chosen with "Choose image…" (2026-09-28;
   rides on the Playlists checkbox). The picture files themselves travel
@@ -32,6 +33,23 @@ How the merge works - the same three-way idea as the file sync:
 - Plays are simply combined (a play is identified by track + start time).
 
 The merged state is written back to the USB and applied here.
+
+2026-09-28 (James: "my Playlists and all the folders are [not] getting
+updated on PC2 ... it didn't update Billboard Hot Country folder and
+playlists"): chart playlists weren't synced at all, and a folder only
+reached another PC as a side effect of a synced playlist inside it - so a
+folder of chart playlists never arrived. Now:
+
+- chart playlists sync with their track lists, like manual ones (the
+  built-in "Most Played" playback playlists still don't: each PC rebuilds
+  them from its plays, which do sync);
+- a playlist's key is its folder path plus its name
+  (`Billboard Hot Country/1980-89/1984`), since "Save all as playlists"
+  made hundreds of year-named playlists that only differ by folder. A
+  top-level playlist's key is just its name, as before. States written
+  before this (no `playlist_keys` marker) are re-keyed when loaded;
+- folders are their own three-way set: created where missing, and removed
+  once the other PC deleted one and it's empty here.
 """
 
 from __future__ import annotations
@@ -43,6 +61,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -83,7 +102,16 @@ PREF_PREFIX = "sync_state_"
 #: a play counts towards play_count like the player's own rule of thumb
 COUNTED_MS = 30_000
 
-SYNCED_PLAYLIST_KINDS = (Playlist.KIND_MANUAL, Playlist.KIND_SMART)
+SYNCED_PLAYLIST_KINDS = (Playlist.KIND_MANUAL, Playlist.KIND_SMART, Playlist.KIND_CHART)
+#: kinds whose track list is stored (a smart playlist's comes from its rules)
+ITEM_KINDS = (Playlist.KIND_MANUAL, Playlist.KIND_CHART)
+
+#: playlist folders (2026-09-28) - like images, rides on the Playlists
+#: checkbox: `{folder path: True}`, merged three-way
+FOLDERS = "folders"
+#: states from before 2026-09-28 keyed playlists by name alone
+PLAYLIST_KEYS = 2
+_DUP_SUFFIX = re.compile(r" #\d+$")
 
 #: playlist/folder tile images (2026-09-28) - not a checkbox of its own:
 #: synced whenever Playlists is
@@ -182,6 +210,47 @@ def _folder_path(folder: Optional[PlaylistFolder]) -> str:
     return "/".join(reversed(parts))
 
 
+def _pl_key(folder_path: str, name: str) -> str:
+    """A playlist's portable key: folder path plus name. Same folder and
+    name twice get " #2", " #3" in database order."""
+    return f"{folder_path}/{name}" if folder_path else name
+
+
+def _dedupe(key: str, taken) -> str:
+    unique, n = key, 2
+    while unique in taken:
+        unique = f"{key} #{n}"
+        n += 1
+    return unique
+
+
+def _keyed_playlists(db: Session) -> dict[str, Playlist]:
+    keyed: dict[str, Playlist] = {}
+    for pl in db.scalars(
+        select(Playlist).where(Playlist.kind.in_(SYNCED_PLAYLIST_KINDS)).order_by(Playlist.id)
+    ):
+        keyed[_dedupe(_pl_key(_folder_path(pl.folder), pl.name), keyed)] = pl
+    return keyed
+
+
+def _folders_by_path(db: Session) -> dict[str, PlaylistFolder]:
+    folders: dict[str, PlaylistFolder] = {}
+    for folder in db.scalars(select(PlaylistFolder).order_by(PlaylistFolder.id)):
+        folders.setdefault(_folder_path(folder), folder)
+    return folders
+
+
+def _rekey_playlists(old: dict) -> dict:
+    """A pre-2026-09-28 state's playlists (keyed by name, " #2" for
+    duplicates) keyed the current way."""
+    new: dict[str, dict] = {}
+    for key, value in old.items():
+        value = dict(value)
+        value.setdefault("name", _DUP_SUFFIX.sub("", key))
+        new[_dedupe(_pl_key(value.get("folder") or "", value["name"]), new)] = value
+    return new
+
+
 def _board_value(db: Session, idx: TrackIndex) -> dict:
     cards = []
     for slot in db.scalars(select(JukeboxSlot).order_by(JukeboxSlot.slot_number)):
@@ -214,22 +283,16 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
             ratings[key] = rating
 
     playlists: dict[str, dict] = {}
-    for pl in db.scalars(
-        select(Playlist).where(Playlist.kind.in_(SYNCED_PLAYLIST_KINDS)).order_by(Playlist.id)
-    ):
-        name = pl.name
-        n = 2
-        while name in playlists:          # duplicate names stay distinct
-            name = f"{pl.name} #{n}"
-            n += 1
-        playlists[name] = {
+    for key, pl in _keyed_playlists(db).items():
+        playlists[key] = {
+            "name": pl.name,
             "kind": pl.kind,
             "folder": _folder_path(pl.folder),
             "description": pl.description,
             "rules": pl.rules,
             "pinned": bool(pl.is_pinned),
             "tracks": [idx.key_of.get(i.track_id) for i in pl.items if idx.key_of.get(i.track_id)]
-            if pl.kind == Playlist.KIND_MANUAL else [],
+            if pl.kind in ITEM_KINDS else [],
             "updated_at": _iso(pl.updated_at),
         }
 
@@ -262,7 +325,7 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
     board["changed_at"] = changed
 
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
-            IMAGES: read_images(db)}
+            IMAGES: read_images(db), FOLDERS: {path: True for path in _folders_by_path(db)}}
 
 
 # --------------------------------------------------------------------------
@@ -372,7 +435,7 @@ def _set(db: Session, key: str, value: str) -> None:
 
 def empty_state() -> dict:
     return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": [],
-            IMAGES: {}, "images_unplaced": []}
+            IMAGES: {}, "images_unplaced": [], FOLDERS: {}}
 
 
 def load_state(path: Path) -> Optional[dict]:
@@ -390,6 +453,11 @@ def load_state(path: Path) -> Optional[dict]:
         # written before 2026-09-28 (or by an older MusicMgr on another PC):
         # "no images" there means "not carried", not "all removed"
         state[IMAGES] = None
+    if FOLDERS not in data:
+        # likewise for folders (2026-09-28)
+        state[FOLDERS] = None
+    if data.get("playlist_keys") != PLAYLIST_KEYS:
+        state["playlists"] = _rekey_playlists(state["playlists"] or {})
     return state
 
 
@@ -400,6 +468,7 @@ def save_state(path: Path, state: dict, pc_id: str) -> None:
         if key in data and not data[key]:
             data.pop(key)
     data["format"] = FORMAT
+    data["playlist_keys"] = PLAYLIST_KEYS
     data["saved"] = _iso(_now())
     data["saved_by"] = pc_id
     tmp = path.with_name(path.name + ".mmsync-tmp")
@@ -432,6 +501,8 @@ class MergeNotes:
     lost_board: Optional[dict] = None
     unresolved_tracks: int = 0
     images_in: int = 0
+    folders_in: list[str] = field(default_factory=list)
+    folders_removed: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         parts = []
@@ -445,6 +516,12 @@ class MergeNotes:
         if self.playlists_removed:
             n = len(self.playlists_removed)
             parts.append(f"{n} playlist{'s' if n != 1 else ''} removed")
+        if self.folders_in:
+            n = len(self.folders_in)
+            parts.append(f"{n} folder{'s' if n != 1 else ''} added")
+        if self.folders_removed:
+            n = len(self.folders_removed)
+            parts.append(f"{n} folder{'s' if n != 1 else ''} removed")
         if self.images_in:
             n = self.images_in
             parts.append(f"{n} playlist image{'s' if n != 1 else ''} updated")
@@ -553,8 +630,14 @@ def merge(local: dict, usb: dict, base: dict) -> tuple[dict, MergeNotes]:
     # both -> this PC's
     images, _ = _merge_dict(local.get(IMAGES) or {}, usb.get(IMAGES) or {}, base.get(IMAGES) or {})
 
+    # playlist folders: three-way set
+    folders, taken_f = _merge_dict(local.get(FOLDERS) or {}, usb.get(FOLDERS) or {},
+                                   base.get(FOLDERS) or {})
+    notes.folders_in = sorted(f for f in taken_f if f not in (local.get(FOLDERS) or {}))
+    notes.folders_removed = sorted(f for f in (local.get(FOLDERS) or {}) if f not in folders)
+
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
-            IMAGES: images}, notes
+            IMAGES: images, FOLDERS: folders}, notes
 
 
 # --------------------------------------------------------------------------
@@ -596,34 +679,32 @@ def apply_state(db: Session, idx: TrackIndex, local: dict, merged: dict, notes: 
             if track is not None:
                 track.rating = None
 
-    # playlists (by display name; "#2" suffixes map to later duplicates)
-    by_name: dict[str, Playlist] = {}
-    for pl in db.scalars(
-        select(Playlist).where(Playlist.kind.in_(SYNCED_PLAYLIST_KINDS)).order_by(Playlist.id)
-    ):
-        name, n = pl.name, 2
-        while name in by_name:
-            name = f"{pl.name} #{n}"
-            n += 1
-        by_name[name] = pl
-    for name in notes.playlists_removed:
-        pl = by_name.get(name)
+    # folders that arrived (playlists below create their own too)
+    for path in notes.folders_in:
+        _ensure_folder(db, path)
+
+    # playlists (by folder path + name; see _keyed_playlists)
+    by_key = _keyed_playlists(db)
+    for key in notes.playlists_removed:
+        pl = by_key.get(key)
         if pl is not None:
             db.delete(pl)
-    for name in notes.playlists_in:
-        value = merged["playlists"][name]
-        pl = by_name.get(name)
-        base_name = name.split(" #")[0] if name not in by_name and " #" in name else name
+    for key in notes.playlists_in:
+        value = merged["playlists"][key]
+        pl = by_key.get(key)
         if pl is None:
-            pl = Playlist(name=base_name, kind=value.get("kind") or Playlist.KIND_MANUAL)
+            name = value.get("name") or _DUP_SUFFIX.sub("", key.rsplit("/", 1)[-1])
+            pl = Playlist(name=name, kind=value.get("kind") or Playlist.KIND_MANUAL)
             db.add(pl)
             db.flush()
+        elif value.get("name"):
+            pl.name = value["name"]
         pl.kind = value.get("kind") or pl.kind
         pl.description = value.get("description")
         pl.rules = value.get("rules")
         pl.is_pinned = bool(value.get("pinned"))
         pl.folder_id = _ensure_folder(db, value.get("folder") or "")
-        if pl.kind == Playlist.KIND_MANUAL:
+        if pl.kind in ITEM_KINDS:
             db.execute(delete(PlaylistItem).where(PlaylistItem.playlist_id == pl.id))
             pos = 0
             for key in value.get("tracks") or []:
@@ -634,6 +715,23 @@ def apply_state(db: Session, idx: TrackIndex, local: dict, merged: dict, notes: 
                 db.add(PlaylistItem(playlist_id=pl.id, track_id=tid, position=pos))
                 pos += 1
     db.flush()
+
+    # folders another PC deleted: its playlists have moved out by now (they
+    # travel with their new folder path), so remove the ones left empty -
+    # deepest first, so a parent empties once its children are gone. One
+    # that still holds something here is kept rather than losing it.
+    for path in sorted(notes.folders_removed, key=lambda p: p.count("/"), reverse=True):
+        folder = _folders_by_path(db).get(path)
+        if folder is None:
+            continue
+        busy = db.scalar(select(func.count()).select_from(Playlist)
+                         .where(Playlist.folder_id == folder.id)) or db.scalar(
+            select(func.count()).select_from(PlaylistFolder)
+            .where(PlaylistFolder.parent_id == folder.id))
+        if busy:
+            continue
+        db.delete(folder)
+        db.flush()
 
     # plays (only the ones this PC can place count as added)
     notes.plays_in = 0
@@ -733,7 +831,7 @@ def carry_unresolved(local: dict, base: dict, idx: TrackIndex) -> None:
     # playlist track lists: re-insert foreign keys after the key they followed
     for name, pl in local["playlists"].items():
         old = base["playlists"].get(name)
-        if not old or pl.get("kind") != Playlist.KIND_MANUAL:
+        if not old or pl.get("kind") not in ITEM_KINDS:
             continue
         old_tracks = old.get("tracks") or []
         if not any(foreign(k) for k in old_tracks):
@@ -818,6 +916,14 @@ def set_category_enabled(db: Session, category: str, enabled: bool) -> None:
     _set(db, PREF_PREFIX + category, "1" if enabled else "0")
 
 
+#: not checkboxes of their own - synced whenever Playlists is
+_WITH_PLAYLISTS = (IMAGES, FOLDERS)
+
+
+def _included(cat: str, include: frozenset) -> bool:
+    return cat in include or (cat in _WITH_PLAYLISTS and PLAYLISTS in include)
+
+
 def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[SyncPair]] = None,
                        include: Optional[frozenset] = None) -> MergeNotes:
     """Merge this library with the drive's state, apply it here, and write
@@ -841,9 +947,14 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     if usb[IMAGES] is None:
         # the drive was last written by a MusicMgr that doesn't carry images
         usb[IMAGES] = copy.deepcopy(base[IMAGES])
+    if base[FOLDERS] is None:
+        base[FOLDERS] = {}
+    if usb[FOLDERS] is None:
+        # ...or folders: nothing there counts as removed
+        usb[FOLDERS] = copy.deepcopy(base[FOLDERS])
     original_base = dict(base)
-    for cat in CATEGORIES + (IMAGES,):
-        if cat not in include and not (cat == IMAGES and PLAYLISTS in include):
+    for cat in CATEGORIES + _WITH_PLAYLISTS:
+        if not _included(cat, include):
             # look exactly like the drive, so nothing moves either way
             local[cat] = copy.deepcopy(usb[cat])
             base[cat] = copy.deepcopy(usb[cat])
@@ -856,6 +967,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         notes.board_in = False
     if PLAYLISTS not in include:
         notes.playlists_in = []
+        notes.folders_in = []
+        notes.folders_removed = []
     apply_state(db, idx, local, merged, notes, include)
     if PLAYLISTS in include:
         # after apply_state, so playlists/folders that just arrived get theirs
@@ -873,8 +986,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     # (plays for tracks this PC doesn't have stay in it for the others)
     save_state(usb_state_path(drive), merged, pc_id)
     base_copy = dict(merged)
-    for cat in CATEGORIES + (IMAGES,):
-        if cat not in include and not (cat == IMAGES and PLAYLISTS in include):
+    for cat in CATEGORIES + _WITH_PLAYLISTS:
+        if not _included(cat, include):
             base_copy[cat] = original_base[cat]
     targets = _image_targets(db)
     base_copy["images_unplaced"] = sorted(k for k in base_copy[IMAGES] or {} if k not in targets)
