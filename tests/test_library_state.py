@@ -270,3 +270,165 @@ class TestChoices:
             ls.set_category_enabled(s, ls.JUKEBOX, True)
         notes = pc2.sync()       # both boards changed since PC2's base -> newer (PC2) wins
         assert notes.board_conflict == "this PC's (newer)"
+
+
+# --------------------------------------------------------------------------
+# playlist / folder images (2026-09-28)
+# --------------------------------------------------------------------------
+
+
+def _picture(tmp: Path, name: str, color: str) -> Path:
+    from PySide6.QtGui import QColor, QImage
+
+    img = QImage(8, 8, QImage.Format_RGB32)
+    img.fill(QColor(color))
+    path = tmp / name
+    img.save(str(path))
+    return path
+
+
+def _artwork_travels(*pcs) -> None:
+    """The artwork folder only syncs once a PC's pictures are renamed."""
+    from musicmgr.services import artwork_names
+
+    for pc in pcs:
+        pc.use()
+        (pc.data / "artwork").mkdir(parents=True, exist_ok=True)
+        (pc.data / "artists").mkdir(parents=True, exist_ok=True)
+        with db_session.session_scope() as s:
+            artwork_names._mark_done(s)
+
+
+class TestPlaylistImages:
+    def test_playlist_and_folder_images_travel(self, two_pcs, tmp_path):
+        from musicmgr.db.models import PlaylistFolder
+        from musicmgr.services import playlists as pl_svc
+
+        pc1, pc2, drive = two_pcs
+        _artwork_travels(pc1, pc2)
+        red = _picture(tmp_path, "red.png", "red")
+        blue = _picture(tmp_path, "blue.png", "blue")
+        pc1.use()
+        with db_session.session_scope() as s:
+            folder = PlaylistFolder(name="Road")
+            s.add(folder)
+            s.flush()
+            pl = Playlist(name="Road Trip", kind=Playlist.KIND_MANUAL, folder_id=folder.id)
+            s.add(pl)
+            s.flush()
+            pl_svc.set_playlist_image(s, pl.id, str(red))
+            pl_svc.set_folder_image(s, folder.id, str(blue))
+            red_name = Path(pl.cover_path).name
+            blue_name = Path(folder.cover_path).name
+        pc1.sync()
+        notes = pc2.sync()
+        assert notes.images_in == 2
+        assert "2 playlist images updated" in notes.summary()
+        with db_session.session_scope() as s:
+            pl = s.scalar(select(Playlist).where(Playlist.name == "Road Trip"))
+            folder = s.scalar(select(PlaylistFolder).where(PlaylistFolder.name == "Road"))
+            assert pl.cover_path == str(pc2.data / "artwork" / red_name)
+            assert folder.cover_path == str(pc2.data / "artwork" / blue_name)
+            assert Path(pl.cover_path).is_file() and Path(folder.cover_path).is_file()
+        # quiet afterwards
+        assert pc1.sync().images_in == 0
+        assert pc2.sync().images_in == 0
+
+        # changed on PC2, cleared on PC2 -> back on PC1
+        green = _picture(tmp_path, "green.png", "green")
+        pc2.use()
+        with db_session.session_scope() as s:
+            pl = s.scalar(select(Playlist).where(Playlist.name == "Road Trip"))
+            folder = s.scalar(select(PlaylistFolder).where(PlaylistFolder.name == "Road"))
+            pl_svc.set_playlist_image(s, pl.id, str(green))
+            pl_svc.set_folder_image(s, folder.id, None)
+            green_name = Path(pl.cover_path).name
+        pc2.sync()
+        assert pc1.sync().images_in == 2
+        with db_session.session_scope() as s:
+            pl = s.scalar(select(Playlist).where(Playlist.name == "Road Trip"))
+            folder = s.scalar(select(PlaylistFolder).where(PlaylistFolder.name == "Road"))
+            assert pl.cover_path == str(pc1.data / "artwork" / green_name)
+            assert folder.cover_path is None
+
+    def test_chart_playlist_image_waits_for_the_playlist(self, two_pcs, tmp_path):
+        """Chart playlists don't sync themselves - but their image does,
+        and it's held on the drive until that PC has the playlist."""
+        from musicmgr.services import playlists as pl_svc
+
+        pc1, pc2, drive = two_pcs
+        _artwork_travels(pc1, pc2)
+        red = _picture(tmp_path, "red.png", "red")
+        pc1.use()
+        with db_session.session_scope() as s:
+            pl = Playlist(name="Hot 100 1984", kind=Playlist.KIND_CHART)
+            s.add(pl)
+            s.flush()
+            pl_svc.set_playlist_image(s, pl.id, str(red))
+            red_name = Path(pl.cover_path).name
+        pc1.sync()
+        assert pc2.sync().images_in == 0          # PC2 has no such playlist
+        assert pc2.sync().images_in == 0
+        pc1.sync()                                 # PC1's image survives PC2's syncs
+        with db_session.session_scope() as s:
+            assert Path(s.scalar(select(Playlist)).cover_path).name == red_name
+        pc2.use()
+        with db_session.session_scope() as s:
+            s.add(Playlist(name="Hot 100 1984", kind=Playlist.KIND_CHART))
+        assert pc2.sync().images_in == 1
+        with db_session.session_scope() as s:
+            pl = s.scalar(select(Playlist).where(Playlist.name == "Hot 100 1984"))
+            assert pl.cover_path == str(pc2.data / "artwork" / red_name)
+            assert Path(pl.cover_path).is_file()
+
+    def test_playlists_off_leaves_images_alone(self, two_pcs, tmp_path):
+        from musicmgr.services import playlists as pl_svc
+
+        pc1, pc2, drive = two_pcs
+        _artwork_travels(pc1, pc2)
+        for pc in (pc1, pc2):
+            pc.use()
+            with db_session.session_scope() as s:
+                s.add(Playlist(name="Mix", kind=Playlist.KIND_MANUAL))
+            pc.sync()
+        red = _picture(tmp_path, "red.png", "red")
+        pc1.use()
+        with db_session.session_scope() as s:
+            pl = s.scalar(select(Playlist).where(Playlist.name == "Mix"))
+            pl_svc.set_playlist_image(s, pl.id, str(red))
+        pc1.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            ls.set_category_enabled(s, ls.PLAYLISTS, False)
+        assert pc2.sync().images_in == 0
+        with db_session.session_scope() as s:
+            assert s.scalar(select(Playlist).where(Playlist.name == "Mix")).cover_path is None
+            ls.set_category_enabled(s, ls.PLAYLISTS, True)
+        assert pc2.sync().images_in == 1
+
+    def test_drive_from_an_older_musicmgr_removes_nothing(self, two_pcs, tmp_path):
+        import gzip
+
+        from musicmgr.services import playlists as pl_svc
+
+        pc1, pc2, drive = two_pcs
+        _artwork_travels(pc1, pc2)
+        red = _picture(tmp_path, "red.png", "red")
+        pc1.use()
+        with db_session.session_scope() as s:
+            pl = Playlist(name="Mix", kind=Playlist.KIND_MANUAL)
+            s.add(pl)
+            s.flush()
+            pl_svc.set_playlist_image(s, pl.id, str(red))
+        pc1.sync()
+        # another PC on an older version rewrites the drive without images
+        path = ls.usb_state_path(drive)
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+        data.pop("images")
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        pc1.sync()
+        with db_session.session_scope() as s:
+            assert s.scalar(select(Playlist).where(Playlist.name == "Mix")).cover_path is not None
+        assert ls.load_state(path)["images"]

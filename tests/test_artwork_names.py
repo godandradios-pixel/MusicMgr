@@ -271,3 +271,17 @@ class TestSameNameDifferentAlbums:
             # a relink after a sync must not pull r2 back to the plain name
             an.relink(s)
             assert Path(r2.cover_path).name == "Various Artists - Greatest Hits (1975).jpg"
+
+
+def test_playlist_tile_images_are_never_set_aside(tmp_path):
+    """2026-09-28: playlist_<sha1>.jpg files belong to playlists/folders,
+    not releases - the unused sweep must leave them for the USB sync."""
+    from musicmgr.services import artwork_names as an
+
+    (tmp_path / "playlist_0123456789abcdef.jpg").write_bytes(b"x")
+    (tmp_path / "Nobody - Nothing.jpg").write_bytes(b"x")
+    result = an.MigrationResult()
+    an._set_aside_unused(tmp_path, set(), set(), result)
+    assert (tmp_path / "playlist_0123456789abcdef.jpg").is_file()
+    assert not (tmp_path / "Nobody - Nothing.jpg").exists()
+    assert result.unused == 1

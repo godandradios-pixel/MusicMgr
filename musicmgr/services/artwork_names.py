@@ -566,6 +566,10 @@ def _set_aside_unused(folder: Path, in_use: set[str], wanted_keys: set[str],
             continue
         if entry.name.casefold() in in_use:
             continue
+        if entry.name.casefold().startswith("playlist_"):
+            # a playlist/folder tile image ("Choose image…", 2026-09-26):
+            # travels with the artwork folder, never set aside
+            continue
         if lookup_key(Path(entry.name).stem) in wanted_keys:
             continue
         _set_aside(Path(entry.path), UNUSED_DIR)

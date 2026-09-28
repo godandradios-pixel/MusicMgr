@@ -1082,6 +1082,10 @@ class SettingsView(BaseView):
             (library_state.JUKEBOX, "Jukebox"),
         ):
             cb = QCheckBox(text)
+            if cat == library_state.PLAYLISTS:
+                # 2026-09-28: chosen playlist/folder images ride on this one
+                cb.setToolTip("Manual and smart playlists, plus the images chosen for any "
+                              "playlist or folder")
             cb.toggled.connect(lambda on, cat=cat: self._save_usb_data_choice(cat, on))
             self.usb_data_cbs[cat] = cb
             data_row.addWidget(cb)

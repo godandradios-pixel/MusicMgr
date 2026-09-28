@@ -8,6 +8,10 @@ library.db - never the database file itself:
 - **ratings** (tracks.rating)
 - **playlists** (manual and smart ones, with their folder path)
 - **the Jukebox board** (cards, genre chips)
+- **playlist and folder images** chosen with "Choose image…" (2026-09-28;
+  rides on the Playlists checkbox). The picture files themselves travel
+  with the artwork folder; this carries which playlist/folder uses which
+  file, for every kind of playlist - chart and playback ones too
 
 Everything is keyed by names and paths, never by database ids (ids differ
 on every PC). A track's key is its path inside a synced folder, as the
@@ -80,6 +84,12 @@ PREF_PREFIX = "sync_state_"
 COUNTED_MS = 30_000
 
 SYNCED_PLAYLIST_KINDS = (Playlist.KIND_MANUAL, Playlist.KIND_SMART)
+
+#: playlist/folder tile images (2026-09-28) - not a checkbox of its own:
+#: synced whenever Playlists is
+IMAGES = "images"
+_IMAGE_PREFIX_PL = "playlist:"
+_IMAGE_PREFIX_FOLDER = "folder:"
 
 
 def _now() -> dt.datetime:
@@ -251,7 +261,99 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
         changed = changed_row.value if changed_row else _iso(_now())
     board["changed_at"] = changed
 
-    return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board}
+    return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
+            IMAGES: read_images(db)}
+
+
+# --------------------------------------------------------------------------
+# playlist / folder images (2026-09-28)
+# --------------------------------------------------------------------------
+
+
+def _playlist_image_key(folder_path: str, name: str) -> str:
+    return f"{_IMAGE_PREFIX_PL}{folder_path}|{name}"
+
+
+def _folder_image_key(folder_path: str) -> str:
+    return f"{_IMAGE_PREFIX_FOLDER}{folder_path}"
+
+
+def _image_targets(db: Session) -> dict[str, object]:
+    """Every playlist and folder this library has, by portable key. The
+    first playlist wins when two share a folder and name."""
+    targets: dict[str, object] = {}
+    for folder in db.scalars(select(PlaylistFolder).order_by(PlaylistFolder.id)):
+        targets.setdefault(_folder_image_key(_folder_path(folder)), folder)
+    for pl in db.scalars(select(Playlist).order_by(Playlist.id)):
+        targets.setdefault(_playlist_image_key(_folder_path(pl.folder), pl.name), pl)
+    return targets
+
+
+def _image_name(cover_path: Optional[str]) -> Optional[str]:
+    """A chosen tile image as it travels: just the file name inside the
+    artwork folder (`playlist_<sha1>.jpg`). Pictures kept anywhere else
+    can't reach the other PCs, so they aren't offered."""
+    if not cover_path:
+        return None
+    name = Path(cover_path.replace("\\", "/")).name
+    if not name or Path(name).suffix.lower() not in config.IMAGE_EXTENSIONS:
+        return None
+    if (config.ART_DIR / name).is_file():
+        return name
+    # set by a sync whose picture hasn't arrived yet (the artwork folder
+    # only travels once this PC's pictures are renamed) - still chosen
+    parent = os.path.normcase(str(Path(cover_path).parent))
+    if parent == os.path.normcase(str(config.ART_DIR)):
+        return name
+    return None
+
+
+def read_images(db: Session) -> dict[str, str]:
+    images: dict[str, str] = {}
+    for key, target in _image_targets(db).items():
+        name = _image_name(getattr(target, "cover_path", None))
+        if name:
+            images[key] = name
+    return images
+
+
+def carry_images(local: dict, base: dict, targets: dict) -> set[str]:
+    """Images for playlists/folders this PC doesn't have (a chart playlist
+    only one PC saved, say) - or didn't have at the last sync - must not
+    look like local removals. Put them back as the base had them. Returns
+    the keys whose playlist/folder has turned up since, so they get set."""
+    was_missing = set(base.get("images_unplaced") or [])
+    arrived = set()
+    for key, value in (base.get(IMAGES) or {}).items():
+        if key in local[IMAGES]:
+            continue
+        if key not in targets:
+            local[IMAGES][key] = value
+        elif key in was_missing:
+            local[IMAGES][key] = value
+            arrived.add(key)
+    return arrived
+
+
+def apply_images(db: Session, merged: dict, local: dict, notes: "MergeNotes",
+                 arrived: set[str] = frozenset()) -> None:
+    targets = _image_targets(db)
+    want = merged.get(IMAGES) or {}
+    have = local.get(IMAGES) or {}
+    for key in set(want) | set(have) | set(arrived):
+        target = targets.get(key)
+        if target is None:
+            continue
+        name = want.get(key)
+        if key not in arrived and name == have.get(key):
+            continue
+        if name == _image_name(target.cover_path) and name is not None:
+            continue
+        if name is None and target.cover_path is None:
+            continue
+        target.cover_path = str(config.ART_DIR / name) if name else None
+        notes.images_in += 1
+    db.flush()
 
 
 def _set(db: Session, key: str, value: str) -> None:
@@ -269,7 +371,8 @@ def _set(db: Session, key: str, value: str) -> None:
 
 
 def empty_state() -> dict:
-    return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": []}
+    return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": [],
+            IMAGES: {}, "images_unplaced": []}
 
 
 def load_state(path: Path) -> Optional[dict]:
@@ -283,14 +386,19 @@ def load_state(path: Path) -> Optional[dict]:
         return None
     state = empty_state()
     state.update({k: data.get(k, state[k]) for k in state})
+    if IMAGES not in data:
+        # written before 2026-09-28 (or by an older MusicMgr on another PC):
+        # "no images" there means "not carried", not "all removed"
+        state[IMAGES] = None
     return state
 
 
 def save_state(path: Path, state: dict, pc_id: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = dict(state)
-    if "unresolved" in data and not data["unresolved"]:
-        data.pop("unresolved")
+    for key in ("unresolved", "images_unplaced"):
+        if key in data and not data[key]:
+            data.pop(key)
     data["format"] = FORMAT
     data["saved"] = _iso(_now())
     data["saved_by"] = pc_id
@@ -323,6 +431,7 @@ class MergeNotes:
     board_conflict: Optional[str] = None      # which side won
     lost_board: Optional[dict] = None
     unresolved_tracks: int = 0
+    images_in: int = 0
 
     def summary(self) -> str:
         parts = []
@@ -336,6 +445,9 @@ class MergeNotes:
         if self.playlists_removed:
             n = len(self.playlists_removed)
             parts.append(f"{n} playlist{'s' if n != 1 else ''} removed")
+        if self.images_in:
+            n = self.images_in
+            parts.append(f"{n} playlist image{'s' if n != 1 else ''} updated")
         if self.board_in:
             parts.append("Jukebox updated")
         if self.board_conflict:
@@ -437,7 +549,12 @@ def merge(local: dict, usb: dict, base: dict) -> tuple[dict, MergeNotes]:
         notes.board_conflict = "the USB's (newer)" if from_usb else "this PC's (newer)"
         notes.lost_board = lb if from_usb else ub
 
-    return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board}, notes
+    # playlist/folder images: three-way per playlist or folder; changed on
+    # both -> this PC's
+    images, _ = _merge_dict(local.get(IMAGES) or {}, usb.get(IMAGES) or {}, base.get(IMAGES) or {})
+
+    return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
+            IMAGES: images}, notes
 
 
 # --------------------------------------------------------------------------
@@ -719,13 +836,20 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     local = read_local(db, idx)
     usb = load_state(usb_state_path(drive)) or empty_state()
     base = load_state(base_state_path(drive)) or empty_state()
+    if base[IMAGES] is None:
+        base[IMAGES] = {}
+    if usb[IMAGES] is None:
+        # the drive was last written by a MusicMgr that doesn't carry images
+        usb[IMAGES] = copy.deepcopy(base[IMAGES])
     original_base = dict(base)
-    for cat in CATEGORIES:
-        if cat not in include:
+    for cat in CATEGORIES + (IMAGES,):
+        if cat not in include and not (cat == IMAGES and PLAYLISTS in include):
             # look exactly like the drive, so nothing moves either way
             local[cat] = copy.deepcopy(usb[cat])
             base[cat] = copy.deepcopy(usb[cat])
     carry_unresolved(local, base, idx)
+    targets = _image_targets(db)
+    arrived = carry_images(local, base, targets) if PLAYLISTS in include else set()
     merged, notes = merge(local, usb, base)
     revive(merged, base, idx, notes)
     if JUKEBOX not in include:
@@ -733,6 +857,9 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     if PLAYLISTS not in include:
         notes.playlists_in = []
     apply_state(db, idx, local, merged, notes, include)
+    if PLAYLISTS in include:
+        # after apply_state, so playlists/folders that just arrived get theirs
+        apply_images(db, merged, local, notes, arrived)
     if notes.lost_board is not None:
         from .usb_sync import usb_deleted_dir
 
@@ -746,9 +873,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     # (plays for tracks this PC doesn't have stay in it for the others)
     save_state(usb_state_path(drive), merged, pc_id)
     base_copy = dict(merged)
-    for cat in CATEGORIES:
-        if cat not in include:
+    for cat in CATEGORIES + (IMAGES,):
+        if cat not in include and not (cat == IMAGES and PLAYLISTS in include):
             base_copy[cat] = original_base[cat]
+    targets = _image_targets(db)
+    base_copy["images_unplaced"] = sorted(k for k in base_copy[IMAGES] or {} if k not in targets)
     base_copy["unresolved"] = sorted(k for k in _referenced_keys(merged) if not _resolvable(idx, k))
     save_state(base_state_path(drive), base_copy, pc_id)
     return notes
