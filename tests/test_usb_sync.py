@@ -207,6 +207,26 @@ class TestCaseRename:
         (item,) = p.items
         assert item.kind == RENAME and item.direction == TO_USB and item.rel == "AC-DC/song.mp3"
 
+    def test_drive_names_match_ignoring_case_on_linux_too(self, tmp_path, monkeypatch):
+        """2026-09-28: Mint offered to upload `Ace.jpg` next to the drive's
+        `ACE.jpg`. The drive (exFAT) ignores case on every OS."""
+        import unicodedata
+
+        monkeypatch.setattr(us, "CASE_INSENSITIVE", False)
+        L = {"Ace.jpg": st(5, 10), "Stars On 45.jpg": st(7, 10), "Devo.jpg": st(3, 10)}
+        U = {"ACE.jpg": st(5, 10), "Stars on 45.jpg": st(7, 10), "DEVO.jpg": st(4, 20)}
+        p = us.compare(tmp_path, tmp_path, L, U, {})
+        kinds = sorted((i.kind, i.rel, i.direction) for i in p.items)
+        # same file, other capitals: renamed to this PC's spelling, not copied;
+        # different contents: one conflict, never two separate copies
+        assert kinds == sorted([(RENAME, "Ace.jpg", TO_USB), (RENAME, "Stars On 45.jpg", TO_USB),
+                                (CONFLICT, "Devo.jpg", TO_LOCAL)])
+        # accents stored decomposed on one side are the same name
+        nfd = unicodedata.normalize("NFD", "Café/Song.mp3")
+        p = us.compare(tmp_path, tmp_path, {"Café/Song.mp3": st(1, 10)}, {nfd: st(1, 10)},
+                       {"Café/Song.mp3": st(1, 10)})
+        assert all(i.kind != COPY for i in p.items)
+
 
 class TestWalk:
     def test_skips_junk_and_collects_temp_files(self, tmp_path):

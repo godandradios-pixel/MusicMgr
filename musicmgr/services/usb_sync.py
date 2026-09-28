@@ -42,6 +42,7 @@ import hashlib
 import json
 import logging
 import os
+import unicodedata
 import shutil
 import sys
 import uuid
@@ -92,6 +93,19 @@ CASE_INSENSITIVE = os.name == "nt"
 
 def _fold(rel: str) -> str:
     return rel.casefold() if CASE_INSENSITIVE else rel
+
+
+def _name_key(rel: str) -> str:
+    """How a file inside a pair is matched between this PC and the drive.
+
+    The drive is FAT/exFAT, which ignores case on every OS, so `Ace.jpg`
+    here and `ACE.jpg` there are one file even on Linux - and accented
+    names can be stored composed or decomposed (NFC/NFD). 2026-09-28:
+    Mint compared case-sensitively and offered to upload 14 artist
+    pictures that were already on the drive under other capitals.
+    (Two files here that differ only in case can't both live on the
+    drive anyway.)"""
+    return unicodedata.normalize("NFC", rel).casefold()
 
 
 def _now() -> dt.datetime:
@@ -556,7 +570,7 @@ class ComparePlan:
 
 
 def _index(files: dict[str, FileStat]) -> dict[str, tuple[str, FileStat]]:
-    return {_fold(rel): (rel, st) for rel, st in files.items()}
+    return {_name_key(rel): (rel, st) for rel, st in files.items()}
 
 
 def _sig_equal(local_root: Path, local_rel: str, usb_root: Path, usb_rel: str) -> bool:
@@ -595,7 +609,9 @@ def compare(
             equal = same_stat(lst, ust) or (
                 lst.size == ust.size and _sig_equal(plan.local_root, lrel, plan.usb_root, urel)
             )
-            # case-only rename (Windows): same file, names differ in case
+            # case-only rename: same file, names differ in case (or accent
+            # encoding). With no baseline, this PC's spelling wins - on Linux
+            # the library's paths depend on it
             if lrel != urel and equal:
                 if brel == urel:        # the local copy was renamed
                     plan.items.append(SyncItem(RENAME, lrel, lst, ust, TO_USB, True,
