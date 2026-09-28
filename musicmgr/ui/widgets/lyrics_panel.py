@@ -10,17 +10,25 @@ only ever writes a local .lrc sidecar file (no DB write, and no other view
 has any reason to care that it happened), so there's nothing for a view to
 do with the outcome that this panel can't already do by just reloading
 itself. See services/lyrics_downloader.py for why this network call exists
-at all despite the rest of the app's local-files-only stance."""
+at all despite the rest of the app's local-files-only stance.
+
+2026-09-28: an "Edit lyrics" button (over the lyric list) and a "Sync
+lyrics myself" button (in the empty state) both emit `editRequested` - the
+lyric editor needs the shared PlayerController to stamp timings against,
+which this widget deliberately doesn't hold, so NowPlayingView opens it
+(see `NowPlayingView._open_lyrics_editor` and ui/widgets/lyrics_editor.py)
+and calls `reload()` afterwards."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional, Union
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QHBoxLayout,
     QListWidget,
     QListWidgetItem,
     QStackedWidget,
@@ -32,7 +40,7 @@ from ...config import TOUCH
 from ...services import lyrics_downloader as lyrics_dl
 from ...services.lyrics import LyricsResult, current_line_index, load_lyrics
 from ..theme import COLORS
-from .common import EmptyState, LyricsDownloadThread
+from .common import EmptyState, LyricsDownloadThread, TouchButton
 
 #: restored after a failed/negative download attempt, since that leaves a
 #: status message (_STATUS_MESSAGES below) sitting in the same label
@@ -48,6 +56,9 @@ _STATUS_MESSAGES = {
 
 
 class LyricsPanel(QWidget):
+    #: "open the lyric editor for the loaded track" - see module docstring
+    editRequested = Signal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -64,12 +75,22 @@ class LyricsPanel(QWidget):
         self._synced_only_checkbox = QCheckBox("Synced lyrics only")
         self._synced_only_checkbox.setChecked(True)
 
+        # empty state extras: the checkbox, plus the way into the lyric
+        # editor for a track LRCLIB has nothing (or nothing synced) for
+        self._sync_myself_btn = TouchButton("Sync lyrics myself")
+        self._sync_myself_btn.clicked.connect(self.editRequested.emit)
+        empty_extras = QWidget()
+        extras_layout = QVBoxLayout(empty_extras)
+        extras_layout.setContentsMargins(0, 0, 0, 0)
+        extras_layout.addWidget(self._synced_only_checkbox, 0, Qt.AlignCenter)
+        extras_layout.addWidget(self._sync_myself_btn, 0, Qt.AlignCenter)
+
         self._empty = EmptyState(
             "No lyrics found",
             _DEFAULT_EMPTY_DETAIL,
             action_text="Download lyrics",
             on_action=self._on_download_clicked,
-            extra_widget=self._synced_only_checkbox,
+            extra_widget=empty_extras,
         )
 
         self._list = QListWidget()
@@ -89,9 +110,22 @@ class LyricsPanel(QWidget):
         # there's no scrollbar and no margin, so nothing shifts unnecessarily
         self._list.verticalScrollBar().rangeChanged.connect(self._sync_center_margin)
 
+        # the lyric list page: a small toolbar with "Edit lyrics" over it
+        self._edit_btn = TouchButton("Edit lyrics")
+        self._edit_btn.clicked.connect(self.editRequested.emit)
+        self._list_page = QWidget()
+        list_layout = QVBoxLayout(self._list_page)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(6)
+        toolbar = QHBoxLayout()
+        toolbar.addStretch(1)
+        toolbar.addWidget(self._edit_btn)
+        list_layout.addLayout(toolbar)
+        list_layout.addWidget(self._list, 1)
+
         self._stack = QStackedWidget()
         self._stack.addWidget(self._empty)  # 0
-        self._stack.addWidget(self._list)  # 1
+        self._stack.addWidget(self._list_page)  # 1
         layout.addWidget(self._stack)
 
         self._result: Optional[LyricsResult] = None
@@ -149,11 +183,28 @@ class LyricsPanel(QWidget):
             item = QListWidgetItem(line.text or "♪")
             item.setTextAlignment(Qt.AlignCenter)
             self._list.addItem(item)
-        self._stack.setCurrentWidget(self._list)
+        self._stack.setCurrentWidget(self._list_page)
+        self._refresh_download_button()
         if self._result.synced and resume_position_ms is not None:
             self._apply_highlight(current_line_index(self._result.lines, resume_position_ms))
         else:
             self._apply_highlight(0 if self._result.synced else -1)
+
+    @property
+    def audio_path(self) -> Optional[str]:
+        return self._audio_path
+
+    @property
+    def track_meta(self) -> dict:
+        return dict(self._track_meta)
+
+    def reload(self) -> None:
+        """Re-read the loaded track's .lrc (after the lyric editor saved
+        it), keeping the highlight on wherever the song is right now."""
+        if self._audio_path:
+            self.load_for_path(
+                self._audio_path, resume_position_ms=self._last_position_ms, **self._track_meta
+            )
 
     def update_position(self, position_ms: int) -> None:
         self._last_position_ms = position_ms
@@ -199,6 +250,9 @@ class LyricsPanel(QWidget):
         btn.setText("Downloading…" if downloading else "Download lyrics")
         self._synced_only_checkbox.setVisible(bool(self._audio_path))
         self._synced_only_checkbox.setEnabled(not downloading)
+        for edit in (self._sync_myself_btn, self._edit_btn):
+            edit.setVisible(bool(self._audio_path))
+            edit.setEnabled(bool(self._audio_path) and not downloading)
 
     def _on_download_clicked(self) -> None:
         if not self._audio_path or self._download_thread is not None:

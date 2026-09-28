@@ -34,7 +34,12 @@ board without leaving this page - see `_on_jukebox_toggled` and
 `JukeboxToggle`'s own docstring in widgets/common.py. This toggle is
 unaffected by that column's removal; Now Playing is now one of only two
 remaining places to add a track to the jukebox board (the other being the
-Jukebox page's own "+ Add to jukebox" picker)."""
+Jukebox page's own "+ Add to jukebox" picker).
+
+2026-09-28 (James: "a lyric editor ... where it can determine the
+timestamps and place in the LRC file"): the Lyrics pane's "Edit lyrics" /
+"Sync lyrics myself" buttons open `LyricsEditorDialog` for the playing
+track - see `_open_lyrics_editor` and ui/widgets/lyrics_editor.py."""
 
 from __future__ import annotations
 
@@ -68,6 +73,7 @@ from ..widgets.common import (
     TouchList,
     dim_label,
 )
+from ..widgets.lyrics_editor import LyricsEditorDialog
 from ..widgets.lyrics_panel import LyricsPanel
 from .base import BaseView
 from .jukebox import JukeboxPickerDialog
@@ -223,6 +229,7 @@ class NowPlayingView(BaseView):
         self.right_panes.addWidget(queue_pane)  # 0
 
         self.lyrics_panel = LyricsPanel()
+        self.lyrics_panel.editRequested.connect(self._open_lyrics_editor)
         self.right_panes.addWidget(self.lyrics_panel)  # 1
 
         right.addWidget(self.right_panes, 1)
@@ -435,6 +442,29 @@ class NowPlayingView(BaseView):
         pattern for the same dialog's other call sites."""
         with self.ctx.session() as session:
             return jukebox_svc.search_addable_tracks(session, artist_query, track_query)
+
+    def _make_lyrics_editor(self) -> Optional[LyricsEditorDialog]:
+        path = self.lyrics_panel.audio_path
+        if not path:
+            return None
+        dialog = LyricsEditorDialog(
+            self.ctx.player, path, **self.lyrics_panel.track_meta, parent=self
+        )
+        window = self.window()
+        if window is not None and window is not self and window.width() > 0:
+            dialog.resize(int(window.width() * 0.92), int(window.height() * 0.92))
+        return dialog
+
+    def _open_lyrics_editor(self) -> None:
+        """The Lyrics pane's "Edit lyrics"/"Sync lyrics myself" - edits the
+        track the pane has loaded (the one playing), then reloads the pane
+        so a saved .lrc shows up straight away."""
+        dialog = self._make_lyrics_editor()
+        if dialog is None:
+            return
+        if dialog.exec() == QDialog.Accepted and dialog.saved_path is not None:
+            self.lyrics_panel.reload()
+            self.ctx.notify("Lyrics saved")
 
     def _on_position(self, ms: int) -> None:
         self.lyrics_panel.update_position(ms)

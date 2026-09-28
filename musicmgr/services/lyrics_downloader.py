@@ -319,6 +319,65 @@ def download_lyrics_for_track(
     return TrackLyricsOutcome(audio_path, "downloaded", method)
 
 
+@dataclass
+class LyricsTextFetch:
+    """`fetch_lyrics_text`'s result - the lyric *text* LRCLIB has for a
+    track, without writing anything to disk. `status` is one of `found`,
+    `no_artist`, `instrumental`, `not_found`, `error`."""
+
+    status: str
+    plain: str = ""
+    synced: str = ""
+    detail: str = ""
+
+
+def fetch_lyrics_text(
+    *,
+    title: str,
+    artist: str,
+    album: str = "",
+    duration_ms: int = 0,
+    session: Optional[requests.Session] = None,
+) -> LyricsTextFetch:
+    """Look a track up on LRCLIB and hand back its lyric text, for the
+    lyric editor's "Load from LRCLIB" button (2026-09-28). Unlike
+    `download_lyrics_for_track`, this never touches the sidecar file - the
+    editor decides what to keep, and only its own Save writes anything.
+
+    Both texts are returned when LRCLIB has them: the editor starts from
+    `plain` (to tap-sync fresh) but offers `synced` as a starting point to
+    fine-tune when it exists."""
+    if not artist:
+        return LyricsTextFetch("no_artist")
+    own_session = session is None
+    if own_session:
+        session = requests.Session()
+        session.headers.update(_HEADERS)
+    track = {
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "duration": round(duration_ms / 1000) if duration_ms else 0,
+    }
+    try:
+        result, _method = _find_lyrics(session, track)
+    except Exception as exc:
+        log.exception("lyrics text lookup failed for %s - %s", artist, title)
+        return LyricsTextFetch("error", detail=str(exc))
+    finally:
+        if own_session:
+            session.close()
+    if not result:
+        return LyricsTextFetch("not_found")
+    if result.get("instrumental") is True:
+        return LyricsTextFetch("instrumental")
+    plain = result.get("plainLyrics") or ""
+    synced = result.get("syncedLyrics") or ""
+    if not plain and not synced:
+        return LyricsTextFetch("not_found")
+    return LyricsTextFetch("found", plain=plain, synced=synced)
+
+
 def download_lyrics_for_album(
     tracks: Sequence[LyricsTrackInput],
     *,
