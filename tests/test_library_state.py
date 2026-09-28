@@ -7,6 +7,7 @@ the way two PCs would each have their own."""
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -470,10 +471,13 @@ class TestChartsAndFolders:
             want = _tree(s)
         assert "Billboard Hot Country/1980-89/1984" in want
         assert "Playback Rock/1980-89/1984" in want
-        pc1.sync()
+        sent = pc1.sync()
+        assert sent.playlists_out == 3 and sent.folders_out == 5
+        assert "sent 3 playlists, 5 folders to the drive" in sent.summary()
+        assert sent.status().endswith("(3 playlists, 5 folders)")
         notes = pc2.sync()
         assert "Empty for now" in notes.folders_in
-        assert len(notes.playlists_in) == 3
+        assert len(notes.playlists_in) == 3 and notes.playlists_out == 0
         with db_session.session_scope() as s:
             assert _tree(s) == want
             assert set(ls._folders_by_path(s)) == {
@@ -535,3 +539,118 @@ class TestChartsAndFolders:
         assert pc2.sync().playlists_in == ["Favourites/Road Trip", "Top level"]
         with db_session.session_scope() as s:
             assert set(ls._keyed_playlists(s)) == {"Favourites/Road Trip", "Top level"}
+
+
+class TestImagesWithNewFolders:
+    """2026-09-28: PC2's first 1.7.1 sync created Billboard Hot Country and
+    its chart playlists but left them without their images."""
+
+    def _pc1_country(self, pc1, tmp_path):
+        from musicmgr.services import playlists as pl_svc
+
+        _artwork_travels(pc1)
+        blue = _picture(tmp_path, "blue.png", "blue")
+        red = _picture(tmp_path, "red.png", "red")
+        pc1.use()
+        with db_session.session_scope() as s:
+            country = pl_svc.create_folder(s, "Billboard Hot Country")
+            c20 = pl_svc.create_folder(s, "2020-29", country.id)
+            chart = _chart(s, pc1, c20.id, "2022", [SONGS[0]])
+            pl_svc.set_folder_image(s, country.id, str(blue))
+            pl_svc.set_playlist_image(s, chart.id, str(red))
+            return Path(country.cover_path).name, Path(chart.cover_path).name
+
+    @staticmethod
+    def _pc2_images(pc2):
+        from musicmgr.db.models import PlaylistFolder
+
+        pc2.use()
+        with db_session.session_scope() as s:
+            folder = s.scalar(select(PlaylistFolder).where(
+                PlaylistFolder.name == "Billboard Hot Country"))
+            chart = s.scalar(select(Playlist).where(Playlist.name == "2022"))
+            return (Path(folder.cover_path).name if folder.cover_path else None,
+                    Path(chart.cover_path).name if chart.cover_path else None)
+
+    def _old_base(self, pc2, drive, *, unplaced: bool):
+        """PC2's base as an earlier build left it: the images listed, no
+        `images_placed` marker."""
+        pc2.use()
+        path = ls.base_state_path(drive)
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+        usb = ls.load_state(ls.usb_state_path(drive))
+        data[ls.IMAGES] = usb[ls.IMAGES]
+        if unplaced:
+            data["images_unplaced"] = sorted(usb[ls.IMAGES])
+        data.pop("images_placed", None)
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+    def test_images_set_on_folders_and_playlists_created_in_the_same_sync(
+            self, two_pcs, tmp_path):
+        pc1, pc2, drive = two_pcs
+        _artwork_travels(pc2)
+        pc2.sync()                       # PC2 has a base, without the charts
+        folder_img, chart_img = self._pc1_country(pc1, tmp_path)
+        pc1.sync()
+        # a 1.7.0 PC2 saw the images but couldn't place them (no chart sync)
+        self._old_base(pc2, drive, unplaced=True)
+        pc2.sync()
+        assert self._pc2_images(pc2) == (folder_img, chart_img)
+        # nothing is sent back as removed, and it's quiet afterwards
+        usb = ls.load_state(ls.usb_state_path(drive))
+        assert usb[ls.IMAGES]["folder:Billboard Hot Country"] == folder_img
+        pc1.sync()
+        assert pc2.sync().images_in == 0
+        assert self._pc2_images(pc2) == (folder_img, chart_img)
+
+    def test_pc_left_without_images_is_repaired_not_read_as_removal(self, two_pcs, tmp_path):
+        from musicmgr.db.models import PlaylistFolder
+
+        pc1, pc2, drive = two_pcs
+        _artwork_travels(pc2)
+        folder_img, chart_img = self._pc1_country(pc1, tmp_path)
+        pc1.sync()
+        pc2.sync()
+        # what the bug left behind: PC2 has the folder and chart with no
+        # image, while its base (no marker) says the images are agreed
+        pc2.use()
+        with db_session.session_scope() as s:
+            for row in s.scalars(select(Playlist)):
+                row.cover_path = None
+            for row in s.scalars(select(PlaylistFolder)):
+                row.cover_path = None
+        self._old_base(pc2, drive, unplaced=False)
+        assert self._pc2_images(pc2) == (None, None)
+
+        notes = pc2.sync()
+        assert notes.images_in == 2
+        assert self._pc2_images(pc2) == (folder_img, chart_img)
+        usb = ls.load_state(ls.usb_state_path(drive))
+        assert usb[ls.IMAGES]["folder:Billboard Hot Country"] == folder_img
+        # PC1 keeps its images
+        pc1.sync()
+        pc1.use()
+        with db_session.session_scope() as s:
+            f = s.scalar(select(PlaylistFolder).where(PlaylistFolder.name == "Billboard Hot Country"))
+            assert Path(f.cover_path).name == folder_img
+
+    def test_clear_after_the_repair_still_travels(self, two_pcs, tmp_path):
+        from musicmgr.db.models import PlaylistFolder
+
+        pc1, pc2, drive = two_pcs
+        _artwork_travels(pc2)
+        folder_img, _ = self._pc1_country(pc1, tmp_path)
+        pc1.sync()
+        pc2.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            s.scalar(select(PlaylistFolder).where(
+                PlaylistFolder.name == "Billboard Hot Country")).cover_path = None
+        pc2.sync()
+        pc1.sync()
+        pc1.use()
+        with db_session.session_scope() as s:
+            f = s.scalar(select(PlaylistFolder).where(PlaylistFolder.name == "Billboard Hot Country"))
+            assert f.cover_path is None

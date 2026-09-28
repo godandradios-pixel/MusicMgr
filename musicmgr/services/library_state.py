@@ -383,19 +383,27 @@ def read_images(db: Session) -> dict[str, str]:
 def carry_images(local: dict, base: dict, targets: dict) -> set[str]:
     """Images for playlists/folders this PC doesn't have (a chart playlist
     only one PC saved, say) - or didn't have at the last sync - must not
-    look like local removals. Put them back as the base had them. Returns
-    the keys whose playlist/folder has turned up since, so they get set."""
+    look like local removals. Put them back as the base had them.
+
+    Returns every key put back. `apply_images` sets each one whose playlist
+    or folder exists by then - including the ones `apply_state` creates in
+    this same sync (2026-09-28 fix: those used to be skipped, because the
+    carried value made them look already set here).
+
+    A base saved before that fix (no `images_placed` marker) may list images
+    this PC never actually got, for playlists/folders that are here now with
+    no image. Those are put back too, once, instead of being read as this
+    PC having removed them."""
     was_missing = set(base.get("images_unplaced") or [])
-    arrived = set()
+    recheck = not base.get("images_placed")
+    carried = set()
     for key, value in (base.get(IMAGES) or {}).items():
         if key in local[IMAGES]:
             continue
-        if key not in targets:
+        if key not in targets or key in was_missing or recheck:
             local[IMAGES][key] = value
-        elif key in was_missing:
-            local[IMAGES][key] = value
-            arrived.add(key)
-    return arrived
+            carried.add(key)
+    return carried
 
 
 def apply_images(db: Session, merged: dict, local: dict, notes: "MergeNotes",
@@ -408,6 +416,8 @@ def apply_images(db: Session, merged: dict, local: dict, notes: "MergeNotes",
         if target is None:
             continue
         name = want.get(key)
+        # `arrived` = carried from the base, not read here: what this PC
+        # shows may differ from `have`, so compare with the real picture
         if key not in arrived and name == have.get(key):
             continue
         if name == _image_name(target.cover_path) and name is not None:
@@ -458,6 +468,7 @@ def load_state(path: Path) -> Optional[dict]:
         state[FOLDERS] = None
     if data.get("playlist_keys") != PLAYLIST_KEYS:
         state["playlists"] = _rekey_playlists(state["playlists"] or {})
+    state["images_placed"] = bool(data.get("images_placed"))
     return state
 
 
@@ -469,6 +480,9 @@ def save_state(path: Path, state: dict, pc_id: str) -> None:
             data.pop(key)
     data["format"] = FORMAT
     data["playlist_keys"] = PLAYLIST_KEYS
+    # images the base lists are really on this PC (see carry_images)
+    if data.pop("images_placed", True):
+        data["images_placed"] = 1
     data["saved"] = _iso(_now())
     data["saved_by"] = pc_id
     tmp = path.with_name(path.name + ".mmsync-tmp")
@@ -503,6 +517,30 @@ class MergeNotes:
     images_in: int = 0
     folders_in: list[str] = field(default_factory=list)
     folders_removed: list[str] = field(default_factory=list)
+    #: what this PC sent to the drive (2026-09-28: James saw "Everything is
+    #: in sync" right after his chart playlists had gone out, since only
+    #: incoming changes were counted)
+    ratings_out: int = 0
+    playlists_out: int = 0
+    folders_out: int = 0
+    plays_out: int = 0
+    board_out: bool = False
+    #: what the drive holds after this sync
+    playlists_total: int = 0
+    folders_total: int = 0
+
+    def received(self) -> bool:
+        """Did anything change in this library? (Views refresh if so.)"""
+        return bool(self.plays_in or self.ratings_in or self.playlists_in
+                    or self.playlists_removed or self.images_in or self.folders_in
+                    or self.folders_removed or self.board_in)
+
+    def status(self) -> str:
+        """The Settings → USB sync line for library data: what moved each
+        way, then how many playlists and folders the drive now holds."""
+        counts = (f"{self.playlists_total:,} playlist{'s' if self.playlists_total != 1 else ''}, "
+                  f"{self.folders_total:,} folder{'s' if self.folders_total != 1 else ''}")
+        return f"Playlists & library data: {self.summary()} ({counts})"
 
     def summary(self) -> str:
         parts = []
@@ -529,6 +567,21 @@ class MergeNotes:
             parts.append("Jukebox updated")
         if self.board_conflict:
             parts.append(f"Jukebox changed on both — kept {self.board_conflict}")
+        sent = []
+        if self.playlists_out:
+            n = self.playlists_out
+            sent.append(f"{n} playlist{'s' if n != 1 else ''}")
+        if self.folders_out:
+            n = self.folders_out
+            sent.append(f"{n} folder{'s' if n != 1 else ''}")
+        if self.plays_out:
+            sent.append(f"{self.plays_out:,} play{'s' if self.plays_out != 1 else ''}")
+        if self.ratings_out:
+            sent.append(f"{self.ratings_out:,} rating{'s' if self.ratings_out != 1 else ''}")
+        if self.board_out:
+            sent.append("the Jukebox")
+        if sent:
+            parts.append("sent " + ", ".join(sent) + " to the drive")
         return " · ".join(parts) if parts else "Library data already in sync"
 
 
@@ -635,6 +688,21 @@ def merge(local: dict, usb: dict, base: dict) -> tuple[dict, MergeNotes]:
                                    base.get(FOLDERS) or {})
     notes.folders_in = sorted(f for f in taken_f if f not in (local.get(FOLDERS) or {}))
     notes.folders_removed = sorted(f for f in (local.get(FOLDERS) or {}) if f not in folders)
+
+    # what goes out: anything the drive didn't already have this way
+    def _changed(merged_d: dict, usb_d: dict) -> int:
+        return sum(1 for k in set(merged_d) | set(usb_d)
+                   if merged_d.get(k, _MISSING) != usb_d.get(k, _MISSING))
+
+    notes.ratings_out = _changed(ratings, usb["ratings"])
+    notes.playlists_out = _changed({k: _strip(v, "updated_at") for k, v in playlists.items()}, up)
+    notes.folders_out = _changed(folders, usb.get(FOLDERS) or {})
+    usb_play_keys = {_play_key(p[0], p[1]) for p in usb["plays"]}
+    notes.plays_out = sum(1 for p in plays if _play_key(p[0], p[1]) not in usb_play_keys)
+    notes.board_out = (not from_usb and lb is not None
+                       and _strip(lb, "changed_at") != (su if su is not _MISSING else None))
+    notes.playlists_total = len(playlists)
+    notes.folders_total = len(folders)
 
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: images, FOLDERS: folders}, notes
@@ -960,7 +1028,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
             base[cat] = copy.deepcopy(usb[cat])
     carry_unresolved(local, base, idx)
     targets = _image_targets(db)
-    arrived = carry_images(local, base, targets) if PLAYLISTS in include else set()
+    carried = carry_images(local, base, targets) if PLAYLISTS in include else set()
     merged, notes = merge(local, usb, base)
     revive(merged, base, idx, notes)
     if JUKEBOX not in include:
@@ -969,10 +1037,17 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         notes.playlists_in = []
         notes.folders_in = []
         notes.folders_removed = []
+        notes.playlists_out = notes.folders_out = 0
+    if JUKEBOX not in include:
+        notes.board_out = False
+    if RATINGS not in include:
+        notes.ratings_out = 0
+    if PLAYS not in include:
+        notes.plays_out = 0
     apply_state(db, idx, local, merged, notes, include)
     if PLAYLISTS in include:
         # after apply_state, so playlists/folders that just arrived get theirs
-        apply_images(db, merged, local, notes, arrived)
+        apply_images(db, merged, local, notes, carried)
     if notes.lost_board is not None:
         from .usb_sync import usb_deleted_dir
 
@@ -989,6 +1064,9 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     for cat in CATEGORIES + _WITH_PLAYLISTS:
         if not _included(cat, include):
             base_copy[cat] = original_base[cat]
+    if PLAYLISTS not in include:
+        # images weren't looked at, so an older base stays unchecked
+        base_copy["images_placed"] = base.get("images_placed")
     targets = _image_targets(db)
     base_copy["images_unplaced"] = sorted(k for k in base_copy[IMAGES] or {} if k not in targets)
     base_copy["unresolved"] = sorted(k for k in _referenced_keys(merged) if not _resolvable(idx, k))

@@ -1390,8 +1390,12 @@ class SettingsView(BaseView):
             return
         problems = [e for pp in plan.pairs for e in pp.errors]
         if not plan.all_items():
+            # the files are done; the quiet sync below still exchanges
+            # playlists, plays, ratings and the Jukebox, and replaces this
+            # line with what it did (2026-09-28)
             self.usb_status.setText(
-                "Everything is in sync" + (f" · {'; '.join(problems)}" if problems else "")
+                "Files: everything is in sync · checking playlists and library data…"
+                + (f" · {'; '.join(problems)}" if problems else "")
             )
             if not auto:
                 self.ctx.notify("USB: everything is in sync")
@@ -1455,19 +1459,29 @@ class SettingsView(BaseView):
         if error:
             self.usb_status.setText(f"USB sync failed: {error}")
             self.ctx.notify("USB sync failed")
-        elif not quiet:
-            text = result.summary()
-            if message:
-                text += f" · {message}"
+        notes = getattr(result, "library_notes", None) if result is not None else None
+        data_changed = notes is not None and notes.received()
+        if not error:
+            # 2026-09-28 (James: "update the 'Everything is in sync' to
+            # include the playlists so I don't get confused"): the files and
+            # the library data each get their own say, both directions
+            files = "Files: " + ("everything is in sync" if quiet else result.summary())
+            other = message
+            if notes is not None and message:
+                # update_library's own note (tracks added…) without the
+                # library-data summary it was joined to
+                other = message.replace(notes.summary(), "").strip(" ·")
+            parts = [files] + ([other] if other else [])
+            if notes is not None:
+                parts.append(notes.status())
+            text = " · ".join(parts)
             if result.errors:
                 text += "\n" + "\n".join(result.errors[:5])
             self.usb_status.setText(text)
-            self.ctx.notify(f"USB sync: {result.summary()}")
-        notes = getattr(result, "library_notes", None) if result is not None else None
-        data_changed = notes is not None and notes.summary() != "Library data already in sync"
-        if quiet and data_changed:
-            self.usb_status.setText(f"Everything is in sync · {notes.summary()}")
-            self.ctx.notify(f"USB: {notes.summary()}")
+            if not quiet:
+                self.ctx.notify(f"USB sync: {result.summary()}")
+            elif notes is not None and notes.summary() != "Library data already in sync":
+                self.ctx.notify(f"USB: {notes.summary()}")
         if data_changed:
             self.ctx.libraryChanged.emit()
             self.ctx.playlistsChanged.emit()

@@ -164,6 +164,42 @@ class TestCard:
             assert db.scalar(select(SyncBaseline.rel_path)) == "New/song.wav"
             assert db.scalar(select(MediaFile.path)) == str(local / "New" / "song.wav")
 
+    def test_quiet_sync_status_names_files_and_library_data(self, setup):
+        """2026-09-28: "Everything is in sync" read as if playlists were
+        included too - the line now reports each part, with what was sent."""
+        from musicmgr.services.library_state import MergeNotes
+
+        view, local, usb, drive, drives = setup
+        write(local / "a.mp3")
+        write(usb / "a.mp3")
+        view._usb_drive = drive
+        plan = run_compare(drive)
+        view._on_usb_compare_done(plan, None, auto=True)
+        assert view.usb_status.text().startswith("Files: everything is in sync · checking playlists")
+        view._usb_sync_thread.wait()
+        view._usb_sync_thread = None
+
+        class Result:
+            errors = []
+            new_local_paths = removed_local_paths = []
+            artwork_changed = False
+
+            def summary(self):
+                return "Everything is in sync"
+
+        result = Result()
+        result.library_notes = MergeNotes(playlists_out=16, folders_out=11,
+                                          playlists_total=19, folders_total=15)
+        view._on_usb_sync_done(result, result.library_notes.summary(), None, quiet=True)
+        assert view.usb_status.text() == (
+            "Files: everything is in sync · Playlists & library data: sent 16 playlists, "
+            "11 folders to the drive (19 playlists, 15 folders)")
+        result.library_notes = MergeNotes(playlists_total=19, folders_total=15)
+        view._on_usb_sync_done(result, result.library_notes.summary(), None, quiet=True)
+        assert view.usb_status.text() == (
+            "Files: everything is in sync · Playlists & library data: "
+            "Library data already in sync (19 playlists, 15 folders)")
+
     def test_busy_blocks_scan(self, setup):
         view, *_ = setup
 
