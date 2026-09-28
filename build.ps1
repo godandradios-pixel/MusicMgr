@@ -19,6 +19,12 @@
          so Install-MusicMgr.bat on the drive always installs the newest
          build. Skipped with a warning if the drive isn't plugged in;
          skip on purpose with -SkipUsb.
+      6. release: if v<version> isn't on GitHub yet, commits the version
+         bump, tags it, pushes the commit and the tag (which starts the
+         Release workflow), then optionally waits for CI and runs
+         tools\sign_release.py so the update shows up in Settings ->
+         Check for Updates. Asks first; skip with -NoRelease. Never runs
+         under GitHub Actions.
 
 .PARAMETER SkipPull
     Skip the git pull step and build from whatever is currently checked out.
@@ -40,6 +46,9 @@
 .PARAMETER SkipUsb
     Don't copy the new build to the USB drive.
 
+.PARAMETER NoRelease
+    Build only - don't commit, tag or push the version to GitHub.
+
 .PARAMETER NoPause
     Don't wait for a keypress at the end (useful for Task Scheduler /
     automation; interactive double-click runs pause by default so the
@@ -55,6 +64,8 @@
     .\build.ps1 -UsbPath F:\MusicMgr
 .EXAMPLE
     .\build.ps1 -Version 1.6.1
+.EXAMPLE
+    .\build.ps1 -NoRelease
 #>
 
 [CmdletBinding()]
@@ -65,6 +76,7 @@ param(
     [string]$Version,
     [string]$UsbPath = "E:\MusicMgr",
     [switch]$SkipUsb,
+    [switch]$NoRelease,
     [switch]$NoPause
 )
 
@@ -75,6 +87,21 @@ Set-Location $RepoRoot
 function Write-Step($msg) {
     Write-Host ""
     Write-Host "==> $msg" -ForegroundColor Cyan
+}
+
+function Read-YesNo($prompt) {
+    # Enter = yes
+    $answer = (Read-Host "$prompt [Y/n]").Trim()
+    return (-not $answer) -or ($answer -match '^(y|yes)$')
+}
+
+function Invoke-Quiet([scriptblock]$block) {
+    # Runs a git/gh query whose stderr we don't care about. Under
+    # $ErrorActionPreference = "Stop", Windows PowerShell 5.1 turns any
+    # native stderr line into a terminating error, so relax it here.
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $block 2>$null } finally { $ErrorActionPreference = $saved }
 }
 
 function Invoke-Checked($exe, $exeArgs, $failMessage) {
@@ -242,17 +269,111 @@ try {
         }
     }
 
-    if ($newVersion -ne $currentVersion) {
-        # the version bump is only on disk - it becomes a release once it's
-        # committed and tagged (release.yml builds from the tag)
-        Write-Host ""
-        Write-Host "Version changed $currentVersion -> $newVersion. To release it:" -ForegroundColor Cyan
-        Write-Host "  git add musicmgr/__init__.py"
-        Write-Host "  git commit -m `"Bump version to $newVersion`""
-        Write-Host "  git push"
-        Write-Host "  git tag v$newVersion"
-        Write-Host "  git push origin v$newVersion"
-        Write-Host "  (then, once CI's draft is up: venv\Scripts\python tools\sign_release.py v$newVersion)"
+    # Step 6: release. The in-app updater only sees *published* GitHub
+    # releases, so a build whose version bump is only on this PC is
+    # invisible to Check for Updates. Offered whenever tag v<version>
+    # isn't on GitHub yet - including a version bumped by an earlier
+    # build.ps1 run that never got pushed.
+    $tag = "v$newVersion"
+    $isCi = [bool]($env:GITHUB_ACTIONS -or $env:CI)
+    if ($isCi) {
+        # release.yml runs this script to build the tag it was pushed for
+    }
+    elseif ($NoRelease) {
+        Write-Step "Skipping release (-NoRelease)"
+        if ($newVersion -ne $currentVersion) {
+            Write-Host "__version__ is now $newVersion but it's only on this PC - Check for Updates won't see it until it's released." -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Step "Release $tag"
+        $remoteTag = Invoke-Quiet { git ls-remote --tags origin "refs/tags/$tag" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Couldn't reach GitHub to check for $tag - skipping release. Re-run once online." -ForegroundColor Yellow
+        }
+        elseif ($remoteTag) {
+            Write-Host "$tag is already on GitHub - nothing to release. (Bump the version to release new changes.)"
+        }
+        else {
+            $initDirty = git status --porcelain -- "musicmgr/__init__.py"
+            $otherDirty = git status --porcelain | Where-Object { $_ -notmatch 'musicmgr/__init__\.py$' }
+            if ($otherDirty) {
+                Write-Host "Note: these local changes are NOT part of the release (CI builds only what's committed):" -ForegroundColor Yellow
+                $otherDirty | ForEach-Object { Write-Host "  $_" }
+            }
+            $unpushed = Invoke-Quiet { git log --oneline "@{u}..HEAD" }
+            if ($unpushed) {
+                Write-Host "These local commits will be pushed with it:"
+                $unpushed | ForEach-Object { Write-Host "  $_" }
+            }
+
+            $doRelease = $true
+            if ($interactive) {
+                $doRelease = Read-YesNo "Commit, tag and push $tag to GitHub now?"
+            }
+            elseif (-not $Version) {
+                # -NoPause without an explicit -Version: don't release unattended by surprise
+                $doRelease = $false
+                Write-Host "Not releasing (non-interactive run without -Version)."
+            }
+
+            if ($doRelease) {
+                if ($initDirty) {
+                    # path-limited commit: only __init__.py, even if other files are staged
+                    Invoke-Checked "git" @("commit", "-m", "Bump version to $newVersion", "--", "musicmgr/__init__.py") "git commit failed"
+                }
+                if (git tag --list $tag) {
+                    # a local-only tag left over from an earlier attempt - move it to HEAD
+                    Invoke-Checked "git" @("tag", "-d", $tag) "couldn't remove stale local tag $tag"
+                }
+                Invoke-Checked "git" @("tag", $tag) "git tag failed"
+                Invoke-Checked "git" @("push") "git push failed - fix the error above, then re-run (the commit and tag are saved locally)"
+                Invoke-Checked "git" @("push", "origin", $tag) "pushing tag $tag failed - re-run to try again"
+                Write-Host "Pushed $tag - GitHub Actions is building the release draft now." -ForegroundColor Green
+
+                # Wait for CI and sign/publish, if the GitHub CLI is available
+                # sign with the venv's Python when there is one (it has
+                # `cryptography`; the system Python may not)
+                $signPy = Join-Path $RepoRoot "venv\Scripts\python.exe"
+                if (-not (Test-Path $signPy)) { $signPy = "python" }
+                $signCmd = "$signPy tools\sign_release.py $tag"
+                $keyFile = Join-Path $HOME ".musicmgr-signing\release_key.pem"
+                if (-not (Test-Path $keyFile)) {
+                    Write-Host "Note: no signing key at $keyFile on this PC - sign from the PC that has it (or copy the key here)." -ForegroundColor Yellow
+                }
+                $gh = Get-Command gh -ErrorAction SilentlyContinue
+                if ($interactive -and $gh -and (Read-YesNo "Wait for the build (~10 min), then sign and publish it?")) {
+                    Write-Host "Waiting for the Release run to start..."
+                    $runId = $null
+                    for ($i = 0; $i -lt 24 -and -not $runId; $i++) {
+                        Start-Sleep -Seconds 5
+                        $runId = Invoke-Quiet { gh run list --workflow release.yml --branch $tag --limit 1 --json databaseId --jq ".[0].databaseId" }
+                    }
+                    if (-not $runId) {
+                        Write-Host "Couldn't find the Release run. Once it finishes, run: $signCmd" -ForegroundColor Yellow
+                    }
+                    else {
+                        & gh run watch $runId --exit-status
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Host "The Release run failed - see: gh run view $runId --log-failed" -ForegroundColor Red
+                            $exitCode = 1
+                        }
+                        else {
+                            Invoke-Checked $signPy @("tools\sign_release.py", $tag) "sign_release.py failed - re-run: $signCmd"
+                            Write-Host "$tag is published - Check for Updates will now offer it." -ForegroundColor Green
+                        }
+                    }
+                }
+                else {
+                    Write-Host ""
+                    Write-Host "Last step once the Release run finishes (it's a draft until then, invisible to the updater):" -ForegroundColor Cyan
+                    Write-Host "  $signCmd"
+                }
+            }
+            else {
+                Write-Host "Not released. __version__ $newVersion stays local - Check for Updates won't see it." -ForegroundColor Yellow
+            }
+        }
     }
 }
 catch {
