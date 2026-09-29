@@ -579,8 +579,33 @@ class TestButtons:
     def test_the_clear_queue_button_clears_the_players_queue(self, ctx, view, tmp_path):
         ctx.player.play_tracks([make_queue_item(tmp_path, title="One")])
         assert len(ctx.player.queue) == 1
-        clear_button = view.header.itemAt(3).widget()
+        clear_button = view.clear_queue_button
 
         clear_button.click()
 
         assert ctx.player.queue == []
+
+    def test_header_no_longer_holds_clear_queue(self, view):
+        header_widgets = [
+            view.header.itemAt(i).widget() for i in range(view.header.count())
+        ]
+        assert view.clear_queue_button not in header_widgets
+
+    def test_tab_row_actions_follow_the_selected_chip(self, view):
+        queue_chip, lyrics_chip = view._right_chips.buttons()
+        assert view.right_actions.currentIndex() == 0
+        assert view.right_actions.currentWidget().isAncestorOf(view.clear_queue_button)
+        assert view.right_actions.currentWidget().isAncestorOf(view.queue_meta)
+
+        lyrics_chip.click()
+        assert view.right_panes.currentIndex() == 1
+        assert view.right_actions.currentWidget().isAncestorOf(
+            view.lyrics_panel.edit_button
+        )
+
+        queue_chip.click()
+        assert view.right_panes.currentIndex() == 0
+        assert view.right_actions.currentIndex() == 0
+
+    def test_edit_lyrics_is_not_inside_the_lyrics_pane(self, view):
+        assert not view.lyrics_panel.isAncestorOf(view.lyrics_panel.edit_button)

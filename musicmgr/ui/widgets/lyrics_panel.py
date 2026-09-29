@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 from ...config import TOUCH
 from ...services import lyrics_downloader as lyrics_dl
 from ...services.lyrics import LyricsResult, current_line_index, load_lyrics
-from ..theme import COLORS
+from ..theme import COLORS, make_compact
 from .common import EmptyState, LyricsDownloadThread, TouchButton
 
 #: restored after a failed/negative download attempt, since that leaves a
@@ -59,7 +59,16 @@ class LyricsPanel(QWidget):
     #: "open the lyric editor for the loaded track" - see module docstring
     editRequested = Signal()
 
-    def __init__(self, parent=None) -> None:
+    # `inline_edit=False` (2026-09-29, James on Now Playing: "Is there any
+    # way we can save some space by moving the Edit Lyrics button") leaves
+    # "Edit lyrics" out of this widget's own layout so the lyric list starts
+    # at the top of the pane - the caller places `edit_button` itself (Now
+    # Playing puts it on the Up next/Lyrics tab row), same arrangement as
+    # BioPanel's `inline_edit`. Visibility/enabled state is still managed
+    # here either way: shown only while there's a lyric list to edit (the
+    # empty state has its own "Sync lyrics myself").
+
+    def __init__(self, parent=None, inline_edit: bool = True) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -110,17 +119,22 @@ class LyricsPanel(QWidget):
         # there's no scrollbar and no margin, so nothing shifts unnecessarily
         self._list.verticalScrollBar().rangeChanged.connect(self._sync_center_margin)
 
-        # the lyric list page: a small toolbar with "Edit lyrics" over it
+        # the lyric list page: with inline_edit, a small toolbar with "Edit
+        # lyrics" over it; without, the host places `edit_button` itself
+        # (see the class docstring)
         self._edit_btn = TouchButton("Edit lyrics")
+        if not inline_edit:
+            make_compact(self._edit_btn)
         self._edit_btn.clicked.connect(self.editRequested.emit)
         self._list_page = QWidget()
         list_layout = QVBoxLayout(self._list_page)
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(6)
-        toolbar = QHBoxLayout()
-        toolbar.addStretch(1)
-        toolbar.addWidget(self._edit_btn)
-        list_layout.addLayout(toolbar)
+        if inline_edit:
+            toolbar = QHBoxLayout()
+            toolbar.addStretch(1)
+            toolbar.addWidget(self._edit_btn)
+            list_layout.addLayout(toolbar)
         list_layout.addWidget(self._list, 1)
 
         self._stack = QStackedWidget()
@@ -191,6 +205,10 @@ class LyricsPanel(QWidget):
             self._apply_highlight(0 if self._result.synced else -1)
 
     @property
+    def edit_button(self) -> TouchButton:
+        return self._edit_btn
+
+    @property
     def audio_path(self) -> Optional[str]:
         return self._audio_path
 
@@ -250,9 +268,14 @@ class LyricsPanel(QWidget):
         btn.setText("Downloading…" if downloading else "Download lyrics")
         self._synced_only_checkbox.setVisible(bool(self._audio_path))
         self._synced_only_checkbox.setEnabled(not downloading)
+        has_path = bool(self._audio_path)
+        has_lines = self._result is not None and bool(self._result.lines)
+        self._sync_myself_btn.setVisible(has_path)
+        # an externally-placed "Edit lyrics" isn't hidden along with the
+        # list page, so it hides itself whenever there's no list showing
+        self._edit_btn.setVisible(has_path and has_lines)
         for edit in (self._sync_myself_btn, self._edit_btn):
-            edit.setVisible(bool(self._audio_path))
-            edit.setEnabled(bool(self._audio_path) and not downloading)
+            edit.setEnabled(has_path and not downloading)
 
     def _on_download_clicked(self) -> None:
         if not self._audio_path or self._download_thread is not None:

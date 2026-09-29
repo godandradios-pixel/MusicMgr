@@ -319,3 +319,12 @@ def test_edit_request_opens_editor_and_reloads_pane_after_save(ctx, playing, qap
     assert view.lyrics_panel._stack.currentIndex() == 1
     assert view.lyrics_panel._list.item(0).text() == "Sung line"
     assert not view.lyrics_panel._edit_btn.isHidden()
+
+
+def test_external_edit_button_hides_when_there_are_no_lyrics(ctx, playing, qapp):
+    view = NowPlayingView(ctx)
+    view.refresh()
+    panel = view.lyrics_panel
+    assert panel._stack.currentIndex() == 0  # empty state
+    assert panel.edit_button.isHidden()
+    assert not panel._sync_myself_btn.isHidden()

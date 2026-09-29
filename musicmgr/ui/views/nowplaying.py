@@ -63,7 +63,7 @@ from ...services import library as lib
 from ...services.library import format_duration
 from ...services.player import QueueItem
 from ..context import AppContext
-from ..theme import COLORS
+from ..theme import COLORS, make_compact
 from ..widgets.common import (
     ChipButton,
     CoverArt,
@@ -107,10 +107,6 @@ class NowPlayingView(BaseView):
         back = TouchButton("‹ Back")
         back.clicked.connect(ctx.nowPlayingBackRequested.emit)
         self.header.insertWidget(0, back)
-
-        clear = TouchButton("Clear queue")
-        clear.clicked.connect(ctx.player.clear_queue)
-        self.header.addWidget(clear)
 
         row = QHBoxLayout()
         row.setSpacing(28)
@@ -210,8 +206,38 @@ class NowPlayingView(BaseView):
             self._right_chips.addButton(chip)
             qhead.addWidget(chip)
         qhead.addStretch(1)
+
+        # the tab row's right end is context-sensitive (2026-09-29, James:
+        # "Make the right side of the tab row context-sensitive and move
+        # Clear queue into same context slot") - "Edit lyrics" used to take
+        # a whole row of its own above the lyric list, and "Clear queue"
+        # sat up in the page header, both only meaningful for one tab. A
+        # stack swapped by the same chips as `right_panes` below shows the
+        # queue's track count/duration and "Clear queue" on Up next, and
+        # "Edit lyrics" on Lyrics.
+        self.right_actions = QStackedWidget()
+
+        queue_actions = QWidget()
+        qa_layout = QHBoxLayout(queue_actions)
+        qa_layout.setContentsMargins(0, 0, 0, 0)
+        qa_layout.setSpacing(12)
         self.queue_meta = dim_label("")
-        qhead.addWidget(self.queue_meta)
+        qa_layout.addWidget(self.queue_meta)
+        self.clear_queue_button = make_compact(TouchButton("Clear queue"))
+        self.clear_queue_button.clicked.connect(ctx.player.clear_queue)
+        qa_layout.addWidget(self.clear_queue_button)
+        self.right_actions.addWidget(queue_actions)  # 0
+
+        self.lyrics_panel = LyricsPanel(inline_edit=False)
+        self.lyrics_panel.editRequested.connect(self._open_lyrics_editor)
+        lyrics_actions = QWidget()
+        la_layout = QHBoxLayout(lyrics_actions)
+        la_layout.setContentsMargins(0, 0, 0, 0)
+        la_layout.addStretch(1)
+        la_layout.addWidget(self.lyrics_panel.edit_button)
+        self.right_actions.addWidget(lyrics_actions)  # 1
+
+        qhead.addWidget(self.right_actions)
         right.addLayout(qhead)
 
         self.right_panes = QStackedWidget()
@@ -228,16 +254,16 @@ class NowPlayingView(BaseView):
         queue_layout.addWidget(remove)
         self.right_panes.addWidget(queue_pane)  # 0
 
-        self.lyrics_panel = LyricsPanel()
-        self.lyrics_panel.editRequested.connect(self._open_lyrics_editor)
         self.right_panes.addWidget(self.lyrics_panel)  # 1
 
         right.addWidget(self.right_panes, 1)
-        self._right_chips.buttonClicked.connect(
-            lambda btn: self.right_panes.setCurrentIndex(
-                0 if btn is queue_chip else 1
-            )
-        )
+
+        def _switch_right(btn) -> None:
+            idx = 0 if btn is queue_chip else 1
+            self.right_panes.setCurrentIndex(idx)
+            self.right_actions.setCurrentIndex(idx)
+
+        self._right_chips.buttonClicked.connect(_switch_right)
         row.addLayout(right, 3)
 
         self.body().addLayout(row, 1)
