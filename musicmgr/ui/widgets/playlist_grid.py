@@ -55,11 +55,13 @@ ROLE_TILE = Qt.UserRole + 3
 
 #: artwork edge, px - a little larger than the Library grids' 115px since a
 #: playlists page has far fewer tiles to fit and they're primary targets
-TILE_ART = 150
+TILE_ART = 130
 #: two title lines (names like "Most Played - This Month" need them) + one
 #: subtitle line
-TILE_CAPTION = 68
-TILE_PAD = 12
+TILE_CAPTION = 58
+#: 2026-09-30 tightened 12 -> 4 (with art 150 -> 130, caption 68 -> 58 and
+#: grid spacing 6 -> 4) so three rows of tiles fit the Playlists page
+TILE_PAD = 4
 #: how far the "stack" card edges peek out behind a folder's artwork
 STACK_OFFSET = 8
 
@@ -202,7 +204,8 @@ class PlaylistTileDelegate(QStyledItemDelegate):
             painter.drawPath(clip)
 
         text_x, text_w = art_x, size
-        text_y = art_y + size + STACK_OFFSET + 6
+        # same caption line for folders and playlists, just under the stack
+        text_y = rect.top() + TILE_PAD + size + STACK_OFFSET + 4
         font = painter.font()
         font.setPixelSize(TOUCH["font_base"])
         font.setBold(True)
@@ -221,7 +224,7 @@ class PlaylistTileDelegate(QStyledItemDelegate):
         painter.setPen(QColor(COLORS["text_dim"]))
         metrics = QFontMetrics(font)
         painter.drawText(
-            text_x, text_y + 21, text_w, 20, Qt.AlignLeft | Qt.AlignVCenter,
+            text_x, text_y + 18, text_w, 17, Qt.AlignLeft | Qt.AlignVCenter,
             metrics.elidedText(tile.subtitle, Qt.ElideRight, text_w),
         )
         painter.restore()
@@ -300,7 +303,7 @@ class PlaylistGrid(QListWidget):
         self.setMovement(QListView.Static)
         self.setResizeMode(QListView.Adjust)
         self.setUniformItemSizes(True)
-        self.setSpacing(6)
+        self.setSpacing(4)
         self.setWordWrap(False)
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
