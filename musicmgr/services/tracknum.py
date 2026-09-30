@@ -49,3 +49,12 @@ def label(track_no: Optional[int], position: Optional[str]) -> str:
     if is_side(position):
         return position  # type: ignore[return-value]
     return str(track_no) if track_no else ""
+
+
+def with_side(album: Optional[str], position: Optional[str]) -> str:
+    """'Bluebird - B-6873 · Side A' for a 78's side, else just the album -
+    what Now Playing and the player bar show under the title (2026-09-30:
+    "This way I know which is side A vs Side B")."""
+    if is_side(position):
+        return " · ".join(x for x in (album, f"Side {position}") if x)
+    return album or ""

@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...services import tracknum
 from ...services.library import format_duration
 from ...services.player import REPEAT_ALL, REPEAT_ONE, PlayerController, QueueItem
 from ...services.spectrum import BUCKET_MS, SpectrumThread, detect_beats
@@ -384,7 +385,7 @@ class PlayerBar(QFrame):
             return
         self.title.setText(item.title)
         self.subtitle.setText(
-            " — ".join(x for x in (item.artist, item.album) if x)
+            " — ".join(x for x in (item.artist, tracknum.with_side(item.album, item.position)) if x)
         )
         self.cover.set_source(item.cover_path, item.album or item.artist)
         self._start_spectrum(item.path)

@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 from sqlalchemy import select
 
 from ...db.models import Chart, ChartEntry, ChartIssue, Track
+from ...services import tracknum
 from ...services import jukebox as jukebox_svc
 from ...services import library as lib
 from ...services.library import format_duration
@@ -308,7 +309,7 @@ class NowPlayingView(BaseView):
         self._current_track_id = item.track_id
         self.track_title.setText(item.title)
         self.track_artist.setText(item.artist)
-        self.track_album.setText(item.album)
+        self.track_album.setText(tracknum.with_side(item.album, item.position))
         self.cover.set_source(item.cover_path, item.album or item.artist)
         note, rating, on_jukebox, artist_id, release_id = self._load_track_meta(item.track_id)
         self.chart_note.setText(note)
@@ -523,7 +524,10 @@ class NowPlayingView(BaseView):
                 # highlight, walnut brown now instead of red-orange.
                 "lead_color": COLORS["jukebox_key_hi"] if playing else COLORS["text_dim"],
                 "primary": item.title,
-                "secondary": item.artist,
+                "secondary": " · ".join(
+                    x for x in (item.artist, f"Side {item.position}"
+                                if tracknum.is_side(item.position) else "") if x
+                ),
                 "trail": format_duration(item.duration_ms),
                 "bold": playing,
                 "color": COLORS["jukebox_key_hi"] if playing else COLORS["text"],

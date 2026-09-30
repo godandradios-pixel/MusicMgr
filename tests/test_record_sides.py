@@ -112,3 +112,11 @@ class TestSortByAlbumTrack:
         names = ["Bluebird - B-10096", "Bluebird - B-6873", "bluebird - b-7000"]
         assert sorted(names, key=pl_svc.natural_key) == [
             "Bluebird - B-6873", "bluebird - b-7000", "Bluebird - B-10096"]
+
+
+def test_with_side_for_now_playing_and_player_bar():
+    from musicmgr.services.tracknum import with_side
+
+    assert with_side("Bluebird - B-6873", "A") == "Bluebird - B-6873 · Side A"
+    assert with_side("Rumours", "3") == "Rumours"
+    assert with_side("", "B") == "Side B" and with_side(None, None) == ""
