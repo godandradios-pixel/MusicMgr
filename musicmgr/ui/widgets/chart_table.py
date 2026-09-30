@@ -259,7 +259,14 @@ class ChartTable(QTreeWidget):
         # James called the truncated result out directly: "The 'Year-....'
         # offers no value." 96px clears both labels with room to spare.
         header.resizeSection(COL_TYPE, 96)
-        header.resizeSection(COL_COVERAGE, 84)
+        # 84px clipped the header to "Ɔoverage"; 100px shows it whole
+        header.resizeSection(COL_COVERAGE, 100)
+        # Type hidden 2026-09-30: charts are now filed Source > Genre > Type
+        # (tools/organize_charts_by_source.py names each chart "Year End" or
+        # "Weekly"), so the column just repeated the name - James: "let's
+        # remove the repeated Year End Year End". Kept (not deleted) so it
+        # can come back with one line if a chart ever needs it again.
+        self.setColumnHidden(COL_TYPE, True)
         for col in (COL_TYPE, COL_COVERAGE):
             self.headerItem().setTextAlignment(col, Qt.AlignRight | Qt.AlignVCenter)
         header.sectionClicked.connect(self._on_header_clicked)
