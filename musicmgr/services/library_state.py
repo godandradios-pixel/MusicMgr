@@ -94,9 +94,13 @@ PREF_BOARD_CHANGED = "sync_jukebox_board_changed_at"
 _GENRES_KEY = "jukebox_genres"
 _NEXT_SLOT_KEY = "jukebox_next_slot_number"
 
-#: the four things this step can sync, each switchable per PC
+#: the things this step can sync, each switchable per PC
 PLAYS, RATINGS, PLAYLISTS, JUKEBOX = "plays", "ratings", "playlists", "jukebox"
-CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX)
+#: charts (2026-09-30) - their own files on the drive, see chart_sync.py
+CHARTS = "charts"
+CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS)
+#: the ones kept in library-state.json.gz itself
+_STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX)
 PREF_PREFIX = "sync_state_"
 
 #: a play counts towards play_count like the player's own rule of thumb
@@ -528,18 +532,25 @@ class MergeNotes:
     #: what the drive holds after this sync
     playlists_total: int = 0
     folders_total: int = 0
+    #: charts (2026-09-30, chart_sync.py); None when Charts isn't synced
+    charts: Optional[object] = None
 
     def received(self) -> bool:
         """Did anything change in this library? (Views refresh if so.)"""
         return bool(self.plays_in or self.ratings_in or self.playlists_in
                     or self.playlists_removed or self.images_in or self.folders_in
-                    or self.folders_removed or self.board_in)
+                    or self.folders_removed or self.board_in
+                    or (self.charts is not None
+                        and (self.charts.charts_in or self.charts.charts_removed)))
 
     def status(self) -> str:
         """The Settings → USB sync line for library data: what moved each
         way, then how many playlists and folders the drive now holds."""
         counts = (f"{self.playlists_total:,} playlist{'s' if self.playlists_total != 1 else ''}, "
                   f"{self.folders_total:,} folder{'s' if self.folders_total != 1 else ''}")
+        if self.charts is not None and self.charts.charts_total:
+            n = self.charts.charts_total
+            counts += f", {n:,} chart{'s' if n != 1 else ''}"
         return f"Playlists & library data: {self.summary()} ({counts})"
 
     def summary(self) -> str:
@@ -565,6 +576,17 @@ class MergeNotes:
             parts.append(f"{n} playlist image{'s' if n != 1 else ''} updated")
         if self.board_in:
             parts.append("Jukebox updated")
+        ch = self.charts
+        if ch is not None:
+            if ch.charts_in:
+                n = len(ch.charts_in)
+                parts.append(f"{n} chart{'s' if n != 1 else ''} updated")
+            if ch.charts_removed:
+                n = len(ch.charts_removed)
+                parts.append(f"{n} chart{'s' if n != 1 else ''} removed")
+            if ch.charts_missing:
+                n = len(ch.charts_missing)
+                parts.append(f"{n} chart{'s' if n != 1 else ''} not on the drive yet")
         if self.board_conflict:
             parts.append(f"Jukebox changed on both — kept {self.board_conflict}")
         sent = []
@@ -580,6 +602,9 @@ class MergeNotes:
             sent.append(f"{self.ratings_out:,} rating{'s' if self.ratings_out != 1 else ''}")
         if self.board_out:
             sent.append("the Jukebox")
+        if ch is not None and ch.charts_out:
+            n = ch.charts_out
+            sent.append(f"{n} chart{'s' if n != 1 else ''}")
         if sent:
             parts.append("sent " + ", ".join(sent) + " to the drive")
         return " · ".join(parts) if parts else "Library data already in sync"
@@ -971,7 +996,7 @@ def revive(merged: dict, base: dict, idx: TrackIndex, notes: "MergeNotes") -> No
 
 
 def enabled_categories(db: Session) -> frozenset:
-    """Which of plays/ratings/playlists/Jukebox this PC syncs (Settings →
+    """Which of plays/ratings/playlists/Jukebox/charts this PC syncs (Settings →
     USB sync checkboxes, all on by default - 2026-09-24)."""
     return frozenset(
         cat for cat in CATEGORIES
@@ -1021,7 +1046,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         # ...or folders: nothing there counts as removed
         usb[FOLDERS] = copy.deepcopy(base[FOLDERS])
     original_base = dict(base)
-    for cat in CATEGORIES + _WITH_PLAYLISTS:
+    for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS:
         if not _included(cat, include):
             # look exactly like the drive, so nothing moves either way
             local[cat] = copy.deepcopy(usb[cat])
@@ -1061,7 +1086,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     # (plays for tracks this PC doesn't have stay in it for the others)
     save_state(usb_state_path(drive), merged, pc_id)
     base_copy = dict(merged)
-    for cat in CATEGORIES + _WITH_PLAYLISTS:
+    for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS:
         if not _included(cat, include):
             base_copy[cat] = original_base[cat]
     if PLAYLISTS not in include:
@@ -1071,6 +1096,12 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     base_copy["images_unplaced"] = sorted(k for k in base_copy[IMAGES] or {} if k not in targets)
     base_copy["unresolved"] = sorted(k for k in _referenced_keys(merged) if not _resolvable(idx, k))
     save_state(base_state_path(drive), base_copy, pc_id)
+    if CHARTS in include:
+        # 2026-09-30 - James: "I would like to have Charts be added to the
+        # SETTINGS Sync to USB". Its own files; see chart_sync.py
+        from .chart_sync import sync_charts
+
+        notes.charts = sync_charts(db, drive, idx, pc_id)
     return notes
 
 

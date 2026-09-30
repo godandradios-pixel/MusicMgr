@@ -1080,12 +1080,17 @@ class SettingsView(BaseView):
             (library_state.RATINGS, "Ratings"),
             (library_state.PLAYLISTS, "Playlists"),
             (library_state.JUKEBOX, "Jukebox"),
+            # 2026-09-30 - James: "I would like to have Charts be added"
+            (library_state.CHARTS, "Charts"),
         ):
             cb = QCheckBox(text)
             if cat == library_state.PLAYLISTS:
                 # 2026-09-28: chosen playlist/folder images ride on this one
                 cb.setToolTip("Manual and smart playlists, plus the images chosen for any "
                               "playlist or folder")
+            if cat == library_state.CHARTS:
+                cb.setToolTip("Imported charts, their folders and editions, and matches "
+                              "fixed by hand. Each PC matches the rest to its own library")
             cb.toggled.connect(lambda on, cat=cat: self._save_usb_data_choice(cat, on))
             self.usb_data_cbs[cat] = cb
             data_row.addWidget(cb)
