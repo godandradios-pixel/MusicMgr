@@ -265,6 +265,9 @@ class TrackDetailRow:
     comment: str = ""
     path: Optional[str] = None
     cover_path: Optional[str] = None
+    #: what the Track # column shows - a 78's side ("A"/"B") when it has
+    #: one, else the number (2026-09-30, services/tracknum.py)
+    track_label: str = ""
     #: True for a video woven in as a search match (2026-09-06, see
     #: `LibraryView._load_details`) rather than a real track row - `genre` is
     #: always "Video" for these, there's no rating (RatingDelegate skips
@@ -299,7 +302,7 @@ class TrackDetailRow:
             path=self.path or "",
             duration_ms=self.duration_ms or 0,
             cover_path=self.cover_path,
-            position=str(self.track_no) if self.track_no else None,
+            position=self.track_label or (str(self.track_no) if self.track_no else None),
         )
 
 
@@ -441,7 +444,7 @@ class TrackDetailsModel(QAbstractTableModel):
         if col == COL_ALBUM:
             return row.album
         if col == COL_TRACK_NO:
-            return str(row.track_no) if row.track_no else ""
+            return row.track_label or (str(row.track_no) if row.track_no else "")
         if col == COL_TITLE:
             return row.title
         if col == COL_TIME:

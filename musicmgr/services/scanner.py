@@ -38,6 +38,7 @@ from ..db.models import (
     WatchedFolder,
 )
 from . import library as lib
+from .tracknum import parse_side
 from .matching import normalize, split_artists
 
 log = logging.getLogger(__name__)
@@ -77,6 +78,8 @@ class TrackTags:
     album_artist: str = ""
     album: str = ""
     track_no: Optional[int] = None
+    #: a record side written as the track number ("A", "B", "A1") - 2026-09-30
+    side: Optional[str] = None
     track_total: Optional[int] = None
     disc_no: int = 1
     disc_total: Optional[int] = None
@@ -232,9 +235,14 @@ def read_tags(path: Path) -> TrackTags:
     )
     tags.had_explicit_album_artist = bool(tags.album_artist)
     tags.album = _first(src, "album", "TALB", "\xa9alb")
-    tags.track_no, tags.track_total = _split_pair(
-        _first(src, "tracknumber", "TRCK", "trkn")
-    )
+    raw_track = _first(src, "tracknumber", "TRCK", "trkn")
+    side = parse_side(raw_track)
+    if side is not None:
+        # a record side ("A", "B", "A1") - see services/tracknum.py
+        tags.track_no, tags.side = side
+        tags.track_total = None
+    else:
+        tags.track_no, tags.track_total = _split_pair(raw_track)
     disc, disc_total = _split_pair(_first(src, "discnumber", "TPOS", "disk"))
     tags.disc_no = disc or 1
     tags.disc_total = disc_total
@@ -533,7 +541,7 @@ def import_file(
         session.flush()
     track.track_no = tags.track_no
     track.disc_no = tags.disc_no
-    track.position = (
+    track.position = tags.side or (
         f"{tags.disc_no}-{tags.track_no:02d}"
         if tags.disc_total and tags.disc_total > 1 and tags.track_no
         else (str(tags.track_no) if tags.track_no else None)

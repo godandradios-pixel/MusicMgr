@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from ...config import TOUCH
 from ...services.library import format_duration
+from ...services.tracknum import label as track_label
 from ..theme import COLORS
 from .common import cover_pixmap
 
@@ -69,6 +70,8 @@ class TrackEntry:
     title: str
     duration_ms: int
     playable: bool
+    #: "A"/"B" for a 78's sides, else the number (2026-09-30)
+    label: str = ""
 
 
 @dataclass
@@ -305,7 +308,7 @@ class AlbumTracksDelegate(QStyledItemDelegate):
             painter.drawText(
                 row_rect.left(), row_rect.top(), NUM_W - 14, row_rect.height(),
                 Qt.AlignRight | Qt.AlignVCenter,
-                str(track.track_no) if track.track_no else "",
+                track.label or (str(track.track_no) if track.track_no else ""),
             )
 
             title_x = row_rect.left() + NUM_W
@@ -680,12 +683,13 @@ class AlbumTracksPanel(QWidget):
                     Track.title,
                     Track.duration_ms,
                     playable.c.file_id,
+                    Track.position,
                 )
                 .outerjoin(playable, playable.c.track_id == Track.id)
                 .order_by(Track.release_id, Track.disc_no, Track.track_no, Track.id)
             )
             by_release: dict[int, list[TrackEntry]] = {}
-            for release_id, tid, disc, no, title, ms, file_id in track_rows:
+            for release_id, tid, disc, no, title, ms, file_id, pos in track_rows:
                 by_release.setdefault(release_id, []).append(
                     TrackEntry(
                         track_id=tid,
@@ -694,6 +698,7 @@ class AlbumTracksPanel(QWidget):
                         title=title,
                         duration_ms=ms or 0,
                         playable=file_id is not None,
+                        label=track_label(no, pos),
                     )
                 )
 

@@ -862,3 +862,69 @@ def ensure_builtin_playback_playlists(session: Session) -> None:
                 )
             )
     session.flush()
+
+
+# --------------------------------------------------------------------------
+# sort by album, then side / track (2026-09-30)
+# --------------------------------------------------------------------------
+# James, on his 78 Records playlists: "These are physical records I have in
+# my collection. The track number is important in the playlist because I
+# indicate Side A and Side B. I want the playlist to have the granularity
+# of Album and then Track #." - so each record's A side is followed by its
+# B side, records in catalogue order. Album titles like "Bluebird - B-6873"
+# sort naturally (B-6873 before B-10096), not as text.
+
+_NATURAL = re.compile(r"(\d+)")
+
+
+def natural_key(text: Optional[str]) -> tuple:
+    """'Bluebird - B-6873' < 'Bluebird - B-10096' (numbers compared as
+    numbers, the rest case-insensitively)."""
+    parts = _NATURAL.split((text or "").casefold())
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in parts if p != "")
+
+
+def album_track_key(track: Track) -> tuple:
+    album = track.release.title if track.release is not None else ""
+    return (
+        natural_key(album),
+        track.disc_no or 1,
+        track.track_no if track.track_no is not None else 9999,
+        track.title_key or (track.title or "").casefold(),
+    )
+
+
+def sort_playlist_by_album_track(session: Session, playlist_id: int) -> bool:
+    """Re-number a manual playlist's items in album, then disc, then
+    side/track order. Returns True if the order changed."""
+    playlist = session.get(Playlist, playlist_id)
+    if playlist is None or playlist.kind != Playlist.KIND_MANUAL:
+        return False
+    items = list(session.scalars(
+        select(PlaylistItem)
+        .options(selectinload(PlaylistItem.track).selectinload(Track.release))
+        .where(PlaylistItem.playlist_id == playlist_id)
+        .order_by(PlaylistItem.position, PlaylistItem.id)
+    ))
+    ordered = sorted(items, key=lambda i: album_track_key(i.track))
+    if [i.id for i in ordered] == [i.id for i in items] and all(
+        i.position == n for n, i in enumerate(items)
+    ):
+        return False
+    for n, item in enumerate(ordered):
+        item.position = n
+    playlist.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.flush()
+    return True
+
+
+def sort_folder_by_album_track(session: Session, folder_id: int) -> tuple[int, int]:
+    """`sort_playlist_by_album_track` for every manual playlist in a folder
+    and its subfolders. Returns (playlists re-ordered, manual playlists)."""
+    ids = folder_and_descendant_ids(session, folder_id)
+    playlists = list(session.scalars(
+        select(Playlist.id).where(Playlist.folder_id.in_(ids),
+                                  Playlist.kind == Playlist.KIND_MANUAL)
+    ))
+    changed = sum(1 for pid in playlists if sort_playlist_by_album_track(session, pid))
+    return changed, len(playlists)

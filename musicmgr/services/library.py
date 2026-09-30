@@ -9,6 +9,7 @@ from typing import Iterable, Optional, Sequence
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from .tracknum import label as track_label
 from ..db.models import (
     Artist,
     Chart,
@@ -579,6 +580,8 @@ def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
             "album_artist": album_artist_name or artist_display or "",
             "album": album_title or "",
             "track_no": track.track_no,
+            # "A"/"B" for a 78's sides (2026-09-30, services/tracknum.py)
+            "track_label": track_label(track.track_no, track.position),
             "title": track.title,
             "duration_ms": track.duration_ms,
             "year": year,

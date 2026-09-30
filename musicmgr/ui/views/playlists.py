@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from ... import config
 from ...db.models import Playlist, PlaylistFolder
 from ...services import playlists as pl_svc
+from ...services import tracknum
 from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS
@@ -799,10 +800,17 @@ class PlaylistsView(BaseView):
                     if is_playback
                     else format_duration(track.duration_ms)
                 )
+                # album and side on every row (2026-09-30 - James's 78s:
+                # "the granularity of Album and then Track #")
+                detail = [track.artist_display or ""]
+                if track.release is not None and track.release.title:
+                    detail.append(track.release.title)
+                if tracknum.is_side(track.position):
+                    detail.append(f"Side {track.position}")
                 rows.append({
                     "lead": str(idx),
                     "primary": track.title,
-                    "secondary": track.artist_display or "",
+                    "secondary": " · ".join(d for d in detail if d),
                     "trail": trail,
                     "color": COLORS["text_dim"] if (mf is None or mf.is_missing)
                     else COLORS["text"],
@@ -878,11 +886,35 @@ class PlaylistsView(BaseView):
             menu.addAction("Use automatic image", lambda: self._clear_image(node_type, node_id))
         if node_type == KIND_PLAYLIST and kind == Playlist.KIND_SMART and not on_page:
             menu.addAction("Edit rules…", lambda: self._edit_smart_id(node_id))
+        # 2026-09-30 - one record after another, A side before B side
+        if node_type == KIND_FOLDER:
+            menu.addAction("Sort playlists by album && track",
+                           lambda: self._sort_album_track(node_type, node_id))
+        elif kind == Playlist.KIND_MANUAL:
+            menu.addAction("Sort by album && track",
+                           lambda: self._sort_album_track(node_type, node_id))
         if not (node_type == KIND_PLAYLIST and kind == Playlist.KIND_PLAYBACK):
             menu.addSeparator()
             label = "Delete folder…" if node_type == KIND_FOLDER else "Delete playlist…"
             menu.addAction(label, lambda: self._delete(node_type, node_id))
         return menu
+
+    def _sort_album_track(self, node_type: str, node_id: int) -> None:
+        """Re-order a manual playlist - or every manual playlist in a folder
+        - by album, then side/track (services/playlists.py)."""
+        with self.ctx.session() as session:
+            if node_type == KIND_FOLDER:
+                changed, total = pl_svc.sort_folder_by_album_track(session, node_id)
+                message = (f"Sorted {changed} of {total} playlist{'s' if total != 1 else ''} "
+                           "by album and track" if changed else "Already in album and track order")
+            else:
+                changed = pl_svc.sort_playlist_by_album_track(session, node_id)
+                message = "Sorted by album and track" if changed else "Already in album and track order"
+        self.ctx.notify(message)
+        if self._playlist_id is not None:
+            self._load_playlist_detail(self._playlist_id)
+        else:
+            self.refresh()
 
     def _play_node(self, playlist_id: int, shuffle: bool) -> None:
         with self.ctx.session() as session:

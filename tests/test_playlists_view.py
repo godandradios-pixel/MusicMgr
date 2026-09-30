@@ -187,7 +187,8 @@ class TestTileMenu:
 
         texts = self._texts(view._build_node_menu({"type": KIND_FOLDER, "id": folder.id}))
 
-        assert texts == ["Open", "Rename…", "Move to folder…", "Choose image…", "Delete folder…"]
+        assert texts == ["Open", "Rename…", "Move to folder…", "Choose image…",
+                         "Sort playlists by album && track", "Delete folder…"]
 
     def test_playlist_menu_offers_play_and_image_reset_once_an_image_is_set(self, ctx, session):
         playlist = pl.create_playlist(session, "Mix")
