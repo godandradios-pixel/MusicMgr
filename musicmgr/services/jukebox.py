@@ -942,3 +942,29 @@ def search_addable_tracks(
     # search matches more candidates than fit in one query.
     results.sort(key=lambda r: (r["album"].lower(), r["title"].lower()))
     return results
+
+
+def genre_tracks(session: Session, genre: Optional[str]) -> list[Track]:
+    """Every song on one genre board's cards (all pages), in card order,
+    A side then B side - what the Jukebox page's "Play all" / "Shuffle"
+    play (2026-09-30, James: "When on the Jukebox page for a specific
+    Genre, I would like to be able to 'Play All' 'Shuffled' for the songs
+    on the jukebox cards"). `genre=None` means every card."""
+    stmt = (
+        select(JukeboxSlot)
+        .options(
+            selectinload(JukeboxSlot.side_a_track).selectinload(Track.files),
+            selectinload(JukeboxSlot.side_a_track).selectinload(Track.release),
+            selectinload(JukeboxSlot.side_b_track).selectinload(Track.files),
+            selectinload(JukeboxSlot.side_b_track).selectinload(Track.release),
+        )
+        .order_by(JukeboxSlot.slot_number)
+    )
+    if genre is not None:
+        stmt = stmt.where(JukeboxSlot.genre == genre)
+    tracks: list[Track] = []
+    for slot in session.scalars(stmt):
+        for track in (slot.side_a_track, slot.side_b_track):
+            if track is not None:
+                tracks.append(track)
+    return tracks

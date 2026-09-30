@@ -1285,6 +1285,7 @@ class JukeboxView(BaseView):
         self.header.addWidget(self.now_playing_label)
         self.header.addStretch(1)
 
+
         # the pager (2026-09-07 follow-up, James: "Now at the bottom of the
         # jukebox page there is a page 1 of 3 which takes up a whole row of
         # space. Recommend we move that to the left of the top + Add to
@@ -1374,7 +1375,23 @@ class JukeboxView(BaseView):
         self._genre_editor_mode: Optional[str] = None
         chip_row.addStretch(1)
         self._build_genre_chips()
-        self.body().addLayout(chip_row)
+        # 2026-09-30 - James: "When on the Jukebox page for a specific
+        # Genre, I would like to be able to 'Play All' 'Shuffled' for the
+        # songs on the jukebox cards." Both play every card on the genre
+        # chip that's selected, all pages, A side then B side. They sit at
+        # the right end of the chip row (the header had no room left - the
+        # "Page 1 of 5" label got squeezed to "P"), in their own outer row
+        # so `chip_row`'s own trailing-stretch bookkeeping stays untouched.
+        self.play_all_btn = TouchButton("▶ Play all")
+        self.play_all_btn.clicked.connect(lambda: self.play_genre(shuffle=False))
+        self.shuffle_all_btn = TouchButton("⇄ Shuffle")
+        self.shuffle_all_btn.clicked.connect(lambda: self.play_genre(shuffle=True))
+        genre_bar = QHBoxLayout()
+        genre_bar.addLayout(chip_row, 1)
+        genre_bar.addSpacing(12)
+        genre_bar.addWidget(self.play_all_btn)
+        genre_bar.addWidget(self.shuffle_all_btn)
+        self.body().addLayout(genre_bar)
 
         # "Rate a track 5 stars..." dropped from this hint 2026-09-07 - the
         # automatic 5-star route it described was removed the same day
@@ -1596,7 +1613,10 @@ class JukeboxView(BaseView):
             self._genre = genres[0] if genres else jkb_svc.DEFAULT_JUKEBOX_GENRE
 
         for genre in genres:
-            chip = _GenreChip(genre)
+            # "&&": a lone "&" is a Qt keyboard-shortcut marker, so "R&B"
+            # showed as "RB" with the B underlined (2026-09-30). The real
+            # name lives in the "genre" property, set just below.
+            chip = _GenreChip(genre.replace("&", "&&"))
             # "make the pills not red but the brown color" (2026-09-07,
             # sixth same-day follow-up) - overrides ChipButton's own
             # "Chip" object name so only these genre chips pick up
@@ -1866,6 +1886,18 @@ class JukeboxView(BaseView):
         self._maybe_start_page_flip_timer()
 
     # -- playing ------------------------------------------------------------
+
+    def play_genre(self, shuffle: bool) -> None:
+        """Play (or shuffle) every song on the selected genre's cards."""
+        with self.ctx.session() as session:
+            tracks = jkb_svc.genre_tracks(session, self._genre)
+            if not tracks:
+                self.ctx.notify(f"No songs on the {self._genre} cards yet")
+                return
+            self.ctx.player.set_shuffle(shuffle)
+            self.ctx.play_tracks(tracks, start=0, source="jukebox")
+        verb = "Shuffling" if shuffle else "Playing"
+        self.ctx.notify(f"{verb} {len(tracks)} {self._genre} songs")
 
     def _on_side_activated(self, side: str, track_id: int) -> None:
         # play_tracks() must be called while the session is still open -
