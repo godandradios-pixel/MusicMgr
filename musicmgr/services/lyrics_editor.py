@@ -14,9 +14,9 @@ sidecar path `services/lyrics.py:find_lyrics_path` reads from - so a saved
 edit shows up in the Lyrics pane with nothing else to change. The dialog
 itself lives in `ui/widgets/lyrics_editor.py`.
 
-Saving keeps one backup of whatever .lrc was there before
-(`<track>.lrc.bak`, overwritten each save) - a re-timing session that goes
-badly can always be undone by hand.
+Saving overwrites the .lrc in place with no backup - a `.bak` beside every
+edited track would only clutter the USB sync, and a mangled file is easy to
+replace by fetching the lyrics from LRCLIB again.
 """
 
 from __future__ import annotations
@@ -227,13 +227,10 @@ def save_lrc(
     album: str = "",
     duration_ms: int = 0,
 ) -> Path:
-    """Write the sidecar next to the audio file, backing up any existing
-    one to `<name>.lrc.bak` first. Returns the written path. Raises OSError
+    """Write the sidecar next to the audio file, overwriting any existing
+    one (no backup is kept). Returns the written path. Raises OSError
     if the folder isn't writable - the dialog reports it."""
     lrc_path = Path(audio_path).with_suffix(".lrc")
-    if lrc_path.is_file():
-        backup = lrc_path.with_name(lrc_path.name + ".bak")
-        backup.write_bytes(lrc_path.read_bytes())
     text = to_lrc(lines, title=title, artist=artist, album=album, duration_ms=duration_ms)
     lrc_path.write_text(text, encoding="utf-8")
     return lrc_path

@@ -89,7 +89,7 @@ def test_to_lrc_writes_header_and_sorted_stamped_lines_only():
     assert le.unstamped_count(lines) == 1
 
 
-def test_save_round_trips_through_the_lyrics_pane_reader_and_backs_up(tmp_path):
+def test_save_round_trips_through_the_lyrics_pane_reader_without_backup(tmp_path):
     audio = tmp_path / "song.mp3"
     audio.write_bytes(b"")
     old = tmp_path / "song.lrc"
@@ -98,7 +98,8 @@ def test_save_round_trips_through_the_lyrics_pane_reader_and_backs_up(tmp_path):
     path = le.save_lrc(audio, [le.EditLine("hello", 1_230), le.EditLine("", 4_000)], title="T")
 
     assert path == old
-    assert (tmp_path / "song.lrc.bak").read_text(encoding="utf-8") == "[00:01.00]old\n"
+    assert not (tmp_path / "song.lrc.bak").exists()
+    assert list(tmp_path.glob("*.bak")) == []
     loaded = load_lyrics(audio)
     assert loaded.synced
     assert [(l.time_ms, l.text) for l in loaded.lines] == [(1_230, "hello"), (4_000, "")]
