@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -59,6 +60,7 @@ from sqlalchemy import select
 
 from ...db.models import Chart, ChartEntry, ChartIssue, Track
 from ...services import tracknum
+from ...services import updater
 from ...services import jukebox as jukebox_svc
 from ...services import library as lib
 from ...services.library import format_duration
@@ -76,8 +78,13 @@ from ..widgets.common import (
 )
 from ..widgets.lyrics_editor import LyricsEditorDialog
 from ..widgets.lyrics_panel import LyricsPanel
+from ..widgets.turntable import RPM_78, RPM_LP, Turntable
 from .base import BaseView
 from .jukebox import JukeboxPickerDialog
+
+#: Settings key - Now Playing shows the turntable (1, default) or the flat
+#: album cover (0); see set_turntable_shown
+PREF_TURNTABLE = "nowplaying_turntable"
 
 
 class NowPlayingView(BaseView):
@@ -122,8 +129,27 @@ class NowPlayingView(BaseView):
         # album - quick way to browse from what's playing", 2026-09-06)
         self.cover = CoverArt(340)
         self.cover.setCursor(Qt.PointingHandCursor)
-        self.cover.mousePressEvent = lambda _e: self._open_current_release()
-        left.addWidget(self.cover, 0, Qt.AlignHCenter)
+        self.cover.mousePressEvent = lambda e: (
+            self._open_current_release() if e.button() == Qt.LeftButton else None)
+        # 2026-09-30 - James: "any way we can incorporate a visual that shows
+        # the album cover, spinning as if on a record player from the top
+        # view?" The turntable (ui/widgets/turntable.py) is shown instead of
+        # the flat cover by default; right-click or hold either one to
+        # switch, remembered per PC. A tap still opens the album.
+        self.turntable = Turntable(340)
+        self.turntable.setCursor(Qt.PointingHandCursor)
+        self.turntable.mousePressEvent = lambda e: (
+            self._open_current_release() if e.button() == Qt.LeftButton else None)
+        for art in (self.cover, self.turntable):
+            art.contextMenuEvent = lambda e: self._art_menu().popup(e.globalPos())
+        self.art_stack = QStackedWidget()
+        self.art_stack.setFixedSize(340, 340)
+        self.art_stack.addWidget(self.cover)
+        self.art_stack.addWidget(self.turntable)
+        with ctx.session() as db:
+            show_turntable = updater.get_bool_pref(db, PREF_TURNTABLE, True)
+        self.art_stack.setCurrentWidget(self.turntable if show_turntable else self.cover)
+        left.addWidget(self.art_stack, 0, Qt.AlignHCenter)
 
         self.track_title = QLabel("Nothing playing")
         self.track_title.setStyleSheet("font-size: 26px; font-weight: 700;")
@@ -272,6 +298,8 @@ class NowPlayingView(BaseView):
         ctx.player.trackChanged.connect(self._on_track_changed)
         ctx.player.queueChanged.connect(self._refresh_queue)
         ctx.player.positionChanged.connect(self._on_position)
+        ctx.player.playbackStateChanged.connect(
+            lambda state: self.turntable.set_playing(state == "playing"))
 
     # -- slots ---------------------------------------------------------------
 
@@ -301,6 +329,8 @@ class NowPlayingView(BaseView):
             self.track_album.setText("")
             self.chart_note.setText("")
             self.cover.set_source(None, "")
+            self.turntable.set_source(None, "")
+            self.turntable.set_playing(False)
             self.rating_stars.set_rating(0)
             self.jukebox_toggle.set_on(False)
             self.lyrics_panel.load_for_path(None)
@@ -311,6 +341,11 @@ class NowPlayingView(BaseView):
         self.track_artist.setText(item.artist)
         self.track_album.setText(tracknum.with_side(item.album, item.position))
         self.cover.set_source(item.cover_path, item.album or item.artist)
+        # a 78's side ("A"/"B") spins at 78 rpm, everything else at 33 1/3
+        self.turntable.set_source(
+            item.cover_path, item.album or item.artist,
+            rpm=RPM_78 if tracknum.is_side(item.position) else RPM_LP)
+        self.turntable.set_playing(self.ctx.player.is_playing())
         note, rating, on_jukebox, artist_id, release_id = self._load_track_meta(item.track_id)
         self.chart_note.setText(note)
         self.rating_stars.set_rating(rating)
@@ -495,6 +530,21 @@ class NowPlayingView(BaseView):
 
     def _on_position(self, ms: int) -> None:
         self.lyrics_panel.update_position(ms)
+        self.turntable.set_progress(ms, self.ctx.player.duration())
+
+    def _art_menu(self) -> QMenu:
+        """Right-click / hold on the artwork: switch between the turntable
+        and the flat album cover (remembered in Settings' table)."""
+        menu = QMenu(self)
+        on_turntable = self.art_stack.currentWidget() is self.turntable
+        action = menu.addAction("Show album cover" if on_turntable else "Show turntable")
+        action.triggered.connect(lambda: self.set_turntable_shown(not on_turntable))
+        return menu
+
+    def set_turntable_shown(self, shown: bool) -> None:
+        self.art_stack.setCurrentWidget(self.turntable if shown else self.cover)
+        with self.ctx.session() as db:
+            updater.set_pref(db, PREF_TURNTABLE, "1" if shown else "0")
 
     def _refresh_queue(self) -> None:
         if not self._is_current_page():
