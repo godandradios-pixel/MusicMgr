@@ -792,28 +792,95 @@ class ChartsView(BaseView):
                 "album": track.release.title if track.release else "",
             }
 
-    def import_csv(self) -> None:
+    def _selected_chart_id(self) -> Optional[int]:
+        """The chart the selection belongs to - the chart itself, or the chart
+        an edition under it belongs to. None for a folder or nothing."""
+        if self._selected_type == "chart":
+            return self._selected_id
+        if self._selected_type == "issue" and self._selected_id is not None:
+            with self.ctx.session() as session:
+                issue = session.get(ChartIssue, self._selected_id)
+                return issue.chart_id if issue is not None else None
+        return None
+
+    def _chart_label(self, chart_id: int) -> str:
+        """'Billboard › Pop › Weekly'"""
+        with self.ctx.session() as session:
+            chart = session.get(Chart, chart_id)
+            if chart is None:
+                return ""
+            parts = [chart.name]
+            folder = chart.folder
+            seen = set()
+            while folder is not None and folder.id not in seen:
+                seen.add(folder.id)
+                parts.append(folder.name)
+                folder = folder.parent
+        return " › ".join(reversed(parts))
+
+    # dialogs, split out so tests can answer them
+    def _ask_csv_files(self) -> list[str]:
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Choose chart CSV file(s)", str(Path.home()), "CSV files (*.csv)"
         )
+        return paths
+
+    def _confirm_add(self, label: str, count: int) -> bool:
+        files = "this file" if count == 1 else f"these {count} files"
+        return QMessageBox.question(
+            self, "Import chart CSV",
+            f"Add {files} to “{label}”?\n\nAn edition with the same date as one "
+            "already in this chart replaces that edition's rows.",
+        ) == QMessageBox.Yes
+
+    def _ask_new_chart_name(self, suggestion: str) -> Optional[str]:
+        name, ok = QInputDialog.getText(
+            self, "New chart",
+            "No chart is selected, so this makes a new one.\n"
+            "Chart name (leave blank to name each chart after its file):",
+            text=suggestion,
+        )
+        return name.strip() if ok else None
+
+    def import_csv(self) -> None:
+        """2026-09-30 - James: "change Import chart CSV… to add to whichever
+        chart you have selected instead of asking for a name". The name box
+        (pre-filled "Billboard Hot 100") had sent a weekly Hot 100 file into
+        the Pop Year End chart, whose internal name matched.
+
+        - A chart (or one of its editions) selected: the files are added to
+          that chart, after a confirm naming it.
+        - A folder or nothing selected: a new chart is made there - always
+          new, never an existing chart that happens to share the name."""
+        target = self._selected_chart_id()
+        paths = self._ask_csv_files()
         if not paths:
             return
-        name, ok = QInputDialog.getText(
-            self,
-            "Chart name",
-            "Name this chart series (leave blank to use the file name):",
-            text="Billboard Hot 100",
-        )
-        if not ok:
-            return
+        if target is not None:
+            if not self._confirm_add(self._chart_label(target), len(paths)):
+                return
+            new_name = None
+        else:
+            suggestion = Path(paths[0]).stem.replace("_", " ").replace("-", " ").title()
+            new_name = self._ask_new_chart_name(suggestion if len(paths) == 1 else "")
+            if new_name is None:
+                return
         folder_id = self._current_folder_context()
         summaries = []
         imported_chart_ids: set[int] = set()
         with self.ctx.session() as session:
+            shared_new: Optional[int] = None
             for path in paths:
-                result = chart_svc.import_chart_csv(
-                    session, path, chart_name=name.strip() or None, folder_id=folder_id
-                )
+                chart_id = target
+                if chart_id is None:
+                    if new_name:
+                        if shared_new is None:
+                            shared_new = chart_svc.create_chart(session, new_name, folder_id).id
+                        chart_id = shared_new
+                    else:
+                        stem = Path(path).stem.replace("_", " ").replace("-", " ").title()
+                        chart_id = chart_svc.create_chart(session, stem, folder_id).id
+                result = chart_svc.import_chart_csv(session, path, chart_id=chart_id)
                 summaries.append(result.summary())
                 if result.errors:
                     summaries.append("  ! " + "; ".join(result.errors[:3]))

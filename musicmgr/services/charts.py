@@ -386,6 +386,22 @@ def get_or_create_chart(
     return chart
 
 
+def create_chart(session: Session, name: str, folder_id: Optional[int] = None) -> Chart:
+    """A brand-new chart, always - never an existing one that happens to
+    share the name's slug (2026-09-30: importing "Billboard Hot 100" weekly
+    rows landed in the Pop Year End chart, whose slug was
+    `billboard-hot-100`). The slug gets -2, -3... when taken."""
+    base = slugify(name)[:110] or "chart"
+    slug, n = base, 2
+    while session.scalar(select(Chart.id).where(Chart.slug == slug)) is not None:
+        slug = f"{base}-{n}"
+        n += 1
+    chart = Chart(name=name.strip() or "Chart", slug=slug, folder_id=folder_id)
+    session.add(chart)
+    session.flush()
+    return chart
+
+
 def import_chart_csv(
     session: Session,
     path: Path | str,
@@ -394,8 +410,13 @@ def import_chart_csv(
     match: bool = True,
     threshold: float = 0.72,
     folder_id: Optional[int] = None,
+    chart_id: Optional[int] = None,
 ) -> ImportResult:
     """Import one CSV file. Rows are grouped into issues by their date column.
+
+    `chart_id` (2026-09-30) adds the rows to that exact chart - what the
+    Charts page's "Import chart CSV…" now does with the selected chart -
+    instead of finding a chart by `chart_name`'s slug.
 
     `folder_id` only matters the first time a chart with this name is seen -
     re-importing into an existing chart never moves it out of wherever it was
@@ -418,8 +439,15 @@ def import_chart_csv(
         )
         return result
 
-    name = chart_name or path.stem.replace("_", " ").replace("-", " ").title()
-    chart = get_or_create_chart(session, name, source=str(path), folder_id=folder_id)
+    chart = session.get(Chart, chart_id) if chart_id is not None else None
+    if chart_id is not None and chart is None:
+        result.errors.append(f"chart {chart_id} no longer exists")
+        return result
+    if chart is None:
+        name = chart_name or path.stem.replace("_", " ").replace("-", " ").title()
+        chart = get_or_create_chart(session, name, source=str(path), folder_id=folder_id)
+    elif chart.source is None:
+        chart.source = str(path)
     result.chart_name = chart.name
     result.chart_id = chart.id
 
