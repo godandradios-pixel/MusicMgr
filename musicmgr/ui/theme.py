@@ -496,6 +496,11 @@ QPushButton#KeyCap {{
 /* ---------------- lists ---------------- */
 QListWidget, QListView, QTreeWidget, QTableWidget {{
     background: {c['surface']};
+    /* 2026-09-30 - the Charts table (setAlternatingRowColors) showed every
+       other row near-white on Linux Mint ("the highlight of rows is
+       bashed"): without this, the striping colour comes from the desktop
+       theme's own palette, which on Mint is a light one. */
+    alternate-background-color: {c['surface_alt']};
     border: 1px solid {c['border']};
     border-radius: 12px;
     padding: 4px;
