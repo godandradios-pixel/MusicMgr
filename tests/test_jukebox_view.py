@@ -407,7 +407,9 @@ class TestGenreChip:
         assert fired == []
         assert chip.isChecked()
 
-    def test_a_long_press_emits_renamerequested_and_swallows_the_release(self, qapp):
+    def test_a_long_press_opens_the_menu_and_swallows_the_release(self, qapp):
+        # 2026-09-30: holding a chip opens the right-click menu (Rename,
+        # Delete, Play all, Shuffle) instead of going straight to renaming
         chip = _GenreChip("Rock")
         fired = []
         chip.renameRequested.connect(lambda: fired.append(True))
@@ -416,7 +418,10 @@ class TestGenreChip:
         chip._on_long_press_timeout()  # simulate the timer firing while still held
         chip.mouseReleaseEvent(release_event())
 
-        assert fired == [True]
+        assert fired == []
+        assert [a.text() for a in chip._menu.actions() if a.text()] == [
+            "Rename genre…", "Delete genre…", "▶ Play all", "⇄ Shuffle"]
+        chip._menu.close()
         # the release that followed the long press must not also register
         # as an ordinary click - otherwise the chip would toggle checked
         # right as the rename box opens underneath it.

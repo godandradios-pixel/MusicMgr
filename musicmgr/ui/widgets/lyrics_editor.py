@@ -75,14 +75,19 @@ class LyricsTextThread(QThread):
 
 
 class LyricsTextDialog(QDialog):
-    """"Edit text…" - the lyric lines as one plain-text block."""
+    """"Edit text…" - the lyric lines as one plain-text block, each led by
+    its [mm:ss.xx] time so times can be edited too (2026-09-30)."""
 
     def __init__(self, text: str, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit lyric text")
         self.setMinimumSize(620, 560)
         layout = QVBoxLayout(self)
-        hint = QLabel("One lyric line per row. Timing is kept for lines you don't change.")
+        hint = QLabel(
+            "One lyric line per row. Edit a time by changing its [mm:ss.xx] - "
+            "e.g. [01:23.45]. A row with no time keeps the time its words had; "
+            "a row that's only a time is a music break."
+        )
         hint.setObjectName("Dim")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -423,10 +428,11 @@ class LyricsEditorDialog(QDialog):
         return None
 
     def _edit_text(self) -> None:
-        dialog = LyricsTextDialog("\n".join(line.text for line in self.lines), self)
+        # times shown and editable as [mm:ss.xx] (2026-09-30)
+        dialog = LyricsTextDialog(le.to_timed_text(self.lines), self)
         if dialog.exec() != QDialog.Accepted:
             return
-        new_lines = le.retext(self.lines, dialog.text())
+        new_lines = le.from_timed_text(self.lines, dialog.text())
         self.set_lines(new_lines, select=max(self.selected_index(), 0))
 
     # -- stamping and fixing -------------------------------------------------

@@ -137,7 +137,9 @@ class AppContext(QObject):
         else:
             self.notify("Open an album or artist to play")
 
-    def play_tracks(self, tracks, start: int = 0, source: str = "library") -> int:
+    def play_tracks(
+        self, tracks, start: int = 0, source: str = "library", navigate: bool = True
+    ) -> int:
         """Convert ORM tracks to queue items and start playback. Returns count.
 
         Every real "hit play" action in the app - a track tap, Play
@@ -161,7 +163,10 @@ class AppContext(QObject):
             return 0
         start = min(max(start, 0), len(items) - 1)
         self.player.play_tracks(items, start=start, source=source)
-        self.navigateRequested.emit("nowplaying")
+        # navigate=False (2026-09-30): the Jukebox page's Play all/Shuffle
+        # stay put so its cards can follow the music
+        if navigate:
+            self.navigateRequested.emit("nowplaying")
         return len(items)
 
     def enqueue_tracks(self, tracks, play_next: bool = False) -> int:

@@ -329,3 +329,38 @@ def test_external_edit_button_hides_when_there_are_no_lyrics(ctx, playing, qapp)
     assert panel._stack.currentIndex() == 0  # empty state
     assert panel.edit_button.isHidden()
     assert not panel._sync_myself_btn.isHidden()
+
+
+class TestTimedText:
+    """"Edit text…" shows and reads back [mm:ss.xx] times (2026-09-30)."""
+
+    def _lines(self):
+        return [le.EditLine("Hello", 12_340), le.EditLine("", 30_000),
+                le.EditLine("World", 45_670), le.EditLine("Unsynced", None)]
+
+    def test_round_trip_keeps_everything(self):
+        text = le.to_timed_text(self._lines())
+        assert text == "[00:12.34]Hello\n[00:30.00]\n[00:45.67]World\nUnsynced"
+        assert le.from_timed_text(self._lines(), text) == self._lines()
+
+    def test_edited_time_is_used(self):
+        text = "[00:13.00]Hello\n[00:30.00]\n[01:02.5]World\nUnsynced"
+        got = le.from_timed_text(self._lines(), text)
+        assert [l.time_ms for l in got] == [13_000, 30_000, 62_500, None]
+
+    def test_row_without_time_keeps_its_old_time(self):
+        got = le.from_timed_text(self._lines(), "Hello\n[00:40.00]World")
+        assert got == [le.EditLine("Hello", 12_340), le.EditLine("World", 40_000)]
+
+    def test_new_row_with_time_and_repeated_tags(self):
+        got = le.from_timed_text([], "[ti:Song]\n[00:05.00][00:50.00]Chorus <00:05.50>line\n\nNew")
+        assert got == [le.EditLine("Chorus line", 5_000), le.EditLine("Chorus line", 50_000),
+                       le.EditLine("New", None)]
+
+    def test_saved_file_keeps_edited_times(self, tmp_path):
+        audio = tmp_path / "song.mp3"
+        audio.write_bytes(b"")
+        lines = le.from_timed_text([], "[00:01.00]One\n[00:02.50]Two")
+        path = le.save_lrc(audio, lines)
+        body = [l for l in path.read_text(encoding="utf-8").splitlines() if l.startswith("[0")]
+        assert body == ["[00:01.00]One", "[00:02.50]Two"]

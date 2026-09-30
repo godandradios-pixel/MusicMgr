@@ -968,3 +968,18 @@ def genre_tracks(session: Session, genre: Optional[str]) -> list[Track]:
             if track is not None:
                 tracks.append(track)
     return tracks
+
+
+def slot_position(session: Session, genre: Optional[str], track_id: int) -> Optional[int]:
+    """0-based position, in card order, of the card holding `track_id` on
+    `genre`'s board (either side) - or None if it isn't on that board. The
+    Jukebox page divides this by cards-per-page to flip to the playing
+    song's page (2026-09-30)."""
+    stmt = select(JukeboxSlot.side_a_track_id, JukeboxSlot.side_b_track_id).order_by(
+        JukeboxSlot.slot_number)
+    if genre is not None:
+        stmt = stmt.where(JukeboxSlot.genre == genre)
+    for index, (a, b) in enumerate(session.execute(stmt)):
+        if track_id in (a, b):
+            return index
+    return None

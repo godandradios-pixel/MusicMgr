@@ -106,6 +106,71 @@ def retext(lines: Sequence[EditLine], new_text: str) -> list[EditLine]:
     return result
 
 
+def to_timed_text(lines: Sequence[EditLine]) -> str:
+    """The "Edit text…" box's contents: one row per line, each stamped line
+    led by its `[mm:ss.xx]` so the times can be edited as text too
+    (2026-09-30 - James: "if you edit lyrics with timestamps it removes the
+    timestamps when you save, I would like the edit lyrics to allow edit
+    of timestamps"). A timed empty row is a music break and is kept."""
+    rows = []
+    for line in lines:
+        if line.time_ms is None:
+            rows.append(line.text)
+        else:
+            rows.append(f"[{format_timestamp(line.time_ms)}]{line.text}")
+    return "\n".join(rows)
+
+
+def _tag_ms(match) -> int:
+    minutes, seconds, frac = match.group(1), match.group(2), match.group(3) or "0"
+    frac_ms = int(frac.ljust(3, "0")[:3])
+    return (int(minutes) * 60 + int(seconds)) * 1000 + frac_ms
+
+
+def from_timed_text(old_lines: Sequence[EditLine], text: str) -> list[EditLine]:
+    """Read the "Edit text…" box back.
+
+    - A row starting with `[mm:ss.xx]` gets exactly that time - that's how a
+      time is edited. Several leading tags (`[00:12.00][00:45.00]chorus`)
+      make one line per time, like any .lrc.
+    - A row without a time keeps the time its words had before, where
+      `retext`'s matching can find one (so text pasted without times, or a
+      reworded line, doesn't lose its sync); otherwise it's unstamped.
+    - A row that's only a time (`[01:02.30]`) is a music break; an empty row
+      with no time is dropped. `[ti:...]`-style header rows are ignored.
+    - Word-level `<mm:ss.xx>` tags inside a line are dropped, same as when
+      a file is loaded."""
+    rows: list[tuple[str, list[int]]] = []
+    for raw in text.splitlines():
+        row = raw.strip()
+        if _META_TAG.match(row) and not _TIME_TAG.match(row):
+            continue
+        times = []
+        while True:
+            m = _TIME_TAG.match(row)
+            if not m:
+                break
+            times.append(_tag_ms(m))
+            row = row[m.end():].lstrip()
+        row = _WORD_TAG.sub("", row).strip()
+        if not row and not times:
+            continue
+        rows.append((row, times))
+
+    # times for the untimed rows, from the words they had before
+    untimed = [i for i, (row, times) in enumerate(rows) if not times and row]
+    inherited = retext(old_lines, "\n".join(rows[i][0] for i in untimed))
+    inherited_ms = {i: line.time_ms for i, line in zip(untimed, inherited)}
+
+    result: list[EditLine] = []
+    for i, (row, times) in enumerate(rows):
+        if times:
+            result.extend(EditLine(text=row, time_ms=t) for t in times)
+        else:
+            result.append(EditLine(text=row, time_ms=inherited_ms.get(i)))
+    return result
+
+
 # -- editing operations --------------------------------------------------
 
 

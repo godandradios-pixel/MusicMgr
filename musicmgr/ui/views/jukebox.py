@@ -1016,6 +1016,11 @@ class _GenreChip(ChipButton):
 
     renameRequested = Signal()
     deleteRequested = Signal()
+    #: "Play all" / "Shuffle" on the chip's menu (2026-09-30 - James: "those
+    #: Play All and Shuffle take up too much space. Let's right click or
+    #: hold down a genre and place those two options under the rename
+    #: genre and delete genre"). Argument: shuffle.
+    playRequested = Signal(bool)
     #: (dragged genre, genre it was dropped on, dropped on its right half) -
     #: 2026-09-26 drag-to-reorder, James: "I'd like to drag n drop move the
     #: genres at the top to reorder". Press a chip and slide it sideways
@@ -1159,8 +1164,12 @@ class _GenreChip(ChipButton):
         super().mouseReleaseEvent(event)
 
     def _on_long_press_timeout(self) -> None:
+        """Holding a chip opens the same menu a right-click does (Rename,
+        Delete, Play all, Shuffle) - 2026-09-30; it used to go straight to
+        renaming. `popup`, not `exec`, so it doesn't block."""
         self._long_press_fired = True
-        self.renameRequested.emit()
+        self._menu = self._build_context_menu()
+        self._menu.popup(self.mapToGlobal(self.rect().bottomLeft()))
 
     def contextMenuEvent(self, event) -> None:  # noqa: D102 - Qt override
         self._build_context_menu().exec(event.globalPos())
@@ -1177,6 +1186,11 @@ class _GenreChip(ChipButton):
         menu.addSeparator()
         delete_action = menu.addAction("Delete genre…")
         delete_action.triggered.connect(self.deleteRequested.emit)
+        menu.addSeparator()
+        play_action = menu.addAction("▶ Play all")
+        play_action.triggered.connect(lambda: self.playRequested.emit(False))
+        shuffle_action = menu.addAction("⇄ Shuffle")
+        shuffle_action.triggered.connect(lambda: self.playRequested.emit(True))
         return menu
 
 
@@ -1375,23 +1389,7 @@ class JukeboxView(BaseView):
         self._genre_editor_mode: Optional[str] = None
         chip_row.addStretch(1)
         self._build_genre_chips()
-        # 2026-09-30 - James: "When on the Jukebox page for a specific
-        # Genre, I would like to be able to 'Play All' 'Shuffled' for the
-        # songs on the jukebox cards." Both play every card on the genre
-        # chip that's selected, all pages, A side then B side. They sit at
-        # the right end of the chip row (the header had no room left - the
-        # "Page 1 of 5" label got squeezed to "P"), in their own outer row
-        # so `chip_row`'s own trailing-stretch bookkeeping stays untouched.
-        self.play_all_btn = TouchButton("▶ Play all")
-        self.play_all_btn.clicked.connect(lambda: self.play_genre(shuffle=False))
-        self.shuffle_all_btn = TouchButton("⇄ Shuffle")
-        self.shuffle_all_btn.clicked.connect(lambda: self.play_genre(shuffle=True))
-        genre_bar = QHBoxLayout()
-        genre_bar.addLayout(chip_row, 1)
-        genre_bar.addSpacing(12)
-        genre_bar.addWidget(self.play_all_btn)
-        genre_bar.addWidget(self.shuffle_all_btn)
-        self.body().addLayout(genre_bar)
+        self.body().addLayout(chip_row)
 
         # "Rate a track 5 stars..." dropped from this hint 2026-09-07 - the
         # automatic 5-star route it described was removed the same day
@@ -1562,6 +1560,15 @@ class JukeboxView(BaseView):
         self._page = 0
         self.refresh()
 
+    def _select_genre(self, genre: str) -> None:
+        """Switch the board to `genre` and check its chip, as a tap would."""
+        for chip in self._genre_chips.buttons():
+            if chip.property("genre") == genre:
+                chip.setChecked(True)
+        self._genre = genre
+        self._page = 0
+        self.refresh()
+
     # -- genre management (2026-09-22 follow-up) -----------------------------
     # James: "I would like the ability to modify the genre titles at the
     # top. Ability to add, delete and rename a genre. The Rename would be
@@ -1629,6 +1636,7 @@ class JukeboxView(BaseView):
                 lambda c=chip, g=genre: self._begin_rename_genre(c, g)
             )
             chip.deleteRequested.connect(lambda g=genre: self._on_delete_genre_requested(g))
+            chip.playRequested.connect(lambda shuffle, g=genre: self.play_genre(shuffle, genre=g))
             chip.reorderRequested.connect(self._on_genre_reorder_requested)
             self._genre_chips.addButton(chip)
             self.chip_row.insertWidget(self._stretch_index(), chip)
@@ -1831,6 +1839,17 @@ class JukeboxView(BaseView):
         return jkb_svc.find_code_for_track(session, current.track_id)
 
     def _on_track_changed(self, item) -> None:
+        """Keep the "NOW PLAYING" display current, and - 2026-09-30, James:
+        "when it shuffles the jukebox songs, and you are still on the
+        jukebox page, I would like it to flip the genre page where the song
+        is playing" - turn to the page holding the playing song's card
+        when that card is on the genre board being shown."""
+        if item is not None:
+            per_page = max(1, self._current_cols * self._current_rows)
+            with self.ctx.session() as session:
+                index = jkb_svc.slot_position(session, self._genre, item.track_id)
+            if index is not None:
+                self._page = index // per_page
         self.refresh()
 
     def _change_page(self, delta: int) -> None:
@@ -1887,15 +1906,21 @@ class JukeboxView(BaseView):
 
     # -- playing ------------------------------------------------------------
 
-    def play_genre(self, shuffle: bool) -> None:
-        """Play (or shuffle) every song on the selected genre's cards."""
+    def play_genre(self, shuffle: bool, genre: Optional[str] = None) -> None:
+        """Play (or shuffle) every song on a genre's cards - the chip menu's
+        "Play all" / "Shuffle". Shows that genre's board first, so the cards
+        can follow the music."""
+        if genre is not None and genre != self._genre:
+            self._select_genre(genre)
         with self.ctx.session() as session:
             tracks = jkb_svc.genre_tracks(session, self._genre)
             if not tracks:
                 self.ctx.notify(f"No songs on the {self._genre} cards yet")
                 return
             self.ctx.player.set_shuffle(shuffle)
-            self.ctx.play_tracks(tracks, start=0, source="jukebox")
+            # stay on the Jukebox page, like a real jukebox - the cards
+            # flip to each song as it plays (_on_track_changed)
+            self.ctx.play_tracks(tracks, start=0, source="jukebox", navigate=False)
         verb = "Shuffling" if shuffle else "Playing"
         self.ctx.notify(f"{verb} {len(tracks)} {self._genre} songs")
 
