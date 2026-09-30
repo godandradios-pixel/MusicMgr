@@ -4,7 +4,9 @@ James: "on the Now Playing page, any way we can incorporate a visual that
 shows the album cover, spinning as if on a record player from the top
 view?"
 
-The album cover is the record's centre label and turns with the record.
+The album cover is the whole record (2026-09-30: "make the album art the
+whole record, it doesn't need to have space for the actual grooves") and
+turns.
 Everything else stays still, so the only per-frame work is rotating one
 small pixmap:
 
@@ -26,6 +28,7 @@ timer only runs while something is moving and the widget is visible.
 from __future__ import annotations
 
 import math
+import random
 import time
 from typing import Optional
 
@@ -39,6 +42,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QConicalGradient,
+    QRadialGradient,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -53,7 +57,9 @@ ARM_SWING_S = 0.7
 FRAME_MS = 33
 
 #: label diameter as a share of the record's
-LABEL_RATIO = 0.46
+LABEL_RATIO = 0.985
+#: how far in the arm travels by the end of a song, as a share of the radius
+RUN_OUT_RATIO = 0.42
 
 
 class Turntable(QWidget):
@@ -62,6 +68,7 @@ class Turntable(QWidget):
         self._size = size
         self.setFixedSize(size, size)
         self._base: Optional[QPixmap] = None
+        self._overlay: Optional[QPixmap] = None
         self._label: Optional[QPixmap] = None
         self._label_key: tuple = ()
         self._angle = 0.0           # label rotation, degrees
@@ -81,12 +88,16 @@ class Turntable(QWidget):
 
     def _record_rect(self) -> QRectF:
         s = self._size
-        d = s * 0.80
-        return QRectF(s * 0.06, (s - d) / 2, d, d)
+        # the record runs to the very edge of the box (2026-09-30: "a little
+        # bit less box - have the spinning record go to the very edges");
+        # the deck only shows in the four corners
+        r = s * 0.475
+        c = QPointF(s * 0.5, s * 0.5)
+        return QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
 
     def _pivot(self) -> QPointF:
         s = self._size
-        return QPointF(s * 0.925, s * 0.14)
+        return QPointF(s * 0.93, s * 0.07)
 
     # -- inputs -----------------------------------------------------------------
 
@@ -179,75 +190,176 @@ class Turntable(QWidget):
         p.end()
         return out
 
+    @staticmethod
+    def _mottle(p: QPainter, rect: QRectF, clip: QPainterPath, seed: int,
+                colors: tuple, count: int, size: tuple) -> None:
+        """Soft random blotches - the swirl in old bakelite, or felt."""
+        rng = random.Random(seed)
+        p.save()
+        p.setClipPath(clip)
+        p.setPen(Qt.NoPen)
+        for _ in range(count):
+            color = QColor(rng.choice(colors))
+            color.setAlpha(rng.randint(10, 38))
+            p.setBrush(color)
+            w = rng.uniform(*size)
+            h = w * rng.uniform(0.4, 1.0)
+            x = rng.uniform(rect.left(), rect.right())
+            y = rng.uniform(rect.top(), rect.bottom())
+            p.drawEllipse(QPointF(x, y), w, h)
+        p.restore()
+
     def _make_base(self) -> QPixmap:
+        """Everything that never moves, in the style of a late-1930s /
+        1940s console record changer (James's Philco "Beam of Light"):
+        walnut cabinet, mottled brown bakelite deck, felt turntable, a
+        curved record-support arm on the left, a speed-selector row and
+        the arm rest on the right, a lever up front."""
         s = self._size
         out = QPixmap(s, s)
         out.fill(Qt.transparent)
         p = QPainter(out)
         p.setRenderHint(QPainter.Antialiasing)
 
-        # plinth: dark walnut
-        plinth = QRectF(1, 1, s - 2, s - 2)
-        wood = QLinearGradient(0, 0, s, s)
-        wood.setColorAt(0.0, QColor("#4a3322"))
-        wood.setColorAt(1.0, QColor("#2c1d13"))
-        p.setPen(QPen(QColor("#1a110b"), 2))
+        # walnut cabinet, grain running across
+        cab = QRectF(0.5, 0.5, s - 1, s - 1)
+        wood = QLinearGradient(0, 0, 0, s)
+        wood.setColorAt(0.0, QColor("#6b3b1f"))
+        wood.setColorAt(0.5, QColor("#5a2f17"))
+        wood.setColorAt(1.0, QColor("#4a2512"))
+        p.setPen(QPen(QColor("#2a140a"), 1.5))
         p.setBrush(wood)
-        p.drawRoundedRect(plinth, 18, 18)
+        p.drawRoundedRect(cab, 14, 14)
+        rng = random.Random(7)
+        cab_clip = QPainterPath()
+        cab_clip.addRoundedRect(cab, 14, 14)
+        p.save()
+        p.setClipPath(cab_clip)
+        for _ in range(int(s * 0.35)):
+            y = rng.uniform(0, s)
+            p.setPen(QPen(QColor(30, 12, 4, rng.randint(18, 45)), rng.uniform(0.6, 1.6)))
+            p.drawLine(QPointF(0, y), QPointF(s, y + rng.uniform(-6, 6)))
+        p.restore()
+
+        # bakelite deck plate
+        m = s * 0.012
+        deck = QRectF(m, m, s - 2 * m, s - 2 * m)
+        deck_clip = QPainterPath()
+        deck_clip.addRoundedRect(deck, s * 0.07, s * 0.07)
+        shade = QLinearGradient(deck.topLeft(), deck.bottomRight())
+        shade.setColorAt(0.0, QColor("#4a2a17"))
+        shade.setColorAt(0.55, QColor("#2e180c"))
+        shade.setColorAt(1.0, QColor("#1f1008"))
+        p.setPen(QPen(QColor("#140903"), 2))
+        p.setBrush(shade)
+        p.drawPath(deck_clip)
+        self._mottle(p, deck, deck_clip, 11, ("#6a3d22", "#170a04", "#553018"),
+                     int(s * 0.9), (s * 0.01, s * 0.05))
+        # raised rim highlight along the top/left edge
+        p.setPen(QPen(QColor(255, 220, 180, 40), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(deck.adjusted(3, 3, -3, -3), s * 0.06, s * 0.06)
+        # mounting holes
+        for fx, fy in ((0.05, 0.05),):
+            c = QPointF(s * fx, s * fy)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor("#120702"))
+            p.drawEllipse(c, s * 0.014, s * 0.014)
+            p.setBrush(QColor(255, 220, 180, 30))
+            p.drawEllipse(c + QPointF(0.8, 0.8), s * 0.008, s * 0.008)
 
         rec = self._record_rect()
         c = rec.center()
         r = rec.width() / 2
 
-        # platter rim
+        # felt turntable, a little larger than the record
+        felt_r = s * 0.495
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#8a8f98"))
-        p.drawEllipse(c, r + 5, r + 5)
-        p.setBrush(QColor("#5c6069"))
-        p.drawEllipse(c, r + 2, r + 2)
+        p.setBrush(QColor(0, 0, 0, 110))                   # shadow
+        p.drawEllipse(c + QPointF(3, 4), felt_r, felt_r)
+        p.setBrush(QColor("#5b5249"))
+        p.drawEllipse(c, felt_r, felt_r)
+        felt_clip = QPainterPath()
+        felt_clip.addEllipse(c, felt_r, felt_r)
+        self._mottle(p, QRectF(c.x() - felt_r, c.y() - felt_r, 2 * felt_r, 2 * felt_r),
+                     felt_clip, 23, ("#7a7065", "#3a332c"), int(s * 1.4), (1.0, 3.0))
 
-        # vinyl
-        p.setBrush(QColor("#111214"))
+        # the record itself is all album art (drawn per frame, turning);
+        # just its dark shellac edge here, under the art
+        p.setBrush(QColor("#0e0d0c"))
         p.drawEllipse(c, r, r)
-        # grooves: fine rings between lead-in and run-out
-        label_r = r * LABEL_RATIO
-        groove = QPen(QColor(255, 255, 255, 14), 1)
-        p.setBrush(Qt.NoBrush)
-        p.setPen(groove)
-        ring = label_r + 6
-        while ring < r - 4:
-            p.drawEllipse(c, ring, ring)
-            ring += 2.6
-        # a few wider gaps between "tracks"
-        p.setPen(QPen(QColor(0, 0, 0, 200), 2))
-        for frac in (0.62, 0.78, 0.9):
-            gap = label_r + (r - label_r) * frac
-            p.drawEllipse(c, gap, gap)
-        # fixed light sheen (doesn't turn with the record): two soft
-        # highlights opposite each other, like a lamp overhead
-        sheen = QConicalGradient(c, 45)
-        for at, alpha in ((0.0, 30), (0.07, 8), (0.18, 0), (0.43, 0), (0.5, 20),
-                          (0.57, 6), (0.68, 0), (0.93, 0), (1.0, 30)):
-            sheen.setColorAt(at, QColor(255, 255, 255, alpha))
-        p.setPen(Qt.NoPen)
-        p.setBrush(sheen)
-        p.drawEllipse(c, r - 1, r - 1)
-        # the label area stays unlit (the label is drawn over it anyway)
 
-        # arm base
+        # front control panel: reject lever and two jewel lamps (lit in paint)
+        panel = QRectF(s * 0.86, s * 0.905, s * 0.12, s * 0.075)
+        p.setPen(QPen(QColor("#110802"), 1))
+        p.setBrush(QColor("#3d2210"))
+        p.drawRoundedRect(panel, 4, 4)
+        lever = QPainterPath()
+        lx, ly = s * 0.07, s * 0.93
+        lever.moveTo(lx - s * 0.015, ly - s * 0.025)
+        lever.lineTo(lx + s * 0.015, ly - s * 0.025)
+        lever.lineTo(lx + s * 0.005, ly + s * 0.028)
+        lever.lineTo(lx - s * 0.005, ly + s * 0.028)
+        lever.closeSubpath()
+        p.setBrush(QColor("#1a0d06"))
+        p.drawPath(lever)
+
+        # arm pivot base
         pivot = self._pivot()
-        p.setBrush(QColor("#9aa0a8"))
-        p.setPen(QPen(QColor("#2a2d33"), 1.5))
-        p.drawEllipse(pivot, s * 0.055, s * 0.055)
-        p.setBrush(QColor("#3a3e45"))
-        p.drawEllipse(pivot, s * 0.025, s * 0.025)
+        p.setPen(QPen(QColor("#120702"), 1.5))
+        p.setBrush(QColor(0, 0, 0, 100))
+        p.drawEllipse(pivot + QPointF(3, 4), s * 0.045, s * 0.045)
+        base = QLinearGradient(pivot - QPointF(s * 0.045, s * 0.045), pivot + QPointF(s * 0.045, s * 0.045))
+        base.setColorAt(0.0, QColor("#5a3520"))
+        base.setColorAt(1.0, QColor("#1f1008"))
+        p.setBrush(base)
+        p.drawEllipse(pivot, s * 0.045, s * 0.045)
         p.end()
         return out
+
+    def _make_overlay(self) -> QPixmap:
+        """Drawn over the turning art every frame but never turns itself: a
+        soft lamp reflection, like light on a glossy record - what makes the
+        art's turning read as a spinning disc."""
+        s = self._size
+        out = QPixmap(s, s)
+        out.fill(Qt.transparent)
+        p = QPainter(out)
+        p.setRenderHint(QPainter.Antialiasing)
+        rec = self._record_rect()
+        c = rec.center()
+        r = rec.width() / 2
+        sheen = QConicalGradient(c, 50)
+        for at, alpha in ((0.0, 46), (0.07, 12), (0.18, 0), (0.43, 0), (0.5, 30),
+                          (0.57, 8), (0.68, 0), (0.93, 0), (1.0, 46)):
+            sheen.setColorAt(at, QColor(255, 240, 215, alpha))
+        p.setPen(Qt.NoPen)
+        p.setBrush(sheen)
+        p.drawEllipse(c, r, r)
+        # a hint of grooves near the edge, and the shellac rim
+        p.setBrush(Qt.NoBrush)
+        for k in range(6):
+            p.setPen(QPen(QColor(0, 0, 0, 38), 1))
+            rr = r * (0.9 + k * 0.018)
+            p.drawEllipse(c, rr, rr)
+        p.setPen(QPen(QColor("#0e0d0c"), max(2.0, s * 0.012)))
+        p.drawEllipse(c, r - s * 0.006, r - s * 0.006)
+        p.end()
+        return out
+
+    def _rest_point(self) -> QPointF:
+        """Where the stylus sits when the arm is parked."""
+        pivot = self._pivot()
+        a = math.radians(self._REST_DEG)
+        length = self._arm_length()
+        return QPointF(pivot.x() + math.sin(a) * length, pivot.y() + math.cos(a) * length)
+
+    _REST_DEG = -3.0
 
     def _arm_angle(self) -> float:
         """Degrees, measured from pointing straight down (screen coords),
         positive toward the record."""
-        rest = 2.0
+        rest = self._REST_DEG
         rec = self._record_rect()
         c = rec.center()
         r = rec.width() / 2
@@ -256,7 +368,7 @@ class Turntable(QWidget):
         # the arm tip lands on a circle of radius `rr` round the record
         # centre; solve the angle that puts it there
         outer = r - 6
-        inner = r * LABEL_RATIO + 10
+        inner = r * RUN_OUT_RATIO
         rr = outer + (inner - outer) * self._progress
         dx, dy = c.x() - pivot.x(), c.y() - pivot.y()
         dist = math.hypot(dx, dy)
@@ -268,7 +380,7 @@ class Turntable(QWidget):
         return rest + (playing - rest) * self._ease(self._arm)
 
     def _arm_length(self) -> float:
-        return self._size * 0.56
+        return self._size * 0.46
 
     @staticmethod
     def _ease(t: float) -> float:
@@ -277,6 +389,7 @@ class Turntable(QWidget):
     def paintEvent(self, event) -> None:  # noqa: D102 - Qt override
         if self._base is None:
             self._base = self._make_base()
+            self._overlay = self._make_overlay()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -291,34 +404,96 @@ class Turntable(QWidget):
             half = self._label.width() / 2
             p.drawPixmap(QPointF(-half, -half), self._label)
             p.restore()
-        # spindle
+        p.drawPixmap(0, 0, self._overlay)
+        # the changer's tall spindle, seen from above: its shadow falls
+        # across the record, the post catches the light
+        sz = self._size
+        p.setPen(QPen(QColor(0, 0, 0, 110), 5, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(c, c + QPointF(sz * 0.07, sz * 0.09))
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#d7dbe0"))
-        p.drawEllipse(c, 4.5, 4.5)
-        p.setBrush(QColor("#6b7078"))
-        p.drawEllipse(c, 2, 2)
+        post = QRadialGradient(c - QPointF(1.5, 1.5), 6)
+        post.setColorAt(0.0, QColor("#f4f4f2"))
+        post.setColorAt(1.0, QColor("#7c7f82"))
+        p.setBrush(post)
+        p.drawEllipse(c, 5, 5)
 
-        # tone arm
+        # jewel lamps: green while playing, red when stopped with a track
+        s = self._size
+        for pos, on_color, lit in (
+            (QPointF(s * 0.893, s * 0.943), "#58e07a", self._playing),
+            (QPointF(s * 0.945, s * 0.943), "#ff5a4a", self._has_track and not self._playing),
+        ):
+            p.setPen(QPen(QColor("#0d0602"), 1))
+            if lit:
+                glow = QRadialGradient(pos, s * 0.03)
+                glow.setColorAt(0.0, QColor(on_color))
+                glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+                p.setBrush(glow)
+                p.setPen(Qt.NoPen)
+                p.drawEllipse(pos, s * 0.03, s * 0.03)
+                p.setPen(QPen(QColor("#0d0602"), 1))
+                p.setBrush(QColor(on_color))
+            else:
+                p.setBrush(QColor("#3a2a1e"))
+            p.drawEllipse(pos, s * 0.013, s * 0.013)
+
+        # tone arm: dark bakelite arm ending in the ivory "beam of light"
+        # style head with its red stripe and jewel
         pivot = self._pivot()
         angle = math.radians(self._arm_angle())
         length = self._arm_length()
-        tip = QPointF(pivot.x() + math.sin(angle) * length, pivot.y() + math.cos(angle) * length)
-        # shadow
-        p.setPen(QPen(QColor(0, 0, 0, 90), 7, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(pivot + QPointF(4, 5), tip + QPointF(4, 5))
-        p.setPen(QPen(QColor("#c9ced5"), 5, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(pivot, tip)
-        # headshell
+        ux, uy = math.sin(angle), math.cos(angle)       # along the arm
+        stylus = QPointF(pivot.x() + ux * length, pivot.y() + uy * length)
+        head_len = s * 0.14
+        neck = QPointF(stylus.x() - ux * head_len * 0.72, stylus.y() - uy * head_len * 0.72)
+        for off, color, width in ((QPointF(4, 5), QColor(0, 0, 0, 90), s * 0.04),
+                                  (QPointF(0, 0), QColor("#2a160b"), s * 0.034)):
+            p.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(pivot + off, neck + off)
+        p.setPen(QPen(QColor(255, 220, 180, 50), 1.5))
+        p.drawLine(pivot + QPointF(-2, -1), neck + QPointF(-2, -1))
+
         p.save()
-        p.translate(tip)
-        p.rotate(-math.degrees(angle) + 18)
-        p.setPen(QPen(QColor("#2a2d33"), 1))
-        p.setBrush(QBrush(QColor("#e4e7eb")))
-        p.drawRoundedRect(QRectF(-6, -2, 12, 20), 2, 2)
+        p.translate(neck)
+        p.rotate(-math.degrees(angle))                 # local +y along the arm
+        w = s * 0.064
+        # wide and rounded where it meets the arm, tapering to a point
+        # over the needle - the Philco "Beam of Light" shell
+        head = QPainterPath()
+        head.moveTo(0, -head_len * 0.06)
+        head.cubicTo(w * 0.9, -head_len * 0.06, w * 1.05, head_len * 0.3, w * 0.7, head_len * 0.6)
+        head.cubicTo(w * 0.45, head_len * 0.85, w * 0.12, head_len * 1.02, 0, head_len * 1.04)
+        head.cubicTo(-w * 0.12, head_len * 1.02, -w * 0.45, head_len * 0.85, -w * 0.7, head_len * 0.6)
+        head.cubicTo(-w * 1.05, head_len * 0.3, -w * 0.9, -head_len * 0.06, 0, -head_len * 0.06)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0, 90))
+        p.drawPath(head.translated(3, 4))
+        ivory = QLinearGradient(-w, 0, w, 0)
+        ivory.setColorAt(0.0, QColor("#c9a27a"))
+        ivory.setColorAt(0.35, QColor("#f1dcc0"))
+        ivory.setColorAt(0.7, QColor("#e3c29c"))
+        ivory.setColorAt(1.0, QColor("#b88c62"))
+        p.setPen(QPen(QColor("#6e4a2c"), 1))
+        p.setBrush(ivory)
+        p.drawPath(head)
+        # ribbed flutes either side
+        p.setPen(QPen(QColor(120, 80, 45, 70), 1))
+        for k in (-0.62, -0.36, 0.36, 0.62):
+            p.drawLine(QPointF(w * k, head_len * 0.08), QPointF(w * k * 0.35, head_len * 0.9))
+        # red stripe and jewel
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#8e1b1b"))
+        stripe = QPainterPath()
+        stripe.moveTo(-w * 0.13, -head_len * 0.05)
+        stripe.lineTo(w * 0.13, -head_len * 0.05)
+        stripe.lineTo(w * 0.03, head_len * 1.0)
+        stripe.lineTo(-w * 0.03, head_len * 1.0)
+        stripe.closeSubpath()
+        p.drawPath(stripe)
+        jewel = QRadialGradient(QPointF(-1.5, head_len * 0.28 - 1.5), w * 0.3)
+        jewel.setColorAt(0.0, QColor("#ff6b6b"))
+        jewel.setColorAt(1.0, QColor("#6d0f0f"))
+        p.setBrush(jewel)
+        p.drawEllipse(QPointF(0, head_len * 0.28), w * 0.24, w * 0.24)
         p.restore()
-        # counterweight
-        back = QPointF(pivot.x() - math.sin(angle) * 22, pivot.y() - math.cos(angle) * 22)
-        p.setPen(QPen(QColor("#2a2d33"), 1))
-        p.setBrush(QColor("#60656d"))
-        p.drawEllipse(back, 9, 9)
         p.end()
