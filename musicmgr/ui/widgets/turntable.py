@@ -97,7 +97,7 @@ class Turntable(QWidget):
 
     def _pivot(self) -> QPointF:
         s = self._size
-        return QPointF(s * 0.93, s * 0.07)
+        return QPointF(s * 0.915, s * 0.125)
 
     # -- inputs -----------------------------------------------------------------
 
@@ -310,8 +310,8 @@ class Turntable(QWidget):
         p.setBrush(QColor(0, 0, 0, 100))
         p.drawEllipse(pivot + QPointF(3, 4), s * 0.045, s * 0.045)
         base = QLinearGradient(pivot - QPointF(s * 0.045, s * 0.045), pivot + QPointF(s * 0.045, s * 0.045))
-        base.setColorAt(0.0, QColor("#5a3520"))
-        base.setColorAt(1.0, QColor("#1f1008"))
+        base.setColorAt(0.0, QColor("#8b9096"))
+        base.setColorAt(1.0, QColor("#3a3e43"))
         p.setBrush(base)
         p.drawEllipse(pivot, s * 0.045, s * 0.045)
         p.end()
@@ -437,63 +437,76 @@ class Turntable(QWidget):
                 p.setBrush(QColor("#3a2a1e"))
             p.drawEllipse(pos, s * 0.013, s * 0.013)
 
-        # tone arm: dark bakelite arm ending in the ivory "beam of light"
-        # style head with its red stripe and jewel
+        # tone arm (2026-09-30: "back off that philco beam of light needle,
+        # go back to a more realistic one"): a straight brushed-aluminium
+        # tube from a chrome pivot, a counterweight behind, and a headshell
+        # with finger lift and a black cartridge over the needle
         pivot = self._pivot()
         angle = math.radians(self._arm_angle())
         length = self._arm_length()
         ux, uy = math.sin(angle), math.cos(angle)       # along the arm
         stylus = QPointF(pivot.x() + ux * length, pivot.y() + uy * length)
-        head_len = s * 0.14
-        neck = QPointF(stylus.x() - ux * head_len * 0.72, stylus.y() - uy * head_len * 0.72)
-        for off, color, width in ((QPointF(4, 5), QColor(0, 0, 0, 90), s * 0.04),
-                                  (QPointF(0, 0), QColor("#2a160b"), s * 0.034)):
-            p.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(pivot + off, neck + off)
-        p.setPen(QPen(QColor(255, 220, 180, 50), 1.5))
-        p.drawLine(pivot + QPointF(-2, -1), neck + QPointF(-2, -1))
+        shell_len = s * 0.1
+        neck = QPointF(stylus.x() - ux * shell_len * 0.7, stylus.y() - uy * shell_len * 0.7)
+        tube_w = max(3.0, s * 0.014)
+        # shadow, then the tube with a highlight line along it
+        p.setPen(QPen(QColor(0, 0, 0, 95), tube_w + 2, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(pivot + QPointF(4, 5), neck + QPointF(4, 5))
+        p.setPen(QPen(QColor("#9aa0a6"), tube_w, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(pivot, neck)
+        p.setPen(QPen(QColor(255, 255, 255, 150), max(1.0, tube_w * 0.3)))
+        p.drawLine(pivot + QPointF(-tube_w * 0.25, -tube_w * 0.25),
+                   neck + QPointF(-tube_w * 0.25, -tube_w * 0.25))
 
+        # counterweight behind the pivot
+        back = QPointF(pivot.x() - ux * s * 0.065, pivot.y() - uy * s * 0.065)
+        p.setPen(QPen(QColor("#9aa0a6"), tube_w, Qt.SolidLine, Qt.FlatCap))
+        p.drawLine(pivot, back)
+        p.save()
+        p.translate(back)
+        p.rotate(-math.degrees(angle))
+        weight = QLinearGradient(-s * 0.028, 0, s * 0.028, 0)
+        weight.setColorAt(0.0, QColor("#5e6368"))
+        weight.setColorAt(0.45, QColor("#d9dde1"))
+        weight.setColorAt(1.0, QColor("#4a4e53"))
+        p.setPen(QPen(QColor("#2b2e31"), 1))
+        p.setBrush(weight)
+        p.drawRoundedRect(QRectF(-s * 0.028, -s * 0.035, s * 0.056, s * 0.04), 3, 3)
+        p.restore()
+
+        # chrome pivot cap over the arm
+        cap = QRadialGradient(pivot - QPointF(s * 0.01, s * 0.01), s * 0.03)
+        cap.setColorAt(0.0, QColor("#f2f4f6"))
+        cap.setColorAt(1.0, QColor("#6f757b"))
+        p.setPen(QPen(QColor("#2b2e31"), 1))
+        p.setBrush(cap)
+        p.drawEllipse(pivot, s * 0.026, s * 0.026)
+
+        # headshell and cartridge
         p.save()
         p.translate(neck)
-        p.rotate(-math.degrees(angle))                 # local +y along the arm
-        w = s * 0.064
-        # wide and rounded where it meets the arm, tapering to a point
-        # over the needle - the Philco "Beam of Light" shell
-        head = QPainterPath()
-        head.moveTo(0, -head_len * 0.06)
-        head.cubicTo(w * 0.9, -head_len * 0.06, w * 1.05, head_len * 0.3, w * 0.7, head_len * 0.6)
-        head.cubicTo(w * 0.45, head_len * 0.85, w * 0.12, head_len * 1.02, 0, head_len * 1.04)
-        head.cubicTo(-w * 0.12, head_len * 1.02, -w * 0.45, head_len * 0.85, -w * 0.7, head_len * 0.6)
-        head.cubicTo(-w * 1.05, head_len * 0.3, -w * 0.9, -head_len * 0.06, 0, -head_len * 0.06)
+        p.rotate(-math.degrees(angle) - 12)             # a little offset, like a real arm
+        sw = s * 0.05
+        shell = QPainterPath()
+        shell.addRoundedRect(QRectF(-sw / 2, 0, sw, shell_len), 2.5, 2.5)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(0, 0, 0, 90))
-        p.drawPath(head.translated(3, 4))
-        ivory = QLinearGradient(-w, 0, w, 0)
-        ivory.setColorAt(0.0, QColor("#c9a27a"))
-        ivory.setColorAt(0.35, QColor("#f1dcc0"))
-        ivory.setColorAt(0.7, QColor("#e3c29c"))
-        ivory.setColorAt(1.0, QColor("#b88c62"))
-        p.setPen(QPen(QColor("#6e4a2c"), 1))
-        p.setBrush(ivory)
-        p.drawPath(head)
-        # ribbed flutes either side
-        p.setPen(QPen(QColor(120, 80, 45, 70), 1))
-        for k in (-0.62, -0.36, 0.36, 0.62):
-            p.drawLine(QPointF(w * k, head_len * 0.08), QPointF(w * k * 0.35, head_len * 0.9))
-        # red stripe and jewel
+        p.setBrush(QColor(0, 0, 0, 95))
+        p.drawPath(shell.translated(4, 5))
+        silver = QLinearGradient(-sw / 2, 0, sw / 2, 0)
+        silver.setColorAt(0.0, QColor("#7d838a"))
+        silver.setColorAt(0.5, QColor("#dfe3e7"))
+        silver.setColorAt(1.0, QColor("#6d737a"))
+        p.setPen(QPen(QColor("#2b2e31"), 1))
+        p.setBrush(silver)
+        p.drawPath(shell)
+        # black cartridge body toward the tip, stylus at its front
+        p.setBrush(QColor("#141516"))
+        p.drawRoundedRect(QRectF(-sw * 0.36, shell_len * 0.42, sw * 0.72, shell_len * 0.5), 1.5, 1.5)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#8e1b1b"))
-        stripe = QPainterPath()
-        stripe.moveTo(-w * 0.13, -head_len * 0.05)
-        stripe.lineTo(w * 0.13, -head_len * 0.05)
-        stripe.lineTo(w * 0.03, head_len * 1.0)
-        stripe.lineTo(-w * 0.03, head_len * 1.0)
-        stripe.closeSubpath()
-        p.drawPath(stripe)
-        jewel = QRadialGradient(QPointF(-1.5, head_len * 0.28 - 1.5), w * 0.3)
-        jewel.setColorAt(0.0, QColor("#ff6b6b"))
-        jewel.setColorAt(1.0, QColor("#6d0f0f"))
-        p.setBrush(jewel)
-        p.drawEllipse(QPointF(0, head_len * 0.28), w * 0.24, w * 0.24)
+        p.setBrush(QColor("#c9a227"))
+        p.drawEllipse(QPointF(0, shell_len * 0.9), 1.3, 1.3)
+        # finger lift off the side
+        p.setPen(QPen(QColor("#b9bec3"), max(1.5, s * 0.006), Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(sw / 2, shell_len * 0.25), QPointF(sw / 2 + s * 0.028, shell_len * 0.12))
         p.restore()
         p.end()
