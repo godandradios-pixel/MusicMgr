@@ -102,3 +102,49 @@ class TestImportTarget:
         view.import_csv()
         with ctx.session() as s:
             assert sorted(s.scalars(select(Chart.name))) == ["Pop 1990", "Rock 1990"]
+
+
+class TestRematchEdition:
+    def test_rematch_touches_only_the_edition_on_screen(self, session, tmp_path):
+        import datetime as dt
+        from musicmgr.db.models import ChartEntry
+
+        chart = chart_svc.create_chart(session, "Weekly")
+        issues = []
+        for d in (dt.date(2026, 9, 22), dt.date(2026, 9, 29)):
+            issue = ChartIssue(chart_id=chart.id, chart_date=d)
+            session.add(issue)
+            session.flush()
+            session.add(ChartEntry(issue_id=issue.id, rank=1, title="Song", artist_name="Band",
+                                   title_key="song", artist_key="band", track_id=None))
+            issues.append(issue)
+        session.flush()
+        calls = []
+        orig = chart_svc.match_entry
+        chart_svc.match_entry = lambda s, e, t=0.72: calls.append(e.issue_id) or orig(s, e, t)
+        try:
+            assert chart_svc.rematch_issue(session, issues[1].id) == (0, 1)
+        finally:
+            chart_svc.match_entry = orig
+        assert calls == [issues[1].id]
+
+    def test_whole_chart_rematch_looks_each_song_up_once(self, session):
+        import datetime as dt
+        from musicmgr.db.models import ChartEntry
+
+        chart = chart_svc.create_chart(session, "Weekly")
+        for w in range(5):
+            issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2026, 1, 6) + dt.timedelta(weeks=w))
+            session.add(issue)
+            session.flush()
+            session.add(ChartEntry(issue_id=issue.id, rank=1, title="Song", artist_name="Band",
+                                   title_key="song", artist_key="band"))
+        session.flush()
+        calls = []
+        orig = chart_svc.match_entry
+        chart_svc.match_entry = lambda s, e, t=0.72: calls.append(1) or orig(s, e, t)
+        try:
+            chart_svc.rematch_chart(session, chart.id)
+        finally:
+            chart_svc.match_entry = orig
+        assert len(calls) == 1

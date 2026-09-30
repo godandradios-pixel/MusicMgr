@@ -213,18 +213,52 @@ def rematch_chart(
     session_scope, committed once at the very end), so a break just means
     fewer entries get re-matched this run - never a rollback, since there
     was never anything to roll back mid-loop in the first place."""
-    matched = 0
     stmt = (
         select(ChartEntry)
         .join(ChartIssue, ChartEntry.issue_id == ChartIssue.id)
         .where(ChartIssue.chart_id == chart_id)
     )
-    entries = session.scalars(stmt).all()
+    return _rematch_entries(session, session.scalars(stmt).all(), threshold,
+                            progress, should_stop)
+
+
+def rematch_issue(session: Session, issue_id: int, threshold: float = 0.72) -> tuple[int, int]:
+    """Re-match just one edition's rows - what the Charts page's "Re-match
+    library" button does since 2026-09-30 (James: "I'm on a specific
+    [edition], what [does] Re-match Library do on this page? It's taking a
+    very long time" - it was re-matching all ~355,000 rows of the whole
+    Weekly chart, on the UI thread). Returns (matched, rows)."""
+    entries = session.scalars(select(ChartEntry).where(ChartEntry.issue_id == issue_id)).all()
+    return _rematch_entries(session, entries, threshold), len(entries)
+
+
+def _rematch_entries(
+    session: Session,
+    entries: Sequence[ChartEntry],
+    threshold: float = 0.72,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> int:
+    """Match each row, but each distinct title + artist only once
+    (2026-09-30): a weekly chart repeats the same song for weeks - the
+    Hot 100 has ~30,000 distinct songs across ~355,000 rows - so a whole-
+    chart re-match does roughly a tenth of the fuzzy lookups it used to."""
+    matched = 0
+    seen: dict[tuple[str, str], tuple[Optional[int], Optional[float]]] = {}
     total = len(entries)
     for i, entry in enumerate(entries, start=1):
         if should_stop and should_stop():
             break
-        if match_entry(session, entry, threshold):
+        key = (entry.title_key, entry.artist_key)
+        if entry.match_locked:
+            hit = entry.track_id is not None
+        elif key in seen:
+            entry.track_id, entry.match_score = seen[key]
+            hit = entry.track_id is not None
+        else:
+            hit = match_entry(session, entry, threshold)
+            seen[key] = (entry.track_id, entry.match_score)
+        if hit:
             matched += 1
         if progress and (i % 50 == 0 or i == total):
             progress(i, total, "")

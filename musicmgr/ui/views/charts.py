@@ -707,11 +707,16 @@ class ChartsView(BaseView):
         self.refresh()
 
     def _rematch(self) -> None:
-        if self._chart_id is None:
+        """Re-match the edition on screen against the library (2026-09-30:
+        this used to re-match the whole chart - every edition - on the UI
+        thread, which for the Hot 100 Weekly chart meant ~355,000 rows and
+        a frozen window. Re-matching every chart at once, with progress and
+        Cancel, is Settings' bulk "Re-match" button)."""
+        if self._issue_id is None:
             return
         with self.ctx.session() as session:
-            matched = chart_svc.rematch_chart(session, self._chart_id)
-        self.ctx.notify(f"Matched {matched} chart entries to your library")
+            matched, total = chart_svc.rematch_issue(session, self._issue_id)
+        self.ctx.notify(f"Matched {matched} of {total} songs in this edition to your library")
         self._load_entries()
 
     def _fix_match(self) -> None:
