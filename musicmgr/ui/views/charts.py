@@ -55,8 +55,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...db.models import Chart, ChartEntry, ChartFolder, ChartIssue, Track
+from sqlalchemy import select
+
+from ...db.models import Chart, ChartEntry, ChartFolder, ChartIssue, Playlist, Track
 from ...services import charts as chart_svc
+from ...services import playlists as pl_svc
 from ...services import scanner as scanner_svc
 from ..context import AppContext
 from ..theme import COLORS
@@ -674,13 +677,51 @@ class ChartsView(BaseView):
         self.ctx.play_tracks(self._tracks, start=start, source=f"chart:{self._chart_id}")
 
     def _save_playlist(self) -> None:
+        """Asks which playlist folder to save into (2026-10-01). Defaults to
+        where this edition's playlist already lives if it was saved before,
+        otherwise to the folder last picked here this session."""
         if self._issue_id is None:
             return
         with self.ctx.session() as session:
-            playlist = chart_svc.snapshot_to_playlist(session, self._issue_id)
+            issue = session.get(ChartIssue, self._issue_id)
+            chart = session.get(Chart, issue.chart_id) if issue else None
+            if issue is None or chart is None:
+                return
+            name = f"{chart.name} - {issue.chart_date.isoformat()}"
+            existing = session.scalar(
+                select(Playlist).where(
+                    Playlist.name == name, Playlist.kind == Playlist.KIND_CHART
+                )
+            )
+            current = (
+                existing.folder_id
+                if existing is not None
+                else getattr(self, "_last_save_folder_id", None)
+            )
+            folders = pl_svc.list_folders(session)
+            if current is not None and not any(f.id == current for f in folders):
+                current = None
+
+        dialog = FolderPickerDialog(
+            self, folders, current, title=f"Save “{name}” to folder"
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        folder_id = dialog.selected_folder_id()
+        self._last_save_folder_id = folder_id
+
+        with self.ctx.session() as session:
+            playlist = chart_svc.snapshot_to_playlist(
+                session, self._issue_id, folder_id=folder_id
+            )
             name = playlist.name
+            where = (
+                " / ".join(f.name for f in pl_svc.folder_path(session, folder_id))
+                if folder_id is not None
+                else "Top level"
+            )
         self.ctx.playlistsChanged.emit()
-        self.ctx.notify(f"Saved playlist “{name}”")
+        self.ctx.notify(f"Saved playlist “{name}” to {where}")
 
     def delete_selected_issue(self) -> None:
         """Removes just the selected edition - the fix for a single bad

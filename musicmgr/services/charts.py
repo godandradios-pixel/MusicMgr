@@ -868,10 +868,23 @@ def chart_run(session: Session, chart_id: int, track_id: int) -> list[ChartEntry
     return list(session.scalars(stmt))
 
 
+#: Sentinel for snapshot_to_playlist's folder_id: "don't touch the folder"
+#: (the CLI's behaviour) as distinct from None, which means the top level.
+_KEEP_FOLDER = object()
+
+
 def snapshot_to_playlist(
-    session: Session, issue_id: int, owned_only: bool = True
+    session: Session,
+    issue_id: int,
+    owned_only: bool = True,
+    folder_id=_KEEP_FOLDER,
 ) -> Playlist:
-    """Freeze a chart week as a real playlist you can queue."""
+    """Freeze a chart week as a real playlist you can queue.
+
+    `folder_id` (2026-10-01) files the playlist in that playlist folder
+    (None = top level) - the Charts page's "Save as playlist" asks James
+    where to put it. Left out, a new playlist lands at the top level and an
+    existing one stays where it is."""
     issue = session.get(ChartIssue, issue_id)
     if issue is None:
         raise ValueError(f"no chart issue {issue_id}")
@@ -902,5 +915,7 @@ def snapshot_to_playlist(
         )
         pos += 1
     playlist.description = f"Positions 1-{pos} from {chart.name}, {issue.chart_date}"
+    if folder_id is not _KEEP_FOLDER:
+        playlist.folder_id = folder_id
     session.flush()
     return playlist

@@ -595,6 +595,28 @@ class TestSnapshotToPlaylist:
         ).all()
         assert len(items) == 1
 
+    def test_snapshot_files_playlist_in_chosen_folder(self, session):
+        from musicmgr.services import playlists as pl_svc
+
+        make_owned_track(session, "Owned", "Artist")
+        chart = charts.get_or_create_chart(session, "Snap Folder Test")
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2021, 1, 1))
+        session.add(issue)
+        session.flush()
+        a = pl_svc.create_folder(session, "Charts A")
+        b = pl_svc.create_folder(session, "Charts B")
+
+        p = charts.snapshot_to_playlist(session, issue.id, folder_id=a.id)
+        assert p.folder_id == a.id
+        # re-saving without a folder leaves it where it is
+        p = charts.snapshot_to_playlist(session, issue.id)
+        assert p.folder_id == a.id
+        # re-saving to another folder moves it; None = top level
+        p = charts.snapshot_to_playlist(session, issue.id, folder_id=b.id)
+        assert p.folder_id == b.id
+        p = charts.snapshot_to_playlist(session, issue.id, folder_id=None)
+        assert p.folder_id is None
+
 
 class TestChartFolders:
     def test_create_rename_and_list(self, session):
