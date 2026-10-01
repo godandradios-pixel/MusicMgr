@@ -347,7 +347,7 @@ class NowPlayingView(BaseView):
             self._refresh_queue()
             self._sync_radio_button()
             return
-        self._current_track_id = item.track_id
+        self._current_track_id = item.track_id if item.is_track else None
         self._sync_radio_button()
         self.track_title.setText(item.title)
         self.track_artist.setText(item.artist)
@@ -358,6 +358,18 @@ class NowPlayingView(BaseView):
             item.cover_path, item.album or item.artist,
             rpm=RPM_78 if tracknum.is_side(item.position) else RPM_LP)
         self.turntable.set_playing(self.ctx.player.is_playing())
+        self.rating_stars.setVisible(item.is_track)
+        self.jukebox_toggle.setVisible(item.is_track)
+        if not item.is_track:
+            # an old-time radio episode or an internet station (2026-10-01
+            # tuner): no chart history, rating, jukebox, lyrics or library
+            # pages behind it
+            self.chart_note.setText("")
+            self._current_artist_id = None
+            self._current_release_id = None
+            self.lyrics_panel.load_for_path(None)
+            self._refresh_queue()
+            return
         note, rating, on_jukebox, artist_id, release_id = self._load_track_meta(item.track_id)
         self.chart_note.setText(note)
         self.rating_stars.set_rating(rating)

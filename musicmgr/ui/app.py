@@ -39,6 +39,7 @@ from .views.library import LibraryView
 from .views.nowplaying import NowPlayingView
 from .views.playlists import PlaylistsView
 from .views.settings import SettingsView
+from .views.tuner import TunerView
 from .views.videos import VideosView
 from ..version import RELEASE_VERSION
 
@@ -66,6 +67,9 @@ NAV_ITEMS = [
     # what changed in the embedded player's "‹ Back" button to match.
     ("playlists", "Playlists"),
     ("charts", "Charts"),
+    # 2026-10-01 - old-time radio shows and internet stations, see
+    # ui/views/tuner.py
+    ("radio", "Radio"),
     ("settings", "Settings"),
 ]
 
@@ -128,6 +132,7 @@ class MainWindow(QMainWindow):
             ("playlists", PlaylistsView),
             ("jukebox", JukeboxView),
             ("nowplaying", NowPlayingView),
+            ("radio", TunerView),
             ("settings", SettingsView),
         ):
             view = cls(self.ctx)
@@ -432,9 +437,11 @@ class MainWindow(QMainWindow):
         from ..services.radio import stop_background_work as stop_radio_work
 
         stop_radio_work()
-        settings = self.views.get("settings")
-        if settings is not None and hasattr(settings, "shutdown"):
-            settings.shutdown()
+        for key in ("settings", "radio"):
+            view = self.views.get(key)
+            if view is not None and hasattr(view, "shutdown"):
+                view.shutdown()
+        self.ctx.tuner.shutdown()
         super().closeEvent(event)
 
 

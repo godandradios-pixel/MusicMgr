@@ -215,6 +215,8 @@ class PlayerBar(QFrame):
         self.volume.setRange(0, 100)
         self.volume.setValue(int(player.volume * 100))
         self.volume.valueChanged.connect(lambda v: self._active().set_volume(v / 100))
+        # 2026-10-01: the radio tuner's VOLUME knob turns this too
+        player.volumeChanged.connect(self._sync_volume_slider)
         right.addWidget(self.queue_btn)
         right.addWidget(vol_icon)
         right.addWidget(self.volume)
@@ -372,6 +374,13 @@ class PlayerBar(QFrame):
 
     # -- slots ---------------------------------------------------------------
 
+    def _sync_volume_slider(self, value: float) -> None:
+        target = int(round(value * 100))
+        if self.volume.value() != target:
+            self.volume.blockSignals(True)
+            self.volume.setValue(target)
+            self.volume.blockSignals(False)
+
     def on_track_changed(self, item: Optional[QueueItem]) -> None:
         if item is None:
             self.title.setText("Nothing playing")
@@ -388,7 +397,8 @@ class PlayerBar(QFrame):
             " — ".join(x for x in (item.artist, tracknum.with_side(item.album, item.position)) if x)
         )
         self.cover.set_source(item.cover_path, item.album or item.artist)
-        self._start_spectrum(item.path)
+        # an internet station never ends - nothing to decode up front
+        self._start_spectrum(None if item.is_stream else item.path)
 
     def on_position(self, ms: int) -> None:
         duration = self._active().duration()

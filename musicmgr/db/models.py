@@ -913,6 +913,99 @@ class Video(Base):
         return f"<Video {self.id} {self.title!r}>"
 
 
+# --------------------------------------------------------------------------
+# radio tuner (2026-10-01) - old-time radio shows and internet stations.
+# Deliberately separate from the music library: an episode of The Shadow is
+# not a Track, never shows up in artists/albums/charts/radio, and plays
+# through the same PlayerController as a QueueItem of kind "episode".
+# See services/otr.py and services/stations.py.
+# --------------------------------------------------------------------------
+
+
+class RadioShow(Base):
+    """One top-level folder of the old-time radio folder (D:\\Radio\\The
+    Shadow). `kind`: "show" (a program), "commercial" or "news" - the
+    on-air station strings programs together with commercials and news
+    bulletins between them."""
+
+    __tablename__ = "radio_shows"
+
+    KIND_SHOW = "show"
+    KIND_COMMERCIAL = "commercial"
+    KIND_NEWS = "news"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(300))
+    folder: Mapped[str] = mapped_column(Text, unique=True)
+    kind: Mapped[str] = mapped_column(String(20), default=KIND_SHOW)
+    cover_path: Mapped[Optional[str]] = mapped_column(Text)
+    #: which band of the tuner's dial it's printed on: fm, am, police, sw1,
+    #: sw2 or lw (ui/widgets/radio_dial.py:BANDS) - guessed from the name
+    #: when first scanned (services/otr.py:guess_band), changeable on the page
+    band: Mapped[str] = mapped_column(String(10), default="am")
+    #: the episode tuning to this show plays (resumes) - see services/otr.py
+    current_episode_id: Mapped[Optional[int]] = mapped_column(Integer)
+    is_missing: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    episodes: Mapped[list["RadioEpisode"]] = relationship(
+        back_populates="show", cascade="all, delete-orphan"
+    )
+
+
+class RadioEpisode(Base):
+    __tablename__ = "radio_episodes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    show_id: Mapped[int] = mapped_column(
+        ForeignKey("radio_shows.id", ondelete="CASCADE"), index=True
+    )
+    path: Mapped[str] = mapped_column(Text, unique=True)
+    title: Mapped[str] = mapped_column(String(500))
+    #: ISO date, possibly partial ("1951-03-11", "1945-10", "1938")
+    air_date: Mapped[Optional[str]] = mapped_column(String(10))
+    year: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    episode_no: Mapped[Optional[int]] = mapped_column(Integer)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    mtime: Mapped[Optional[float]] = mapped_column(Float)
+    #: play order within the show: air date, episode number, file name
+    sort_key: Mapped[str] = mapped_column(String(300), default="")
+    #: another copy of the same broadcast (same date and title) - hidden
+    duplicate_of: Mapped[Optional[int]] = mapped_column(Integer)
+    played: Mapped[bool] = mapped_column(Boolean, default=False)
+    position_ms: Mapped[int] = mapped_column(Integer, default=0)
+    last_played_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
+    #: volume levelling, as for MediaFile.rg_track_gain (measured only)
+    rg_gain: Mapped[Optional[float]] = mapped_column(Float)
+    rg_failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_missing: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    show: Mapped["RadioShow"] = relationship(back_populates="episodes")
+
+
+class RadioStation(Base):
+    """An internet station on the tuner's Broadcast band."""
+
+    __tablename__ = "radio_stations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(300))
+    stream_url: Mapped[str] = mapped_column(Text)
+    homepage: Mapped[Optional[str]] = mapped_column(Text)
+    favicon_url: Mapped[Optional[str]] = mapped_column(Text)
+    favicon_path: Mapped[Optional[str]] = mapped_column(Text)
+    country: Mapped[Optional[str]] = mapped_column(String(80))
+    tags: Mapped[Optional[str]] = mapped_column(Text)
+    codec: Mapped[Optional[str]] = mapped_column(String(20))
+    bitrate: Mapped[Optional[int]] = mapped_column(Integer)
+    #: Radio Browser's id, for refreshing a moved stream URL
+    rb_uuid: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    dial_order: Mapped[int] = mapped_column(Integer, default=0)
+    #: band of the dial (FM unless moved), as RadioShow.band
+    band: Mapped[str] = mapped_column(String(10), default="fm")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
+
+
 class Setting(Base):
     __tablename__ = "settings"
 

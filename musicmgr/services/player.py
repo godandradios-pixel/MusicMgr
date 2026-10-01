@@ -41,7 +41,7 @@ import random
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
 
-from PySide6.QtCore import QElapsedTimer, QObject, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QElapsedTimer, QObject, QThread, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from sqlalchemy import select
 
@@ -65,6 +65,8 @@ FALLBACK_GAIN_DB = -6.0
 TICK_MS = 30
 #: how long a track takes to ease to a level that arrives mid-track
 GAIN_RAMP_MS = 1200
+#: internet stations aren't measured; most are mastered loud
+STREAM_GAIN_DB = -5.0
 
 
 @dataclass
@@ -85,6 +87,23 @@ class QueueItem:
     rg_track_gain: Optional[float] = None
     rg_album_gain: Optional[float] = None
     hydrated: bool = False
+    #: 2026-10-01 radio tuner: "track" (the music library), "episode" (an
+    #: old-time radio episode - services/otr.py) or "stream" (an internet
+    #: station; `path` is its URL). Only tracks write play history, have
+    #: lyrics, preload, crossfade or get looked up by path.
+    kind: str = "track"
+    episode_id: Optional[int] = None
+    station_id: Optional[int] = None
+    #: start playback here (ms) - an episode resuming where it was left
+    start_ms: int = 0
+
+    @property
+    def is_track(self) -> bool:
+        return self.kind == "track"
+
+    @property
+    def is_stream(self) -> bool:
+        return self.kind == "stream"
 
     @classmethod
     def from_track(cls, track: Track) -> Optional["QueueItem"]:
@@ -123,24 +142,43 @@ class LoudnessThread(QThread):
     player is about to play (or is playing) - see `_ensure_gain`. Same
     decode-on-its-own-thread shape as services/spectrum.py:SpectrumThread."""
 
-    done = Signal(int)  # media_file_id
+    done = Signal(str, int)  # "track" | "episode", media_file_id | episode_id
 
-    def __init__(self, media_file_id: int, path: str, parent=None) -> None:
+    def __init__(self, media_file_id: int, path: str, parent=None, kind: str = "track") -> None:
         super().__init__(parent)
         self.media_file_id = media_file_id
         self.path = path
+        self.kind = kind
 
     def run(self) -> None:  # pragma: no cover - exercised via the app
         try:
-            release_id = replaygain.analyze_paths_one(self.media_file_id, self.path)
-            if release_id is not None:
-                with session_scope() as session:
-                    replaygain.fill_album_gains(session, [release_id])
+            if self.kind == "episode":
+                self._measure_episode()
+            else:
+                release_id = replaygain.analyze_paths_one(self.media_file_id, self.path)
+                if release_id is not None:
+                    with session_scope() as session:
+                        replaygain.fill_album_gains(session, [release_id])
         except replaygain.MeasureInterrupted:
             return
         except Exception as exc:
             log.warning("loudness measurement failed for %s: %s", self.path, exc)
-        self.done.emit(self.media_file_id)
+        self.done.emit(self.kind, self.media_file_id)
+
+    def _measure_episode(self) -> None:
+        from ..db.models import RadioEpisode
+
+        if not replaygain.measuring_available():
+            return
+        m = replaygain.measure_file(self.path)
+        with session_scope() as session:
+            ep = session.get(RadioEpisode, self.media_file_id)
+            if ep is None:
+                return
+            if m is None:
+                ep.rg_failed = True
+            else:
+                ep.rg_gain = m.gain
 
 
 #: running LoudnessThreads, kept referenced until they finish so a
@@ -174,11 +212,15 @@ class _Deck:
         #: levelling multiplier, and where it's easing to
         self.gain = 1.0
         self.gain_target = 1.0
+        #: resume position to jump to once the media has loaded
+        self.pending_seek = 0
 
     def load(self, item: QueueItem, cursor: int) -> None:
         self.item = item
         self.cursor = cursor
-        self.player.setSource(QUrl.fromLocalFile(item.path))
+        self.pending_seek = item.start_ms or 0
+        url = QUrl(item.path) if item.is_stream else QUrl.fromLocalFile(item.path)
+        self.player.setSource(url)
 
     def unload(self) -> None:
         self.player.stop()
@@ -202,6 +244,14 @@ class PlayerController(QObject):
     durationChanged = Signal(int)      # ms
     playbackStateChanged = Signal(str)  # playing | paused | stopped
     errorOccurred = Signal(str)
+    #: an internet station's "now playing" text (ICY StreamTitle), if it sends one
+    streamTitleChanged = Signal(str)
+    #: an item played to its end (not skipped) - the tuner marks old-time
+    #: radio episodes heard with it
+    itemFinished = Signal(object)
+    #: the volume slider value changed (0..1) - the tuner's VOLUME knob and
+    #: the player bar's slider keep each other in step through this
+    volumeChanged = Signal(float)
 
     #: background measuring of unlevelled tracks; tests switch it off
     auto_measure = True
@@ -228,6 +278,7 @@ class PlayerController(QObject):
             p.mediaStatusChanged.connect(lambda st, d=deck: self._on_media_status(d, st))
             p.playbackStateChanged.connect(lambda st, d=deck: self._on_state(d, st))
             p.errorOccurred.connect(lambda e, msg, d=deck: self._on_error(d, e, msg))
+            p.metaDataChanged.connect(lambda d=deck: self._on_metadata(d))
         self._active = self._decks[0]
         #: the outgoing deck while a crossfade runs
         self._fade_from: Optional[_Deck] = None
@@ -294,13 +345,13 @@ class PlayerController(QObject):
         if self._fade_from is not None:
             return
         standby = self._standby
-        if self.current is None:
+        if self.current is None or self.current.is_stream:
             if standby.item is not None:
                 standby.unload()
             return
         cursor = self._peek_next_cursor()
         item = self._item_at(cursor)
-        if item is None or not os.path.exists(item.path):
+        if item is None or item.is_stream or not os.path.exists(item.path):
             if standby.item is not None:
                 standby.unload()
             return
@@ -335,6 +386,9 @@ class PlayerController(QObject):
         upcoming = self._item_at(self._peek_next_cursor())
         if current is None or upcoming is None:
             return 0
+        # old-time radio programs and their commercials hand off cleanly
+        if not (current.is_track and upcoming.is_track):
+            return 0
         if (
             not self._prefs.crossfade_same_album
             and current.release_id is not None
@@ -351,6 +405,8 @@ class PlayerController(QObject):
     def _advance_to_standby(self, fade_ms: int) -> None:
         """Hand playback to the preloaded deck - instantly (gapless) or
         mixed over `fade_ms`. The outgoing track counts as completed."""
+        if self.current is not None:
+            self.itemFinished.emit(self.current)
         self._flush_play_event(completed=True)
         old, new = self._active, self._standby
         self._cursor = new.cursor
@@ -422,7 +478,7 @@ class PlayerController(QObject):
     def _hydrate(self, item: QueueItem) -> None:
         """Fill an item's file id, release id and gains from the database
         (looked up by path) if whoever built it didn't."""
-        if item.hydrated:
+        if item.hydrated or not item.is_track:
             return
         item.hydrated = True
         if not item.path:
@@ -463,6 +519,8 @@ class PlayerController(QObject):
         mode = self._prefs.levelling
         if mode == playback_prefs.LEVELLING_OFF:
             return 1.0
+        if item.is_stream:
+            return replaygain.db_to_factor(STREAM_GAIN_DB + self._prefs.preamp_db)
         self._hydrate(item)
         use_album = mode == playback_prefs.LEVELLING_ALBUM or (
             mode == playback_prefs.LEVELLING_AUTO and self._album_context(cursor)
@@ -500,22 +558,36 @@ class PlayerController(QObject):
             not self.auto_measure
             or self._prefs.levelling == playback_prefs.LEVELLING_OFF
             or item.rg_track_gain is not None
-            or item.media_file_id is None
+            or item.is_stream
         ):
             return
-        mf_id = item.media_file_id
-        if mf_id in self._measuring or mf_id in self._measure_tried:
+        if item.kind == "episode":
+            if item.episode_id is None:
+                return
+            key, kind, ident = ("episode", item.episode_id), "episode", item.episode_id
+        else:
+            if item.media_file_id is None:
+                return
+            key, kind, ident = item.media_file_id, "track", item.media_file_id
+        if key in self._measuring or key in self._measure_tried:
             return
-        self._measuring.add(mf_id)
-        self._measure_tried.add(mf_id)
-        thread = LoudnessThread(mf_id, item.path)
+        self._measuring.add(key)
+        self._measure_tried.add(key)
+        thread = LoudnessThread(ident, item.path, kind=kind)
         _RUNNING_THREADS.add(thread)
         thread.done.connect(self._on_gain_measured)
         thread.finished.connect(lambda t=thread: _RUNNING_THREADS.discard(t))
         thread.start()
 
-    @Slot(int)
-    def _on_gain_measured(self, media_file_id: int) -> None:
+    def _on_gain_measured(self, kind_or_id, media_file_id: Optional[int] = None) -> None:
+        # called as (kind, id) by LoudnessThread; (id) is the older form
+        if media_file_id is None:
+            kind, media_file_id = "track", int(kind_or_id)
+        else:
+            kind = kind_or_id
+        if kind == "episode":
+            self._on_episode_measured(media_file_id)
+            return
         self._measuring.discard(media_file_id)
         try:
             with session_scope() as session:
@@ -539,6 +611,23 @@ class PlayerController(QObject):
         for item in self._queue:
             if item.media_file_id in gains:
                 item.rg_track_gain, item.rg_album_gain = gains[item.media_file_id]
+        self._regain_all(ramp=True)
+
+    def _on_episode_measured(self, episode_id: int) -> None:
+        from ..db.models import RadioEpisode
+
+        self._measuring.discard(("episode", episode_id))
+        try:
+            with session_scope() as session:
+                ep = session.get(RadioEpisode, episode_id)
+                gain = ep.rg_gain if ep is not None else None
+        except Exception:  # pragma: no cover
+            return
+        if gain is None:
+            return
+        for item in self._queue:
+            if item.kind == "episode" and item.episode_id == episode_id:
+                item.rg_track_gain = gain
         self._regain_all(ramp=True)
 
     # -- queue ------------------------------------------------------------
@@ -662,7 +751,7 @@ class PlayerController(QObject):
                 d.unload()
             self.trackChanged.emit(None)
             return
-        if not os.path.exists(item.path):
+        if not item.is_stream and not os.path.exists(item.path):
             self.errorOccurred.emit(f"File missing: {item.path}")
             self.next()
             return
@@ -789,8 +878,12 @@ class PlayerController(QObject):
         return self._volume
 
     def set_volume(self, value: float) -> None:
-        self._volume = max(0.0, min(1.0, float(value)))
+        value = max(0.0, min(1.0, float(value)))
+        changed = abs(value - self._volume) > 1e-6
+        self._volume = value
         self._apply_volume()
+        if changed:
+            self.volumeChanged.emit(value)
 
     def is_playing(self) -> bool:
         return self._active.is_playing()
@@ -819,6 +912,16 @@ class PlayerController(QObject):
             self.durationChanged.emit(ms)
 
     def _on_media_status(self, deck: _Deck, status) -> None:
+        if deck.pending_seek and status in (
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+        ):
+            ms, deck.pending_seek = deck.pending_seek, 0
+            deck.player.setPosition(ms)
+            if deck.item is not None:
+                deck.item.start_ms = 0
+            if deck is self._active:
+                self._played_ms = max(self._played_ms, ms)
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
         if deck is self._fade_from:
@@ -829,6 +932,8 @@ class PlayerController(QObject):
         if self._standby_ready():
             self._advance_to_standby(0)
             return
+        if self.current is not None:
+            self.itemFinished.emit(self.current)
         self._flush_play_event(completed=True)
         if self._repeat == REPEAT_ONE:
             self._load_current()
@@ -845,6 +950,16 @@ class PlayerController(QObject):
         }
         self.playbackStateChanged.emit(mapping.get(state, "stopped"))
 
+    def _on_metadata(self, deck: _Deck) -> None:
+        if deck is not self._active or deck.item is None or not deck.item.is_stream:
+            return
+        from PySide6.QtMultimedia import QMediaMetaData
+
+        meta = deck.player.metaData()
+        title = meta.stringValue(QMediaMetaData.Key.Title) if meta is not None else ""
+        if title:
+            self.streamTitleChanged.emit(title)
+
     def _on_error(self, deck: _Deck, error, message: str) -> None:  # pragma: no cover
         if error == QMediaPlayer.Error.NoError:
             return
@@ -856,6 +971,9 @@ class PlayerController(QObject):
                 deck.unload()
             return
         log.warning("player error: %s", message)
+        if deck.item is not None and deck.item.is_stream:
+            self.errorOccurred.emit(f"Can't tune in {deck.item.title}: {message or 'no signal'}")
+            return
         self.errorOccurred.emit(message or "Playback error")
 
     # -- history ----------------------------------------------------------
@@ -864,6 +982,8 @@ class PlayerController(QObject):
         """Write a PlayEvent for the track that just finished/was left."""
         item = self.current
         if item is None or self._current_scrobbled or self._started_at is None:
+            return
+        if not item.is_track:
             return
         played = int(self._played_ms)
         duration = item.duration_ms or self._active.player.duration() or 0

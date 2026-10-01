@@ -102,6 +102,11 @@ class AppContext(QObject):
 
         self.radio = RadioController(player, self)
         self.radio.notified.connect(self.notify)
+        #: 2026-10-01 radio tuner page - services/tuner.py
+        from ..services.tuner import TunerController
+
+        self.tuner = TunerController(player, self)
+        self.tuner.notified.connect(self.notify)
         #: the tracks behind whatever release/artist page is currently on
         #: screen, kept in sync by ReleaseDetailPanel.set_release and
         #: ArtistDetailPanel.set_artist via set_viewing() - never queued or
