@@ -1434,6 +1434,7 @@ class SettingsView(BaseView):
 
     def _start_usb_sync(self, plan, quiet: bool = False) -> None:
         thread = UsbSyncThread(plan, parent=self)
+        thread.confirm_removals = self._confirm_usb_folder_removals
         thread.progress.connect(self._on_usb_progress)
         thread.finished_with.connect(
             lambda result, message, error: self._on_usb_sync_done(result, message, error, quiet)
@@ -1448,6 +1449,30 @@ class SettingsView(BaseView):
             self._show_cancel()
         thread.start()
         self._refresh_usb_controls()
+
+    def _confirm_usb_folder_removals(self, folders) -> bool:
+        """2026-09-30 (James: "fix the sync so it asks before removing a
+        whole folder of playlists"): a sync had just removed 78 Records and
+        Personal Favorites because the drive no longer listed them. Asked on
+        every sync, quiet ones too. Keep is the default; it sends the
+        folders back to the drive. True = remove them here."""
+        names = "\n".join(f"  • {f.label()}" for f in folders)
+        many = len(folders) != 1
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("USB sync")
+        box.setText(f"Remove {'these playlist folders' if many else 'this playlist folder'} "
+                    "from this PC?")
+        box.setInformativeText(
+            f"The USB drive no longer has {'them' if many else 'it'}, so another PC may have "
+            f"deleted {'them' if many else 'it'}:\n\n{names}\n\n"
+            "Keep puts them back on the drive, so your other PCs get them again.")
+        keep = box.addButton("Keep", QMessageBox.RejectRole)
+        box.addButton("Remove", QMessageBox.DestructiveRole)
+        box.setDefaultButton(keep)
+        box.setEscapeButton(keep)
+        box.exec()
+        return box.clickedButton() is not keep
 
     def _on_usb_progress(self, done: int, total: int, name: str) -> None:
         if total > 0:

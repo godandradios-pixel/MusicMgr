@@ -64,7 +64,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -534,6 +534,8 @@ class MergeNotes:
     folders_total: int = 0
     #: charts (2026-09-30, chart_sync.py); None when Charts isn't synced
     charts: Optional[object] = None
+    #: folders the drive no longer had that James chose to keep (2026-09-30)
+    folders_kept: list[str] = field(default_factory=list)
 
     def received(self) -> bool:
         """Did anything change in this library? (Views refresh if so.)"""
@@ -587,6 +589,9 @@ class MergeNotes:
             if ch.charts_missing:
                 n = len(ch.charts_missing)
                 parts.append(f"{n} chart{'s' if n != 1 else ''} not on the drive yet")
+        if self.folders_kept:
+            n = len(self.folders_kept)
+            parts.append(f"kept {n} folder{'s' if n != 1 else ''} the drive didn't have")
         if self.board_conflict:
             parts.append(f"Jukebox changed on both — kept {self.board_conflict}")
         sent = []
@@ -731,6 +736,93 @@ def merge(local: dict, usb: dict, base: dict) -> tuple[dict, MergeNotes]:
 
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: images, FOLDERS: folders}, notes
+
+
+# --------------------------------------------------------------------------
+# whole folders going away (2026-09-30)
+# --------------------------------------------------------------------------
+#
+# James: "Please fix the sync so it asks before removing a whole folder of
+# playlists." That evening a sync on his D:\MusicMgr PC removed 78 Records
+# (with DECCA) and Personal Favorites - 29 playlists - because the drive's
+# state didn't list them while this PC's base did, which the merge reads as
+# "deleted on the other PC". Removing single playlists that way is still
+# automatic; emptying a whole folder now needs a yes.
+
+
+@dataclass
+class FolderRemoval:
+    """A folder whose every playlist (subfolders included) the sync is
+    about to remove from this PC."""
+
+    path: str
+    playlists: int
+
+    def label(self) -> str:
+        n = self.playlists
+        return f"{self.path.replace('/', ' › ')} ({n} playlist{'s' if n != 1 else ''})"
+
+
+def _under(path: str, top: str) -> bool:
+    return path == top or path.startswith(top + "/")
+
+
+def whole_folder_removals(local: dict, notes: MergeNotes) -> list[FolderRemoval]:
+    """Folders that would lose all their playlists in this sync, outermost
+    only (78 Records, not also 78 Records/DECCA). A folder with nothing in
+    it here isn't asked about - there's nothing to lose."""
+    removed = set(notes.playlists_removed)
+    if not removed:
+        return []
+    lp = local["playlists"]
+    paths = set(local.get(FOLDERS) or {}) | {v.get("folder") or "" for v in lp.values()}
+    paths.discard("")
+    hits: dict[str, int] = {}
+    for path in paths:
+        keys = [k for k, v in lp.items() if _under(v.get("folder") or "", path)]
+        if keys and all(k in removed for k in keys):
+            hits[path] = len(keys)
+    tops = [p for p in hits if not any(q != p and _under(p, q) for q in hits)]
+    return [FolderRemoval(p, hits[p]) for p in sorted(tops, key=str.casefold)]
+
+
+def _image_folder(key: str) -> Optional[str]:
+    if key.startswith(_IMAGE_PREFIX_FOLDER):
+        return key[len(_IMAGE_PREFIX_FOLDER):]
+    if key.startswith(_IMAGE_PREFIX_PL):
+        return key[len(_IMAGE_PREFIX_PL):].split("|", 1)[0]
+    return None
+
+
+def keep_folders(local: dict, usb: dict, merged: dict, notes: MergeNotes,
+                 tops: list[str]) -> None:
+    """James said keep: put these folders, their playlists and their images
+    back into the merged state as this PC has them. They then go out to the
+    drive as if they were new here, so the other PCs get them back too."""
+    for key in list(notes.playlists_removed):
+        if any(_under(local["playlists"][key].get("folder") or "", t) for t in tops):
+            merged["playlists"][key] = local["playlists"][key]
+            notes.playlists_removed.remove(key)
+    local_folders = local.get(FOLDERS) or {}
+    for path in local_folders:
+        if any(_under(path, t) for t in tops):
+            merged[FOLDERS][path] = local_folders[path]
+            if path in notes.folders_removed:
+                notes.folders_removed.remove(path)
+    for key, value in (local.get(IMAGES) or {}).items():
+        path = _image_folder(key)
+        if key not in merged[IMAGES] and path and any(_under(path, t) for t in tops):
+            merged[IMAGES][key] = value
+    up = {k: _strip(v, "updated_at") for k, v in usb["playlists"].items()}
+    mp = {k: _strip(v, "updated_at") for k, v in merged["playlists"].items()}
+    notes.playlists_out = sum(1 for k in set(mp) | set(up)
+                              if mp.get(k, _MISSING) != up.get(k, _MISSING))
+    uf = usb.get(FOLDERS) or {}
+    notes.folders_out = sum(1 for k in set(merged[FOLDERS]) | set(uf)
+                            if merged[FOLDERS].get(k, _MISSING) != uf.get(k, _MISSING))
+    notes.playlists_total = len(merged["playlists"])
+    notes.folders_total = len(merged[FOLDERS])
+    notes.folders_kept = sorted(tops)
 
 
 # --------------------------------------------------------------------------
@@ -1017,10 +1109,20 @@ def _included(cat: str, include: frozenset) -> bool:
     return cat in include or (cat in _WITH_PLAYLISTS and PLAYLISTS in include)
 
 
+#: asked when a sync would empty whole playlist folders here; True = remove
+ConfirmRemovals = Callable[[list[FolderRemoval]], bool]
+
+
 def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[SyncPair]] = None,
-                       include: Optional[frozenset] = None) -> MergeNotes:
+                       include: Optional[frozenset] = None,
+                       confirm_removals: Optional[ConfirmRemovals] = None) -> MergeNotes:
     """Merge this library with the drive's state, apply it here, and write
     the result back to the drive and to this library's base copy.
+
+    `confirm_removals` - called with the folders this sync would empty
+    here (every playlist in them removed because the drive no longer has
+    them); returns True to go ahead. False keeps them and sends them back
+    to the drive. None (tests, scripts) removes without asking.
 
     `include` - the categories to sync (default: this PC's Settings
     choices). A category left out is passed through untouched: this PC
@@ -1056,6 +1158,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     carried = carry_images(local, base, targets) if PLAYLISTS in include else set()
     merged, notes = merge(local, usb, base)
     revive(merged, base, idx, notes)
+    if confirm_removals is not None and PLAYLISTS in include:
+        # 2026-09-30: never empty a whole folder of playlists without asking
+        gone = whole_folder_removals(local, notes)
+        if gone and not confirm_removals(gone):
+            keep_folders(local, usb, merged, notes, [g.path for g in gone])
     if JUKEBOX not in include:
         notes.board_in = False
     if PLAYLISTS not in include:

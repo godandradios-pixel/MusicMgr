@@ -82,10 +82,29 @@ class UsbSyncThread(QThread):
 
     progress = Signal(int, int, str)
     finished_with = Signal(object, str, object)
+    #: (folders, answer) - see `_confirm_removals`
+    removals_found = Signal(object, object)
 
     def __init__(self, plan: us.ComparePlan, parent=None) -> None:
         super().__init__(parent)
         self.plan = plan
+        #: 2026-09-30 (James: "fix the sync so it asks before removing a
+        #: whole folder of playlists"): `confirm_removals(folders) -> bool`,
+        #: run on the GUI thread; True = remove them. None = don't ask.
+        self.confirm_removals = None
+        # this object lives on the GUI thread, so the slot runs there while
+        # run() waits for the answer
+        self.removals_found.connect(self._ask_on_gui, Qt.BlockingQueuedConnection)
+
+    def _ask_on_gui(self, folders, answer: dict) -> None:
+        answer["remove"] = bool(self.confirm_removals(folders))
+
+    def _confirm_removals(self, folders) -> bool:
+        if QThread.currentThread() is self.thread():
+            return bool(self.confirm_removals(folders))   # run() called directly
+        answer = {"remove": False}
+        self.removals_found.emit(folders, answer)
+        return answer["remove"]
 
     def run(self) -> None:  # pragma: no cover - exercised interactively / service tests
         try:
@@ -113,7 +132,10 @@ class UsbSyncThread(QThread):
 
         try:
             with session_scope() as db:
-                notes = library_state.sync_library_state(db, self.plan.drive, us.get_pc_id(db))
+                notes = library_state.sync_library_state(
+                    db, self.plan.drive, us.get_pc_id(db),
+                    confirm_removals=self._confirm_removals if self.confirm_removals else None,
+                )
         except Exception as exc:
             log.exception("library data sync failed")
             return (message + " · " if message else "") + f"Library data sync failed: {exc}"
