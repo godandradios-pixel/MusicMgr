@@ -13,6 +13,13 @@ library.db - never the database file itself:
   rides on the Playlists checkbox). The picture files themselves travel
   with the artwork folder; this carries which playlist/folder uses which
   file, for every kind of playlist - chart and playback ones too
+- **radio stations** (2026-10-01 - James: "With the new Radio feature, I
+  would like to add the preset radio stations buttons to the USB Sync
+  option"): the internet stations on the Radio page's FM and AM bands,
+  keyed by stream address, with their name, band and place on the dial.
+  Each PC downloads a station's logo itself the next time the Radio page
+  opens. Old-time radio shows aren't included - they're folders on each
+  PC, read from its own radio folder
 
 Everything is keyed by names and paths, never by database ids (ids differ
 on every PC). A track's key is its path inside a synced folder, as the
@@ -78,6 +85,7 @@ from ..db.models import (
     Playlist,
     PlaylistFolder,
     PlaylistItem,
+    RadioStation,
     Setting,
     SyncPair,
     Track,
@@ -98,9 +106,14 @@ _NEXT_SLOT_KEY = "jukebox_next_slot_number"
 PLAYS, RATINGS, PLAYLISTS, JUKEBOX = "plays", "ratings", "playlists", "jukebox"
 #: charts (2026-09-30) - their own files on the drive, see chart_sync.py
 CHARTS = "charts"
-CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS)
+#: the Radio page's internet stations (2026-10-01)
+RADIO = "radio"
+CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS, RADIO)
 #: the ones kept in library-state.json.gz itself
-_STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX)
+_STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, RADIO)
+#: what a station carries (keyed by its stream address)
+_STATION_FIELDS = ("name", "band", "dial_order", "homepage", "favicon_url", "country",
+                   "tags", "codec", "bitrate", "rb_uuid")
 PREF_PREFIX = "sync_state_"
 
 #: a play counts towards play_count like the player's own rule of thumb
@@ -329,7 +342,51 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
     board["changed_at"] = changed
 
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
-            IMAGES: read_images(db), FOLDERS: {path: True for path in _folders_by_path(db)}}
+            IMAGES: read_images(db), FOLDERS: {path: True for path in _folders_by_path(db)},
+            RADIO: read_stations(db)}
+
+
+def read_stations(db: Session) -> dict[str, dict]:
+    """The Radio page's internet stations, by stream address."""
+    out: dict[str, dict] = {}
+    for st in db.scalars(select(RadioStation).order_by(RadioStation.dial_order, RadioStation.id)):
+        url = (st.stream_url or "").strip()
+        if url and url not in out:
+            out[url] = {f: getattr(st, f) for f in _STATION_FIELDS}
+    return out
+
+
+def apply_stations(db: Session, merged: dict, local: dict, notes: "MergeNotes") -> None:
+    """Add, update and remove stations so this PC's dial matches `merged`."""
+    want = merged.get(RADIO) or {}
+    have = {(st.stream_url or "").strip(): st for st in db.scalars(select(RadioStation))}
+    for url in notes.stations_removed:
+        st = have.get(url)
+        if st is not None:
+            if st.favicon_path:
+                try:
+                    Path(st.favicon_path).unlink()
+                except OSError:
+                    pass
+            db.delete(st)
+    for url in notes.stations_in:
+        value = want.get(url)
+        if value is None:
+            continue
+        st = have.get(url)
+        if st is None:
+            st = RadioStation(stream_url=url, name=value.get("name") or url)
+            db.add(st)
+        old_logo = st.favicon_url
+        for f in _STATION_FIELDS:
+            if f in value:
+                setattr(st, f, value[f])
+        st.name = st.name or url
+        st.band = st.band or "fm"
+        st.dial_order = st.dial_order or 0
+        if st.favicon_url != old_logo:
+            st.favicon_path = None  # fetched again for the new picture
+    db.flush()
 
 
 # --------------------------------------------------------------------------
@@ -449,7 +506,7 @@ def _set(db: Session, key: str, value: str) -> None:
 
 def empty_state() -> dict:
     return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": [],
-            IMAGES: {}, "images_unplaced": [], FOLDERS: {}}
+            IMAGES: {}, "images_unplaced": [], FOLDERS: {}, RADIO: {}}
 
 
 def load_state(path: Path) -> Optional[dict]:
@@ -470,6 +527,9 @@ def load_state(path: Path) -> Optional[dict]:
     if FOLDERS not in data:
         # likewise for folders (2026-09-28)
         state[FOLDERS] = None
+    if RADIO not in data:
+        # ...and radio stations (2026-10-01)
+        state[RADIO] = None
     if data.get("playlist_keys") != PLAYLIST_KEYS:
         state["playlists"] = _rekey_playlists(state["playlists"] or {})
     state["images_placed"] = bool(data.get("images_placed"))
@@ -536,12 +596,17 @@ class MergeNotes:
     charts: Optional[object] = None
     #: folders the drive no longer had that James chose to keep (2026-09-30)
     folders_kept: list[str] = field(default_factory=list)
+    #: radio stations (2026-10-01), by stream address
+    stations_in: list[str] = field(default_factory=list)
+    stations_removed: list[str] = field(default_factory=list)
+    stations_out: int = 0
 
     def received(self) -> bool:
         """Did anything change in this library? (Views refresh if so.)"""
         return bool(self.plays_in or self.ratings_in or self.playlists_in
                     or self.playlists_removed or self.images_in or self.folders_in
                     or self.folders_removed or self.board_in
+                    or self.stations_in or self.stations_removed
                     or (self.charts is not None
                         and (self.charts.charts_in or self.charts.charts_removed)))
 
@@ -578,6 +643,12 @@ class MergeNotes:
             parts.append(f"{n} playlist image{'s' if n != 1 else ''} updated")
         if self.board_in:
             parts.append("Jukebox updated")
+        if self.stations_in:
+            n = len(self.stations_in)
+            parts.append(f"{n} radio station{'s' if n != 1 else ''} updated")
+        if self.stations_removed:
+            n = len(self.stations_removed)
+            parts.append(f"{n} radio station{'s' if n != 1 else ''} removed")
         ch = self.charts
         if ch is not None:
             if ch.charts_in:
@@ -607,6 +678,9 @@ class MergeNotes:
             sent.append(f"{self.ratings_out:,} rating{'s' if self.ratings_out != 1 else ''}")
         if self.board_out:
             sent.append("the Jukebox")
+        if self.stations_out:
+            n = self.stations_out
+            sent.append(f"{n} radio station{'s' if n != 1 else ''}")
         if ch is not None and ch.charts_out:
             n = ch.charts_out
             sent.append(f"{n} chart{'s' if n != 1 else ''}")
@@ -734,8 +808,15 @@ def merge(local: dict, usb: dict, base: dict) -> tuple[dict, MergeNotes]:
     notes.playlists_total = len(playlists)
     notes.folders_total = len(folders)
 
+    # radio stations: three-way per stream address; changed on both -> this PC's
+    local_st = local.get(RADIO) or {}
+    stations, taken_st = _merge_dict(local_st, usb.get(RADIO) or {}, base.get(RADIO) or {})
+    notes.stations_in = sorted(u for u in taken_st if stations[u] != local_st.get(u))
+    notes.stations_removed = sorted(u for u in local_st if u not in stations)
+    notes.stations_out = _changed(stations, usb.get(RADIO) or {})
+
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
-            IMAGES: images, FOLDERS: folders}, notes
+            IMAGES: images, FOLDERS: folders, RADIO: stations}, notes
 
 
 # --------------------------------------------------------------------------
@@ -1088,7 +1169,7 @@ def revive(merged: dict, base: dict, idx: TrackIndex, notes: "MergeNotes") -> No
 
 
 def enabled_categories(db: Session) -> frozenset:
-    """Which of plays/ratings/playlists/Jukebox/charts this PC syncs (Settings →
+    """Which of plays/ratings/playlists/Jukebox/charts/radio this PC syncs (Settings →
     USB sync checkboxes, all on by default - 2026-09-24)."""
     return frozenset(
         cat for cat in CATEGORIES
@@ -1147,6 +1228,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     if usb[FOLDERS] is None:
         # ...or folders: nothing there counts as removed
         usb[FOLDERS] = copy.deepcopy(base[FOLDERS])
+    if base[RADIO] is None:
+        base[RADIO] = {}
+    if usb[RADIO] is None:
+        # ...or radio stations
+        usb[RADIO] = copy.deepcopy(base[RADIO])
     original_base = dict(base)
     for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS:
         if not _included(cat, include):
@@ -1176,7 +1262,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         notes.ratings_out = 0
     if PLAYS not in include:
         notes.plays_out = 0
+    if RADIO not in include:
+        notes.stations_in, notes.stations_removed, notes.stations_out = [], [], 0
     apply_state(db, idx, local, merged, notes, include)
+    if RADIO in include:
+        apply_stations(db, merged, local, notes)
     if PLAYLISTS in include:
         # after apply_state, so playlists/folders that just arrived get theirs
         apply_images(db, merged, local, notes, carried)

@@ -518,6 +518,7 @@ class TunerView(BaseView):
             except Exception:  # pragma: no cover - never block the page
                 log.exception("couldn't move radio shows to the new band layout")
         self._rebuild()
+        self._fetch_missing_logos()
         if not self._initialised:
             self._initialised = True
             self.radio.set_static_enabled(_get_setting(self.ctx, STATIC_KEY, "1") == "1")
@@ -527,6 +528,20 @@ class TunerView(BaseView):
             if not self._point_at(kind, ident, animate=False):
                 self.radio.set_band(_get_setting(self.ctx, BAND_KEY, START_BAND), animate=False)
         self._update_info()
+
+    def _fetch_missing_logos(self) -> None:
+        """Stations that arrived by USB sync (2026-10-01) bring their logo's
+        web address, not the picture: fetch each one once, when the Radio
+        page is opened."""
+        tried = self.__dict__.setdefault("_logos_tried", set())
+        with self.ctx.session() as s:
+            missing = [(st.id, st.favicon_url) for st in stations.dial(s)
+                       if st.favicon_url and not st.favicon_path and st.id not in tried]
+        for sid, url in missing:
+            tried.add(sid)
+            thread = LogoThread(sid, url, self)
+            thread.finished.connect(self._update_info)
+            thread.start()
 
     def set_band(self, band: str) -> None:
         if band == self.radio.band:

@@ -654,3 +654,91 @@ class TestImagesWithNewFolders:
         with db_session.session_scope() as s:
             f = s.scalar(select(PlaylistFolder).where(PlaylistFolder.name == "Billboard Hot Country"))
             assert f.cover_path is None
+
+
+class TestRadioStations:
+    """James: "With the new Radio feature, I would like to add the preset
+    radio stations buttons to the USB Sync option"."""
+
+    def _dial(self, pc):
+        from musicmgr.db.models import RadioStation
+        from musicmgr.services import stations as st_svc
+
+        pc.use()
+        with db_session.session_scope() as s:
+            return [(st.name, st.stream_url, st.band) for st in st_svc.dial(s)]
+
+    def test_stations_travel_and_edits_and_removals_follow(self, two_pcs):
+        from musicmgr.db.models import RadioStation
+        from musicmgr.services import stations as st_svc
+
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            st_svc.add_manual(s, "KDKA", "https://live.example/kdka", band="am")
+            wdve = st_svc.add_manual(s, "WDVE", "https://live.example/wdve")
+            wdve.favicon_url = "https://example/wdve.png"
+            wdve.favicon_path = "/pc1/stations/2.png"
+        notes = pc1.sync()
+        assert notes.stations_out == 2 and "2 radio stations" in notes.summary()
+
+        notes = pc2.sync()
+        assert sorted(notes.stations_in) == ["https://live.example/kdka", "https://live.example/wdve"]
+        assert self._dial(pc2) == [("KDKA", "https://live.example/kdka", "am"),
+                                   ("WDVE", "https://live.example/wdve", "fm")]
+        pc2.use()
+        with db_session.session_scope() as s:
+            w = s.scalar(select(RadioStation).where(RadioStation.name == "WDVE"))
+            assert w.favicon_url == "https://example/wdve.png" and w.favicon_path is None
+            # PC2 renames one and moves it to AM; removes the other
+            w.name, w.band = "WDVE 102.5", "am"
+            k = s.scalar(select(RadioStation).where(RadioStation.name == "KDKA"))
+            st_svc.remove(s, k.id)
+        pc2.sync()
+
+        notes = pc1.sync()
+        assert notes.stations_removed == ["https://live.example/kdka"]
+        assert self._dial(pc1) == [("WDVE 102.5", "https://live.example/wdve", "am")]
+        pc1.use()
+        with db_session.session_scope() as s:  # PC1 keeps its own logo file
+            assert s.scalar(select(RadioStation)).favicon_path == "/pc1/stations/2.png"
+        assert pc1.sync().summary() == "Library data already in sync"
+
+    def test_switched_off_stations_stay_put(self, two_pcs):
+        from musicmgr.services import stations as st_svc
+
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            st_svc.add_manual(s, "KDKA", "https://live.example/kdka", band="am")
+        pc1.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            ls.set_category_enabled(s, ls.RADIO, False)
+        notes = pc2.sync()
+        assert notes.stations_in == [] and self._dial(pc2) == []
+        pc2.use()
+        with db_session.session_scope() as s:
+            ls.set_category_enabled(s, ls.RADIO, True)
+        assert pc2.sync().stations_in == ["https://live.example/kdka"]
+
+    def test_a_drive_written_before_radio_sync_removes_nothing(self, two_pcs, tmp_path):
+        from musicmgr.services import stations as st_svc
+
+        pc1, _pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            st_svc.add_manual(s, "KDKA", "https://live.example/kdka", band="am")
+        pc1.sync()
+        # an older MusicMgr rewrites the drive's state without stations
+        import gzip
+        import json
+
+        path = ls.usb_state_path(pc1.drive)
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+        data.pop(ls.RADIO, None)
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        notes = pc1.sync()
+        assert notes.stations_removed == [] and len(self._dial(pc1)) == 1
