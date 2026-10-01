@@ -143,6 +143,7 @@ from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -172,6 +173,8 @@ from ...services import library as lib
 from ...services import scanner
 from ...services import lastfm_popularity as popularity_dl
 from ...services import metadata_health
+from ...services import playback_prefs
+from ...services import replaygain
 from ...services import updater
 from ...services import library_state
 from ...services import usb_sync
@@ -203,6 +206,36 @@ from ..widgets.usb_sync import (
     human_size,
 )
 from .base import BaseView
+
+
+class LoudnessAnalyzeThread(QThread):
+    """Settings > Maintenance > "Volume levels" (2026-10-01) - gives every
+    track without a level one: its ReplayGain tags if it has them, otherwise
+    MusicMgr measures it (services/replaygain.py:analyze_library). Commits
+    per file, so Cancel keeps everything finished so far."""
+
+    progress = Signal(int, int, str)
+    finished_with = Signal(object)  # replaygain.AnalyzeResult
+
+    def run(self) -> None:  # pragma: no cover - exercised interactively
+        result = replaygain.analyze_library(
+            progress=lambda done, total, name: self.progress.emit(done, total, name),
+            cancelled=self.isInterruptionRequested,
+        )
+        self.finished_with.emit(result)
+
+
+#: Settings > Playback choices: (label, value)
+CROSSFADE_CHOICES = [("Off — gapless", 0)] + [
+    (f"{n} seconds" if n > 1 else "1 second", n) for n in (1, 2, 3, 4, 5, 6, 8, 10, 12)
+]
+LEVELLING_CHOICES = [
+    ("Off", playback_prefs.LEVELLING_OFF),
+    ("Auto — album level when an album plays in order", playback_prefs.LEVELLING_AUTO),
+    ("Track — every track at the same level", playback_prefs.LEVELLING_TRACK),
+    ("Album — keep each album's own dynamics", playback_prefs.LEVELLING_ALBUM),
+]
+PREAMP_CHOICES = [(f"{n:+d} dB" if n else "0 dB (standard)", float(n)) for n in range(6, -13, -1)]
 
 
 class LastfmCredentialsDialog(QDialog):
@@ -670,6 +703,7 @@ class SettingsView(BaseView):
         self._artist_images_thread: Optional[ArtistImagesImportThread] = None
         self._verify_thread: Optional[VerifyFilesThread] = None
         self._rematch_thread: Optional[RematchChartsThread] = None
+        self._loudness_thread: Optional[LoudnessAnalyzeThread] = None
         #: last "Missing metadata" scan, reused so reopening the dashboard
         #: (e.g. right after fixing one item) doesn't rerun the whole thing
         #: - see view_missing_metadata's own docstring. Cleared (forcing a
@@ -826,6 +860,47 @@ class SettingsView(BaseView):
         progress_row.addWidget(self.cancel_btn, 0, Qt.AlignRight)
         body.addLayout(progress_row)
 
+        # ---- playback (2026-10-01) ----
+        # Crossfade/gapless and volume levelling - see services/player.py's
+        # module docstring and services/replaygain.py.
+        playback_label = QLabel("Playback")
+        playback_label.setObjectName("Crumb")
+        body.addWidget(playback_label)
+        playback_card = QFrame()
+        playback_card.setObjectName("Card")
+        pgrid = QGridLayout(playback_card)
+        pgrid.setContentsMargins(20, 14, 20, 14)
+        pgrid.setHorizontalSpacing(18)
+        pgrid.setVerticalSpacing(10)
+
+        def combo(choices) -> QComboBox:
+            box = QComboBox()
+            for label, value in choices:
+                box.addItem(label, value)
+            return box
+
+        self.crossfade_combo = combo(CROSSFADE_CHOICES)
+        self.crossfade_album_cb = QCheckBox("Crossfade between tracks of the same album too")
+        self.levelling_combo = combo(LEVELLING_CHOICES)
+        self.preamp_combo = combo(PREAMP_CHOICES)
+        self.levels_status = dim_label("")
+        self.levels_status.setWordWrap(True)
+
+        pgrid.addWidget(QLabel("Crossfade"), 0, 0)
+        pgrid.addWidget(self.crossfade_combo, 0, 1)
+        pgrid.addWidget(self.crossfade_album_cb, 1, 1)
+        pgrid.addWidget(QLabel("Volume levelling"), 2, 0)
+        pgrid.addWidget(self.levelling_combo, 2, 1)
+        pgrid.addWidget(QLabel("Levelling adjust"), 3, 0)
+        pgrid.addWidget(self.preamp_combo, 3, 1)
+        pgrid.addWidget(self.levels_status, 4, 1)
+        pgrid.setColumnStretch(1, 1)
+        body.addWidget(playback_card)
+        self._load_playback_prefs()
+        for box in (self.crossfade_combo, self.levelling_combo, self.preamp_combo):
+            box.currentIndexChanged.connect(self._save_playback_prefs)
+        self.crossfade_album_cb.toggled.connect(self._save_playback_prefs)
+
         # ---- maintenance ----
         # 2026-09-16 follow-up (James: "let's have settings be rows in a
         # table" - see _ToolRow's own docstring above for the full "buttons
@@ -909,6 +984,14 @@ class SettingsView(BaseView):
             "Check that every track's file can still be found on disk.",
             "Verify",
             self.verify_files,
+        )
+        # 2026-10-01 - volume levelling, see services/replaygain.py
+        add_tool_row(
+            "Volume levels",
+            "Read ReplayGain tags, or measure loudness, for every track without a level yet. "
+            "Your music files aren't changed.",
+            "Analyze…",
+            self.analyze_loudness,
         )
         add_tool_row(
             "Charts",
@@ -1178,6 +1261,7 @@ class SettingsView(BaseView):
             (self._artist_images_thread, "Artist images are importing — wait for it to finish first"),
             (self._verify_thread, "Files are being verified — wait for it to finish first"),
             (self._rematch_thread, "Charts are re-matching — wait for it to finish first"),
+            (self._loudness_thread, "Volume levels are being analyzed — wait for it to finish first"),
             (getattr(self, "_usb_compare_thread", None), "The USB is being checked — wait for it to finish first"),
             (getattr(self, "_usb_sync_thread", None), "The USB is syncing — wait for it to finish first"),
         ):
@@ -1205,6 +1289,7 @@ class SettingsView(BaseView):
         "_artist_images_thread",
         "_verify_thread",
         "_rematch_thread",
+        "_loudness_thread",
         "_usb_compare_thread",
         "_usb_sync_thread",
     )
@@ -1805,6 +1890,7 @@ class SettingsView(BaseView):
     # -- loading -------------------------------------------------------------
 
     def refresh(self) -> None:
+        self._refresh_levels_status()
         rows = []
         with self.ctx.session() as session:
             stats = lib.library_stats(session)
@@ -2592,6 +2678,113 @@ class SettingsView(BaseView):
         self._hide_cancel(self._verify_thread)
         self.ctx.notify(f"{missing} file(s) newly marked missing")
         self.refresh()
+
+    # -- playback / volume levels (2026-10-01) ------------------------------
+
+    def _load_playback_prefs(self) -> None:
+        with self.ctx.session() as db:
+            prefs = playback_prefs.load(db)
+        widgets = (
+            (self.crossfade_combo, prefs.crossfade_s),
+            (self.levelling_combo, prefs.levelling),
+            (self.preamp_combo, float(round(prefs.preamp_db))),
+        )
+        for box, value in widgets:
+            box.blockSignals(True)
+            idx = box.findData(value)
+            box.setCurrentIndex(idx if idx >= 0 else 0)
+            box.blockSignals(False)
+        self.crossfade_album_cb.blockSignals(True)
+        self.crossfade_album_cb.setChecked(prefs.crossfade_same_album)
+        self.crossfade_album_cb.blockSignals(False)
+        self._sync_playback_controls()
+
+    def _sync_playback_controls(self) -> None:
+        self.crossfade_album_cb.setVisible(self.crossfade_combo.currentData() != 0)
+        self.preamp_combo.setEnabled(
+            self.levelling_combo.currentData() != playback_prefs.LEVELLING_OFF
+        )
+
+    def _save_playback_prefs(self, *_args) -> None:
+        prefs = playback_prefs.PlaybackPrefs(
+            crossfade_s=int(self.crossfade_combo.currentData() or 0),
+            crossfade_same_album=self.crossfade_album_cb.isChecked(),
+            levelling=self.levelling_combo.currentData() or playback_prefs.LEVELLING_AUTO,
+            preamp_db=float(self.preamp_combo.currentData() or 0.0),
+        )
+        with self.ctx.session() as db:
+            playback_prefs.save(db, prefs)
+            db.commit()
+        self._sync_playback_controls()
+        self.ctx.player.reload_prefs()
+
+    def _refresh_levels_status(self) -> None:
+        from sqlalchemy import func
+
+        from ...db.models import MediaFile
+
+        with self.ctx.session() as db:
+            total = db.scalar(
+                select(func.count(MediaFile.id)).where(MediaFile.is_missing.is_(False))
+            ) or 0
+            known = db.scalar(
+                select(func.count(MediaFile.id)).where(
+                    MediaFile.is_missing.is_(False), MediaFile.rg_track_gain.is_not(None)
+                )
+            ) or 0
+        if total == 0:
+            text = ""
+        elif known >= total:
+            text = f"All {total:,} tracks have a volume level."
+        else:
+            text = (
+                f"{known:,} of {total:,} tracks have a volume level. The rest are measured "
+                "as they play, or all at once with Maintenance › Volume levels."
+            )
+        self.levels_status.setText(text)
+
+    def shutdown(self) -> None:
+        """MainWindow.closeEvent: a "Volume levels" run can take hours on a
+        big library, so closing the app mid-run is normal - stop it cleanly
+        (everything measured so far is already saved)."""
+        thread = self._loudness_thread
+        if thread is not None and thread.isRunning():
+            thread.requestInterruption()
+            thread.wait(5000)
+
+    def analyze_loudness(self) -> None:
+        if self._loudness_thread is not None and self._loudness_thread.isRunning():
+            self.ctx.notify("Already analyzing volume levels")
+            return
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self.progress_label.setText("Finding tracks without a volume level…")
+        self._loudness_thread = LoudnessAnalyzeThread(parent=self)
+        self._loudness_thread.progress.connect(self._on_loudness_progress)
+        self._loudness_thread.finished_with.connect(self._on_loudness_done)
+        self._loudness_thread.start()
+        self._show_cancel()
+
+    def _on_loudness_progress(self, done: int, total: int, name: str) -> None:
+        if total <= 0:
+            self.progress.setRange(0, 0)
+            self.progress_label.setText(name or "Analyzing…")
+            return
+        self.progress.setRange(0, total)
+        self.progress.setValue(done)
+        self.progress_label.setText(f"Volume levels {done:,}/{total:,}  {name}")
+
+    def _on_loudness_done(self, result) -> None:
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
+        self._hide_cancel(self._loudness_thread)
+        self.ctx.notify(f"Volume levels: {result.summary()}")
+        self.ctx.player.reload_prefs()
+        self._refresh_levels_status()
 
     def rematch_all(self) -> None:
         """2026-09-22 - James: "does the progress bar also work on ...

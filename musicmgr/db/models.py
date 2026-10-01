@@ -477,6 +477,16 @@ class MediaFile(Base):
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
     is_missing: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
+    #: 2026-10-01 volume levelling - ReplayGain values in dB relative to
+    #: -18 LUFS, and sample peaks (1.0 = full scale). Read from the file's
+    #: own tags by the scanner, or measured by MusicMgr and stored only here
+    #: (the file is never written). `rg_source`: "tag" | "scan" | "failed".
+    #: See services/replaygain.py.
+    rg_track_gain: Mapped[Optional[float]] = mapped_column(Float)
+    rg_track_peak: Mapped[Optional[float]] = mapped_column(Float)
+    rg_album_gain: Mapped[Optional[float]] = mapped_column(Float)
+    rg_album_peak: Mapped[Optional[float]] = mapped_column(Float)
+    rg_source: Mapped[Optional[str]] = mapped_column(String(10))
 
     track: Mapped["Track"] = relationship(back_populates="files")
 

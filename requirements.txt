@@ -5,3 +5,5 @@ requests>=2.31
 cryptography>=42
 packaging>=23
 send2trash>=1.8
+# volume levelling loudness measurement (services/replaygain.py) - 2026-10-01
+numpy>=1.24

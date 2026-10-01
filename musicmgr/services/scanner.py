@@ -38,6 +38,7 @@ from ..db.models import (
     WatchedFolder,
 )
 from . import library as lib
+from . import replaygain
 from .tracknum import parse_side
 from .matching import normalize, split_artists
 
@@ -109,6 +110,8 @@ class TrackTags:
     channels: Optional[int] = None
     codec: str = ""
     cover: Optional[bytes] = None
+    #: ReplayGain tags, if the file has them (2026-10-01, services/replaygain.py)
+    gain: Optional["replaygain.GainInfo"] = None
 
 
 # --------------------------------------------------------------------------
@@ -267,6 +270,10 @@ def read_tags(path: Path) -> TrackTags:
     tags.compilation = comp in ("1", "True", "true", "yes")
 
     tags.cover = _extract_cover(raw, path)
+    try:
+        tags.gain = replaygain.read_gain_tags(raw)
+    except Exception:  # pragma: no cover - never let levelling break a scan
+        tags.gain = None
 
     if not tags.artist:
         tags.artist = tags.album_artist or "Unknown Artist"
@@ -570,6 +577,8 @@ def import_file(
     mf.duration_ms = tags.duration_ms
     mf.is_missing = False
     mf.last_seen_at = dt.datetime.now(dt.timezone.utc)
+    if tags.gain is not None:
+        replaygain.apply_tags(mf, tags.gain)
     if existing is None:
         session.add(mf)
     return track

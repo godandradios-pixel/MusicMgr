@@ -30,7 +30,7 @@ from ..services import charts as chart_svc
 from ..services import library as lib_svc
 from ..services import playlists as pl_svc
 from ..services import updater
-from ..services.player import PlayerController
+from ..services.player import PlayerController, stop_background_measuring
 from .context import AppContext
 from .theme import stylesheet
 from .views.charts import ChartsView
@@ -426,6 +426,12 @@ class MainWindow(QMainWindow):
         # follow-up - see ui/widgets/player_bar.py's module docstring) a
         # brief window to finish rather than abandoning it mid-decode
         self.player_bar.shutdown()
+        # 2026-10-01 volume levelling: a track being measured in the
+        # background (services/player.py:LoudnessThread)
+        stop_background_measuring()
+        settings = self.views.get("settings")
+        if settings is not None and hasattr(settings, "shutdown"):
+            settings.shutdown()
         super().closeEvent(event)
 
 

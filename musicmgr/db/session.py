@@ -77,6 +77,15 @@ _COLUMN_ADDITIONS = {
     # location and what genre page a track will be organized by") - see
     # db.models.JukeboxSlot.genre and services/jukebox.py:DEFAULT_JUKEBOX_GENRE.
     "jukebox_slots": [("genre", "VARCHAR(40) DEFAULT 'Rock'")],
+    # 2026-10-01 volume levelling - see db.models.MediaFile.rg_track_gain
+    # and services/replaygain.py
+    "media_files": [
+        ("rg_track_gain", "FLOAT"),
+        ("rg_track_peak", "FLOAT"),
+        ("rg_album_gain", "FLOAT"),
+        ("rg_album_peak", "FLOAT"),
+        ("rg_source", "VARCHAR(10)"),
+    ],
 }
 
 
