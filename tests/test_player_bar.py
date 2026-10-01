@@ -86,3 +86,40 @@ class TestExitVideoMode:
         # nothing queued in this test - on_track_changed(None) clears it,
         # same contract an emptied queue always had
         assert bar._spectrum_path is None
+
+
+class TestTransportStaysCentred:
+    """James: "can the stop and play button at the bottom be in a fixed
+    centered location? It moves around depending on the length of the
+    album name"."""
+
+    def _play_centre(self, bar):
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.processEvents()
+        return bar.play_btn.mapTo(bar, bar.play_btn.rect().center()).x()
+
+    def test_play_button_doesnt_move_with_the_text(self, bar):
+        bar.resize(1600, bar.height())
+        bar.show()
+        bar.title.setText("Take It On the Run")
+        bar.subtitle.setText("REO Speedwagon — Hi Infidelity")
+        short = self._play_centre(bar)
+        bar.title.setText("Rockin' Into the Night")
+        bar.subtitle.setText(".38 Special — 20th Century Masters: The Millennium Collection: "
+                             "The Best of .38 Special")
+        long = self._play_centre(bar)
+        assert short == long
+        assert abs(long - bar.width() / 2) <= 2
+
+    def test_long_text_is_cut_short_with_the_full_text_in_the_tooltip(self, bar):
+        bar.resize(1600, bar.height())
+        bar.show()
+        text = ".38 Special — 20th Century Masters: The Millennium Collection: The Best of"
+        bar.subtitle.setText(text)
+        from PySide6.QtWidgets import QApplication, QLabel
+
+        QApplication.processEvents()
+        shown = QLabel.text(bar.subtitle)
+        assert shown.endswith("…") and shown != text
+        assert bar.subtitle.text() == text and bar.subtitle.toolTip() == text

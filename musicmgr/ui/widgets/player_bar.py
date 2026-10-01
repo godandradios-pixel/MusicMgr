@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QSizePolicy,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -72,6 +73,39 @@ log = logging.getLogger(__name__)
 #: "Audio-reactive spectrum bars on the PlayerBar"). Tests that actually
 #: exercise the real threaded decode opt back in explicitly.
 SPECTRUM_ENABLED = True
+
+
+#: width of each side of the bar (cover + text on the left, Queue + volume
+#: on the right) - equal, so the transport buttons stay centred
+SIDE_WIDTH = 420
+
+
+class ElidingLabel(QLabel):
+    """A one-line label that cuts long text short with "…" to fit its width
+    (full text in the tooltip) instead of asking for more room."""
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full = text or ""
+        self.setToolTip(self._full)
+        self._elide()
+
+    def text(self) -> str:  # the full text, not the shortened one
+        return self._full
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        width = self.width() if self.width() > 20 else 10_000
+        shown = self.fontMetrics().elidedText(self._full, Qt.ElideRight, width)
+        super().setText(shown)
 
 
 class PlayerBar(QFrame):
@@ -123,25 +157,36 @@ class PlayerBar(QFrame):
         root.setSpacing(16)
 
         # --- current track -------------------------------------------------
+        # 2026-10-01 - James: "can the stop and play button at the bottom be
+        # in a fixed centered location? It moves around depending on the
+        # length of the album name". The left (cover, title, artist/album)
+        # and right (Queue, volume) sides are now the same fixed width, so
+        # the transport row sits in the true centre of the bar whatever the
+        # text; a long title or album is cut short with "…" (full text in
+        # the tooltip) instead of widening the left side.
+        left_box = QWidget()
+        left_box.setFixedWidth(SIDE_WIDTH)
+        left = QHBoxLayout(left_box)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(16)
         self.cover = CoverArt(88)
         self.cover.setCursor(Qt.PointingHandCursor)
-        root.addWidget(self.cover)
+        left.addWidget(self.cover)
 
         meta = QVBoxLayout()
         meta.setSpacing(2)
         meta.addStretch(1)
-        self.title = QLabel("Nothing playing")
+        self.title = ElidingLabel("Nothing playing")
         self.title.setStyleSheet("font-size: 17px; font-weight: 600;")
-        self.subtitle = QLabel("")
+        self.subtitle = ElidingLabel("")
         self.subtitle.setObjectName("Subtitle")
         meta.addWidget(self.title)
         meta.addWidget(self.subtitle)
         meta.addStretch(1)
         holder = QWidget()
         holder.setLayout(meta)
-        holder.setMinimumWidth(180)
-        holder.setMaximumWidth(340)
-        root.addWidget(holder)
+        left.addWidget(holder, 1)
+        root.addWidget(left_box)
 
         # --- transport + seek ----------------------------------------------
         centre = QVBoxLayout()
@@ -198,8 +243,12 @@ class PlayerBar(QFrame):
         root.addLayout(centre, 1)
 
         # --- right side ------------------------------------------------------
-        right = QHBoxLayout()
+        right_box = QWidget()
+        right_box.setFixedWidth(SIDE_WIDTH)
+        right = QHBoxLayout(right_box)
+        right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(10)
+        right.addStretch(1)
         self.queue_btn = TouchButton("Queue")
         self.queue_btn.setFixedWidth(96)
         self.queue_btn.clicked.connect(self.queueRequested.emit)
@@ -220,7 +269,7 @@ class PlayerBar(QFrame):
         right.addWidget(self.queue_btn)
         right.addWidget(vol_icon)
         right.addWidget(self.volume)
-        root.addLayout(right)
+        root.addWidget(right_box)
 
         # --- wiring ----------------------------------------------------------
         # play/pause and the ±15s/30s skip route to whichever source is
