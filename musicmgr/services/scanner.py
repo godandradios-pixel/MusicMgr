@@ -61,14 +61,21 @@ class ScanResult:
     #: tracks deleted outright by `purge_orphaned_tracks` - see its
     #: docstring (2026-09-07 follow-up)
     removed: int = 0
+    #: files that had been folded into another artist's track and now have
+    #: their own (2026-10-01 - see import_file's track lookup)
+    separated: int = 0
+    #: the tracks those files left - their chart matches get looked at again
+    separated_from: set[int] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
+        separated = (f", {self.separated} recordings separated from another artist's"
+                     if self.separated else "")
         return (
             f"{self.scanned} files scanned - {self.added} added, "
             f"{self.updated} updated, {self.unchanged} unchanged, "
             f"{self.missing} missing, {self.removed} removed, "
-            f"{len(self.errors)} errors"
+            f"{len(self.errors)} errors{separated}"
         )
 
 
@@ -415,6 +422,39 @@ def _needs_import(session: Session, path: Path, force: bool = False) -> bool:
     return not (existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size)
 
 
+def _shared_track_files(session: Session, files: list[Path]) -> list[Path]:
+    """The files in `files` whose track also has another file."""
+    shared = set(session.scalars(
+        select(MediaFile.path).where(MediaFile.track_id.in_(
+            select(MediaFile.track_id).group_by(MediaFile.track_id)
+            .having(func.count(MediaFile.id) > 1)
+        ))
+    ))
+    if not shared:
+        return []
+    return [p for p in files if str(p) in shared]
+
+
+def _reimport_on_same_album(session: Session, path: Path, result: ScanResult) -> None:
+    """Re-read one unchanged file and file it again - on the album it's
+    already on, so only its track can change."""
+    mf = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+    release = mf.track.release if mf is not None and mf.track is not None else None
+    if release is None or not release.artist_display:
+        import_file(session, path, result, force=True)
+        return
+    before = mf.track_id
+    import_file(
+        session, path, result, force=True,
+        album_artist_override=release.artist_display,
+        is_compilation_override=release.is_compilation,
+    )
+    session.flush()
+    if mf.track_id != before:
+        result.separated += 1
+        result.separated_from.add(before)
+
+
 def _quality_score(tags: TrackTags) -> int:
     fields = [
         tags.title, tags.artist, tags.album, tags.album_artist,
@@ -534,14 +574,35 @@ def import_file(
     release.album_artist_id = aa.id
 
     # track
+    # 2026-10-01 - the same title on the same album is only the same track
+    # when it's by the same artist. Before this, a track was (album, title,
+    # disc) alone, so a compilation folder holding several artists'
+    # versions of one song (James's "1949 Billboard Top Hits": Russ Morgan,
+    # Blue Barron and Jack Smith all doing "Cruising Down the River"; four
+    # "Forever and Ever"s, five "Again"s) folded them into one track with
+    # several files - the other versions vanished from the library, the
+    # charts and playlists (James: "why does the search only show the russ
+    # morgan when I clearly want Perry como"). Two files by the same artist
+    # (an MP3 and a FLAC of one recording) still share a track.
     title_key = normalize(tags.title)
-    track = session.scalar(
+    artist_key = normalize(tags.artist or "")
+    candidates = list(session.scalars(
         select(Track).where(
             Track.release_id == release.id,
             Track.title_key == title_key,
             Track.disc_no == tags.disc_no,
-        )
-    )
+        ).order_by(Track.id)
+    ))
+
+    def same_artist(t: Track) -> bool:
+        key = normalize(t.artist_display or "")
+        return not key or not artist_key or key == artist_key
+
+    track = None
+    if existing is not None and existing.track in candidates and same_artist(existing.track):
+        track = existing.track
+    if track is None:
+        track = next((c for c in candidates if same_artist(c)), None)
     if track is None:
         track = Track(release_id=release.id, title=tags.title, title_key=title_key)
         session.add(track)
@@ -561,13 +622,24 @@ def import_file(
     track.comment = tags.comment or None
 
     names = split_artists(tags.artist)
+    credited: set[int] = set()
     for idx, name in enumerate(names):
         artist = lib.get_or_create_artist(session, name)
         role = Credit.ROLE_MAIN if idx == 0 else Credit.ROLE_FEATURING
         lib.add_credit(session, artist, role, track=track, position=idx)
+        credited.add(artist.id)
+    if names:
+        # drop performer credits left by other artists' files that used to
+        # be folded into this track (see the track lookup above)
+        for credit in session.scalars(select(Credit).where(
+            Credit.track_id == track.id,
+            Credit.role.in_((Credit.ROLE_MAIN, Credit.ROLE_FEATURING)),
+        )):
+            if credit.artist_id not in credited:
+                session.delete(credit)
 
     mf = existing or MediaFile(track_id=track.id, path=str(path))
-    mf.track_id = track.id
+    mf.track = track  # (relationship, so a file moving between tracks leaves its old one)
     mf.size_bytes = stat.st_size
     mf.mtime = stat.st_mtime
     mf.codec = tags.codec or path.suffix.lstrip(".")
@@ -669,6 +741,11 @@ def _import_files(
     # picks up a `read_tags()` bugfix - it has no other reason to re-read a
     # file whose mtime/size on disk never changed.
     to_process = [p for p in files if force or _needs_import(session, p)]
+    # unchanged files that share their track with another file get read once
+    # more, so recordings folded together before the 2026-10-01 track fix
+    # come apart (see import_file); they stay on the album they're on
+    process = set(to_process)
+    regroup = [p for p in _shared_track_files(session, files) if p not in process]
     by_folder: dict[Path, list[Path]] = {}
     for path in to_process:
         by_folder.setdefault(path.parent, []).append(path)
@@ -682,11 +759,14 @@ def _import_files(
         for p in folder_files:
             overrides[p] = decision
 
+    regroup_set = set(regroup)
     for idx, path in enumerate(files, start=1):
         if should_stop and should_stop():
             break
         try:
-            if path in overrides:
+            if path in regroup_set:
+                _reimport_on_same_album(session, path, result)
+            elif path in overrides:
                 album_artist, is_compilation = overrides[path]
                 import_file(
                     session,
@@ -726,6 +806,58 @@ def _import_files(
         result.scanned += 1
         if progress and (idx % 5 == 0 or idx == total):
             progress(idx, total, path.name)
+        if idx % 200 == 0:
+            session.flush()
+    if result.separated_from and not (should_stop and should_stop()):
+        _rematch_separated(session, result, progress)
+
+
+def _move_locked_to_version(session: Session, entry: ChartEntry, artist_similarity) -> None:
+    current = session.get(Track, entry.track_id)
+    if current is None:
+        return
+    siblings = session.scalars(select(Track).where(
+        Track.release_id == current.release_id,
+        Track.title_key == current.title_key,
+        Track.id != current.id,
+    ))
+    here = artist_similarity(entry.artist_name or "", current.artist_display or "")
+    best, best_score = None, max(here, 0.75)
+    for track in siblings:
+        score = artist_similarity(entry.artist_name or "", track.artist_display or "")
+        if score > best_score:
+            best, best_score = track, score
+    if best is not None:
+        entry.track_id = best.id
+
+
+def _rematch_separated(session: Session, result: ScanResult,
+                       progress: Optional[ProgressFn] = None) -> None:
+    """Chart entries matched to a track that other artists' files have just
+    been separated from may belong to one of those versions now (#15
+    "Forever and Ever - Perry Como" was matched to Russ Morgan's track,
+    which held Perry Como's file too). Re-match those entries.
+
+    A match fixed by hand stays fixed, but may have been aimed at a version
+    that was hidden inside the track (James's "Mule Train - Frankie Laine",
+    fixed to the one Mule Train track there was, which showed as Vaughn
+    Monroe): it moves to a separated version on the same album only when
+    that version's artist is plainly the chart's artist."""
+    from . import charts as chart_svc  # charts imports nothing from here
+    from .matching import artist_similarity
+
+    session.flush()
+    entries = list(session.scalars(select(ChartEntry).where(
+        ChartEntry.track_id.in_(result.separated_from),
+    )))
+    total = len(entries)
+    for idx, entry in enumerate(entries, start=1):
+        if entry.match_locked:
+            _move_locked_to_version(session, entry, artist_similarity)
+        else:
+            chart_svc.match_entry(session, entry)
+        if progress and (idx % 20 == 0 or idx == total):
+            progress(idx, total, "Re-matching charts for separated recordings")
         if idx % 200 == 0:
             session.flush()
 

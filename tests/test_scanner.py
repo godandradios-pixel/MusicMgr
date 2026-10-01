@@ -608,3 +608,125 @@ class TestPurgeOrphanedTracks:
 
         assert removed == 0
         assert len(session.scalars(select(Track)).all()) == 1
+
+
+def make_tagged_mp3(path: Path, title: str, artist: str, album: str) -> None:
+    """A tiny silent MP3 with title/artist/album tags."""
+    from mutagen.id3 import TALB, TIT2, TPE1
+    from mutagen.mp3 import MP3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = bytes([0xFF, 0xFB, 0x90, 0x00])
+    frame = header + bytes(417 - len(header))
+    with open(path, "wb") as f:
+        for _ in range(5):
+            f.write(frame)
+    audio = MP3(str(path))
+    audio.add_tags()
+    audio.tags.add(TIT2(encoding=3, text=[title]))
+    audio.tags.add(TPE1(encoding=3, text=[artist]))
+    audio.tags.add(TALB(encoding=3, text=[album]))
+    audio.save()
+
+
+class TestSameSongByDifferentArtists:
+    """2026-10-01 - James's "1949 Billboard Top Hits" folder has several
+    artists' versions of one song; they were folded into one track (James:
+    "why does the search only show the russ morgan when I clearly want
+    Perry como")."""
+
+    ALBUM = "1949 Billboard Top Hits"
+    VERSIONS = ("Russ Morgan", "Perry Como", "Dinah Shore")
+
+    def _folder(self, root: Path) -> Path:
+        folder = root / "1949"
+        for artist in self.VERSIONS:
+            make_tagged_mp3(folder / f"{artist} - Forever And Ever.mp3",
+                            "Forever And Ever", artist, self.ALBUM)
+        make_tagged_mp3(folder / "Vaughn Monroe - Riders In The Sky.mp3",
+                        "Riders In The Sky", "Vaughn Monroe", self.ALBUM)
+        return folder
+
+    def _versions(self, session):
+        tracks = session.scalars(select(Track).where(Track.title == "Forever And Ever")).all()
+        return {t.artist_display: t for t in tracks}
+
+    def test_each_artists_version_is_its_own_track(self, session, tmp_path):
+        self._folder(tmp_path)
+        scanner.scan_folder(session, tmp_path)
+        versions = self._versions(session)
+        assert set(versions) == set(self.VERSIONS)
+        for artist, track in versions.items():
+            assert [Path(m.path).name for m in track.files] == [f"{artist} - Forever And Ever.mp3"]
+            assert {c.artist.name for c in track.credits} == {artist}
+        assert len({t.release_id for t in versions.values()}) == 1
+
+    def test_two_files_of_one_recording_still_share_a_track(self, session, tmp_path):
+        folder = tmp_path / "Album"
+        make_tagged_mp3(folder / "a.mp3", "Galway Bay", "Bing Crosby", "Hits")
+        make_tagged_mp3(folder / "b.mp3", "Galway Bay", "Bing Crosby", "Hits")
+        scanner.scan_folder(session, tmp_path)
+        tracks = session.scalars(select(Track)).all()
+        assert len(tracks) == 1 and len(tracks[0].files) == 2
+
+    def test_a_rescan_separates_versions_folded_together_before(self, session, tmp_path):
+        self._folder(tmp_path)
+        scanner.scan_folder(session, tmp_path)
+        # recreate the old state: every version folded into Russ Morgan's track
+        versions = self._versions(session)
+        keep = versions["Russ Morgan"]
+        release_id = keep.release_id
+        for artist, track in versions.items():
+            if track is keep:
+                continue
+            for mf in list(track.files):
+                mf.track = keep
+            session.delete(track)
+        session.flush()
+        playlist = Playlist(name="1949")
+        session.add(playlist)
+        session.flush()
+        session.add(PlaylistItem(playlist_id=playlist.id, track_id=keep.id, position=0))
+        chart = Chart(name="Year End", slug="year-end")
+        session.add(chart)
+        session.flush()
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(1949, 12, 31))
+        session.add(issue)
+        session.flush()
+        from musicmgr.services.matching import normalize
+
+        def entry(rank, artist, locked=False):
+            e = ChartEntry(issue_id=issue.id, rank=rank, title="Forever and Ever",
+                           artist_name=artist, title_key=normalize("Forever and Ever"),
+                           artist_key=normalize(artist), track_id=keep.id,
+                           match_score=0.78, match_locked=locked)
+            session.add(e)
+            return e
+
+        russ, como, shore = entry(14, "Russ Morgan"), entry(15, "Perry Como"), \
+            entry(16, "Dinah Shore", locked=True)
+        # fixed by hand to the only track there was, artist not on the album
+        other = entry(17, "Margaret Whiting", locked=True)
+        session.flush()
+        session.expire_all()
+        assert len(self._versions(session)) == 1
+
+        result = scanner.scan_folder(session, tmp_path)  # files unchanged on disk
+
+        assert result.separated == 2
+        assert "2 recordings separated" in result.summary()
+        session.expire_all()
+        versions = self._versions(session)
+        assert set(versions) == set(self.VERSIONS)
+        assert versions["Russ Morgan"].id == keep.id  # playlists keep pointing at it
+        assert {t.release_id for t in versions.values()} == {release_id}
+        assert all(len(t.files) == 1 for t in versions.values())
+        assert session.scalar(select(PlaylistItem)).track_id == keep.id
+        assert russ.track_id == keep.id
+        assert como.track_id == versions["Perry Como"].id
+        # fixed by hand: moves to the hidden version that is plainly its artist
+        assert shore.track_id == versions["Dinah Shore"].id and shore.match_locked
+        assert other.track_id == keep.id  # no such version - left alone
+
+        again = scanner.scan_folder(session, tmp_path)
+        assert again.separated == 0 and again.unchanged == 4
