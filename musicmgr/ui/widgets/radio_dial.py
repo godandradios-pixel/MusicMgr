@@ -10,13 +10,13 @@ But I would like to incorporate a dial face with the various bands ... like
 the attached", a Grundig-style UKW/KW/MW/LW glass; "not exactly like the
 attached but the general idea".)
 
-Bands, top to bottom (James's choice, "by type of program"):
+Bands, top to bottom (James's layout, reorganised 2026-10-01):
     FM      internet stations
-    AM      drama and comedy
-    POLICE  crime and mystery
-    SW1     WWII and world news
-    SW2     American history, speeches, Paul Harvey
-    LW      On the Air, commercials
+    AM      internet stations
+    POLICE  On the Air, WWII news and sounds, American history
+    SW1     drama and comedy
+    SW2     crime and mystery
+    LW      speeches, Paul Harvey, commercials
 Only the selected band's strip is lit; the piano keys below choose it.
 
 Below the glass: a 6E5 "magic eye" that closes as a station comes in,

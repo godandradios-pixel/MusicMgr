@@ -1,4 +1,5 @@
-"""Old-time radio shows (2026-10-01) - the tuner's Old-Time band.
+"""Old-time radio shows (2026-10-01) - the tuner's show bands
+(POLICE, SW1, SW2 and LW).
 
 James keeps his old-time radio programs in one folder (D:\\Radio), one
 sub-folder per show: The Shadow, The Whistler, Lone Ranger, Commercials,
@@ -246,26 +247,76 @@ _POLICE_WORDS = (
     "marlowe", "gang busters", "gangbusters", "boston blackie", "nick carter", "lights out",
     "johnny dollar", "dick tracy", "fbi", "mr. district attorney",
 )
-_HISTORY_WORDS = (
+_SPEECH_WORDS = (
     "history", "fireside", "fdr", "president", "voices", "speech", "harvey",
     "rest of the story", "inaugural", "address",
 )
 
+#: bands that hold shows and bands that hold internet stations (James,
+#: 2026-10-01: "Let's leave FM to allow enter on URL streams, Then use the
+#: AM for the same URL streams. For the Police band, let's do the WWII NEWS
+#: & SOUNDS with ON THE AIR and AMERICAN HISTORY. On the SW1 we can move
+#: what was in the AM band, On SW2 we can move what was on the POLICE band")
+STATION_BANDS = ("fm", "am")
+SHOW_BANDS = ("police", "sw1", "sw2", "lw")
+DEFAULT_SHOW_BAND = "sw1"
+#: settings key recording which band layout the stored bands follow
+LAYOUT_KEY = "tuner_band_layout"
+LAYOUT_VERSION = "2"
+
 
 def guess_band(show_name: str, kind: str) -> str:
-    """Which band of the dial a show goes on, by type of program (James's
-    choice): AM drama and comedy, POLICE crime and mystery, SW1 war and
-    world news, SW2 history and speeches, LW commercials (and On the Air)."""
+    """Which band of the dial a show goes on, by type of program:
+    POLICE  WWII news and American history (with On the Air),
+    SW1     drama and comedy,
+    SW2     crime and mystery,
+    LW      speeches, Paul Harvey and commercials.
+    FM and AM are left for internet stations."""
     low = show_name.lower()
     if kind == RadioShow.KIND_COMMERCIAL:
         return "lw"
     if kind == RadioShow.KIND_NEWS or re.search(r"\bwwii\b|\bwar\b|\bnews\b", low):
-        return "sw1"
-    if any(w in low for w in _HISTORY_WORDS):
-        return "sw2"
-    if any(w in low for w in _POLICE_WORDS):
         return "police"
-    return "am"
+    if "american history" in low:
+        return "police"
+    if any(w in low for w in _SPEECH_WORDS):
+        return "lw"
+    if any(w in low for w in _POLICE_WORDS):
+        return "sw2"
+    return DEFAULT_SHOW_BAND
+
+
+def migrate_band_layout(session: Session) -> int:
+    """Move shows scanned under the first band layout to the second, once.
+    Shows keep their place relative to each other, so a show James moved by
+    hand moves along with its old band: AM -> SW1, POLICE -> SW2, SW1 (war
+    news) -> POLICE; SW2 and LW are re-guessed from the name (American
+    History -> POLICE, speeches and commercials -> LW). Returns how many
+    shows moved."""
+    from ..db.models import Setting
+
+    row = session.get(Setting, LAYOUT_KEY)
+    if row is not None and row.value == LAYOUT_VERSION:
+        return 0
+    direct = {"am": "sw1", "police": "sw2", "sw1": "police"}
+    moved = 0
+    for show in session.scalars(select(RadioShow)):
+        old = show.band or "am"
+        if old in direct:
+            new = direct[old]
+        elif old in ("sw2", "lw"):
+            new = guess_band(show.name, show.kind)
+        else:
+            new = old
+        if new != show.band:
+            show.band = new
+            moved += 1
+    if row is None:
+        session.add(Setting(key=LAYOUT_KEY, value=LAYOUT_VERSION))
+    else:
+        row.value = LAYOUT_VERSION
+    session.flush()
+    return moved
 
 
 def set_band(session: Session, show_id: int, band: str) -> None:

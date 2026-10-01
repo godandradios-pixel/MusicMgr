@@ -1,4 +1,4 @@
-"""Internet radio stations (2026-10-01) - the tuner's Broadcast band.
+"""Internet radio stations (2026-10-01) - the tuner's FM and AM bands.
 
 Stations come from the free Radio Browser directory (radio-browser.info: a
 community list of 30,000+ stations, no account or API key) - searched from
@@ -46,7 +46,7 @@ CATEGORIES: list[tuple[str, dict]] = [
     ("Christian", {"tag": "christian"}),
     ("Pittsburgh", {"name": "pittsburgh"}),
 ]
-#: "Add some to get started" on an empty Broadcast band
+#: "Add some to get started" on an empty FM or AM band
 STARTER_SEARCH = {"tag": "old time radio"}
 STARTER_COUNT = 6
 
@@ -180,7 +180,7 @@ def on_dial(session: Session, found: Found) -> Optional[RadioStation]:
     return session.scalar(select(RadioStation).where(RadioStation.stream_url == found.url))
 
 
-def add(session: Session, found: Found) -> RadioStation:
+def add(session: Session, found: Found, band: str = "fm") -> RadioStation:
     existing = on_dial(session, found)
     if existing is not None:
         return existing
@@ -189,15 +189,15 @@ def add(session: Session, found: Found) -> RadioStation:
         name=found.name[:300], stream_url=found.url, homepage=found.homepage or None,
         favicon_url=found.favicon or None, country=found.country or None,
         tags=found.tags or None, codec=found.codec or None, bitrate=found.bitrate or None,
-        rb_uuid=found.uuid or None, dial_order=last + 1,
+        rb_uuid=found.uuid or None, dial_order=last + 1, band=band,
     )
     session.add(st)
     session.flush()
     return st
 
 
-def add_manual(session: Session, name: str, url: str) -> RadioStation:
-    return add(session, Found(uuid="", name=name.strip() or url, url=url.strip()))
+def add_manual(session: Session, name: str, url: str, band: str = "fm") -> RadioStation:
+    return add(session, Found(uuid="", name=name.strip() or url, url=url.strip()), band=band)
 
 
 def set_band(session: Session, station_id: int, band: str) -> None:

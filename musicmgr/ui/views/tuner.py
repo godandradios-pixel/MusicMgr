@@ -13,10 +13,16 @@ European set.
 The set is ui/widgets/radio_dial.py; what tuning does is services/tuner.py
 (shows: services/otr.py, stations: services/stations.py).
 
-Bands, "by type of program" (guessed from folder names, changeable with a
-show's or station's Band... button): FM internet stations, AM drama and
-comedy, POLICE crime and mystery, SW1 WWII and world news, SW2 history,
-speeches and Paul Harvey, LW On the Air and commercials.
+Bands (guessed from folder names, changeable with a show's or station's
+Band... button). First layout was "by type of program"; reorganised the
+same day at James's request ("Let's leave FM to allow enter on URL
+streams, Then use the AM for the same URL streams. For the Police band,
+let's do the WWII NEWS & SOUNDS with ON THE AIR and AMERICAN HISTORY. On
+the SW1 we can move what was in the AM band, On SW2 we can move what was
+on the POLICE band"): FM and AM internet stations, POLICE On the Air, WWII
+news and American history, SW1 drama and comedy, SW2 crime and mystery,
+LW speeches, Paul Harvey and commercials. Shows already scanned move over
+once (services/otr.py:migrate_band_layout).
 
 Below the set, a card describes what's tuned in (or what the pointer rests
 on), with the actions that go with it.
@@ -61,12 +67,14 @@ BAND_KEY = "tuner_band"
 ONAIR_LABEL = "On the Air"
 BAND_BLURBS = {
     "fm": "Internet stations",
-    "am": "Drama and comedy",
-    "police": "Crime and mystery",
-    "sw1": "WWII and world news",
-    "sw2": "History, speeches and Paul Harvey",
-    "lw": "On the Air and commercials",
+    "am": "Internet stations",
+    "police": "On the Air, WWII news and American history",
+    "sw1": "Drama and comedy",
+    "sw2": "Crime and mystery",
+    "lw": "Speeches, Paul Harvey and commercials",
 }
+#: the band the page opens on when nothing has been tuned yet
+START_BAND = "police"
 
 
 def _get_setting(ctx: AppContext, key: str, default: str) -> str:
@@ -251,10 +259,12 @@ class StationSearchDialog(QDialog):
     changed = Signal()
     listenRequested = Signal(int)
 
-    def __init__(self, ctx: AppContext, parent=None) -> None:
+    def __init__(self, ctx: AppContext, parent=None, band: str = "fm") -> None:
         super().__init__(parent)
         self.ctx = ctx
-        self.setWindowTitle("Find stations")
+        #: the band (FM or AM) stations added here go on
+        self.band = band
+        self.setWindowTitle(f"Find stations — {BY_KEY[band].label} band")
         self.setMinimumSize(820, 680)
         self._thread: Optional[StationSearchThread] = None
         self._results: list[stations.Found] = []
@@ -357,7 +367,7 @@ class StationSearchDialog(QDialog):
                 stations.remove(s, st.id)
                 new_id = None
             else:
-                st = stations.add(s, f)
+                st = stations.add(s, f, band=self.band)
                 new_id = st.id
             s.commit()
         if new_id and f.favicon:
@@ -370,7 +380,7 @@ class StationSearchDialog(QDialog):
         if f is None:
             return
         with self.ctx.session() as s:
-            st = stations.on_dial(s, f) or stations.add(s, f)
+            st = stations.on_dial(s, f) or stations.add(s, f, band=self.band)
             s.commit()
             sid = st.id
         self.changed.emit()
@@ -385,10 +395,10 @@ class StationSearchDialog(QDialog):
         if not ok:
             return
         with self.ctx.session() as s:
-            stations.add_manual(s, name or url, url)
+            stations.add_manual(s, name or url, url, band=self.band)
             s.commit()
         self.changed.emit()
-        self.ctx.notify(f"Added {name or url} to the dial")
+        self.ctx.notify(f"Added {name or url} to the {BY_KEY[self.band].label} band")
 
 
 # --------------------------------------------------------------------------
@@ -500,6 +510,13 @@ class TunerView(BaseView):
     # -- setup -------------------------------------------------------------
 
     def refresh(self) -> None:
+        if not self._initialised:
+            try:
+                with self.ctx.session() as s:
+                    otr.migrate_band_layout(s)
+                    s.commit()
+            except Exception:  # pragma: no cover - never block the page
+                log.exception("couldn't move radio shows to the new band layout")
         self._rebuild()
         if not self._initialised:
             self._initialised = True
@@ -508,7 +525,7 @@ class TunerView(BaseView):
             if not kind:
                 kind, ident = self.ctx.tuner.last_tuned()
             if not self._point_at(kind, ident, animate=False):
-                self.radio.set_band(_get_setting(self.ctx, BAND_KEY, "am"), animate=False)
+                self.radio.set_band(_get_setting(self.ctx, BAND_KEY, START_BAND), animate=False)
         self._update_info()
 
     def set_band(self, band: str) -> None:
@@ -523,9 +540,9 @@ class TunerView(BaseView):
         with self.ctx.session() as s:
             shows = otr.list_shows(s)
             if shows:
-                entries["lw"].append(("onair", 0, ONAIR_LABEL))
+                entries["police"].append(("onair", 0, ONAIR_LABEL))
             for sh in shows:
-                band = sh.band if sh.band in entries else "am"
+                band = sh.band if sh.band in entries else otr.DEFAULT_SHOW_BAND
                 entries[band].append(("show", sh.id, otr.dial_label(sh.name)))
             for st in stations.dial(s):
                 band = st.band if st.band in entries else "fm"
@@ -642,11 +659,12 @@ class TunerView(BaseView):
         with self.ctx.session() as s:
             root = otr.get_root(s)
             any_shows = bool(otr.list_shows(s))
-        if band == "fm":
-            self.info_name.setText("No stations on the FM band yet")
+        if band in otr.STATION_BANDS:
+            self.info_name.setText(f"No stations on the {BY_KEY[band].label} band yet")
             self.info_title.setText("Find internet stations in the free Radio Browser directory, "
-                                    "or start with a few old-time radio stations.")
-            self.info_sub.setText(BAND_BLURBS["fm"])
+                                    "add one by its stream address, or start with a few "
+                                    "old-time radio stations.")
+            self.info_sub.setText(BAND_BLURBS[band])
             self._show_buttons(self.btn_starters, self.btn_find)
             return
         if not any_shows:
@@ -784,12 +802,18 @@ class TunerView(BaseView):
         self._update_info()
 
     def find_stations(self) -> None:  # pragma: no cover - dialog
-        dialog = StationSearchDialog(self.ctx, self)
+        dialog = StationSearchDialog(self.ctx, self, band=self.station_band())
         dialog.changed.connect(self._changed)
         dialog.listenRequested.connect(self.ctx.tuner.tune_station)
         dialog.exec()
 
+    def station_band(self) -> str:
+        """Where new stations go: the lit band if it's FM or AM, else FM."""
+        band = self.radio.band
+        return band if band in otr.STATION_BANDS else "fm"
+
     def _add_starters(self) -> None:
+        band = self.station_band()
         self.ctx.notify("Looking up old-time radio stations…")
         thread = StationSearchThread("", stations.STARTER_SEARCH, self)
 
@@ -798,13 +822,13 @@ class TunerView(BaseView):
                 self.ctx.notify("Couldn't reach the station directory — try Find stations later")
                 return
             with self.ctx.session() as s:
-                added = [stations.add(s, f) for f in results[: stations.STARTER_COUNT]]
+                added = [stations.add(s, f, band=band) for f in results[: stations.STARTER_COUNT]]
                 s.commit()
                 logos = [(st.id, st.favicon_url) for st in added if st.favicon_url]
             for sid, url in logos:
                 LogoThread(sid, url, self).start()
             self._changed()
-            self.ctx.notify(f"{len(added)} stations added to the FM band")
+            self.ctx.notify(f"{len(added)} stations added to the {BY_KEY[band].label} band")
 
         thread.finished_with.connect(done)
         thread.start()

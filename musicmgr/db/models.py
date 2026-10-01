@@ -942,7 +942,7 @@ class RadioShow(Base):
     #: which band of the tuner's dial it's printed on: fm, am, police, sw1,
     #: sw2 or lw (ui/widgets/radio_dial.py:BANDS) - guessed from the name
     #: when first scanned (services/otr.py:guess_band), changeable on the page
-    band: Mapped[str] = mapped_column(String(10), default="am")
+    band: Mapped[str] = mapped_column(String(10), default="sw1")
     #: the episode tuning to this show plays (resumes) - see services/otr.py
     current_episode_id: Mapped[Optional[int]] = mapped_column(Integer)
     is_missing: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1001,7 +1001,7 @@ class RadioStation(Base):
     #: Radio Browser's id, for refreshing a moved stream URL
     rb_uuid: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     dial_order: Mapped[int] = mapped_column(Integer, default=0)
-    #: band of the dial (FM unless moved), as RadioShow.band
+    #: band of the dial: FM or AM (the station bands), as RadioShow.band
     band: Mapped[str] = mapped_column(String(10), default="fm")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 

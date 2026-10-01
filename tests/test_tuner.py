@@ -280,16 +280,50 @@ class TestBands:
     def test_shows_are_banded_by_type(self, library, db):
         with db.session_scope() as s:
             bands = {sh.name: sh.band for sh in otr.list_shows(s)}
-        assert bands == {"The Shadow": "police", "The Whistler": "police", "Commercials": "lw"}
+        assert bands == {"The Shadow": "sw2", "The Whistler": "sw2", "Commercials": "lw"}
 
     @pytest.mark.parametrize("name, band", [
-        ("Lone Ranger", "am"), ("Ozzie And Harriet", "am"), ("The Green Hornet", "police"),
-        ("Sherlock Holmes", "police"), ("WWII News and Sounds", "sw1"),
-        ("FDR Fireside Chats", "sw2"), ("Paul Harvey", "sw2"), ("American History", "sw2"),
+        ("Abbott And Costello", "sw1"), ("Lone Ranger", "sw1"), ("Orson Welles", "sw1"),
+        ("Ozzie And Harriet", "sw1"), ("Vincent Price - The Vintage Radio Shows", "sw1"),
+        ("The Shadow", "sw2"), ("The Whistler", "sw2"), ("The Green Hornet", "sw2"),
+        ("Sherlock Holmes", "sw2"), ("Wild Bill Hickok", "sw2"),
+        ("WWII News and Sounds", "police"), ("American History", "police"),
+        ("FDR Fireside Chats", "lw"), ("Paul Harvey", "lw"), ("Voices of History", "lw"),
         ("Commercials", "lw"),
     ])
     def test_guess_band(self, name, band):
         assert otr.guess_band(name, otr.guess_kind(name)) == band
+        assert band in otr.SHOW_BANDS
+
+    def test_old_layout_moves_over_once(self, db):
+        from musicmgr.db.models import Setting
+
+        old = {"Lone Ranger": "am", "The Shadow": "police", "WWII News and Sounds": "sw1",
+               "American History": "sw2", "Paul Harvey": "sw2", "Commercials": "lw",
+               # moved by hand under the old layout - follows its band
+               "The Whistler": "am"}
+        with db.session_scope() as s:
+            for i, (name, band) in enumerate(old.items()):
+                s.add(RadioShow(name=name, folder=f"/r/{i}", kind=otr.guess_kind(name), band=band))
+        with db.session_scope() as s:
+            assert otr.migrate_band_layout(s) == 6  # Commercials stays on LW
+        with db.session_scope() as s:
+            bands = {sh.name: sh.band for sh in s.query(RadioShow)}
+            assert s.get(Setting, otr.LAYOUT_KEY).value == otr.LAYOUT_VERSION
+        assert bands == {"Lone Ranger": "sw1", "The Shadow": "sw2",
+                         "WWII News and Sounds": "police", "American History": "police",
+                         "Paul Harvey": "lw", "Commercials": "lw", "The Whistler": "sw1"}
+        with db.session_scope() as s:
+            s.query(RadioShow).filter_by(name="Lone Ranger").one().band = "police"
+        with db.session_scope() as s:  # second run leaves James's moves alone
+            assert otr.migrate_band_layout(s) == 0
+            assert s.query(RadioShow).filter_by(name="Lone Ranger").one().band == "police"
+
+    def test_stations_can_go_on_am(self, db):
+        with db.session_scope() as s:
+            fm = stations.add_manual(s, "WDVE", "http://127.0.0.1:9/a")
+            am = stations.add_manual(s, "KDKA", "http://127.0.0.1:9/b", band="am")
+            assert (fm.band, am.band) == ("fm", "am")
 
 
 class TestTunerPage:
@@ -304,16 +338,18 @@ class TestTunerPage:
         with db.session_scope() as s:
             stations.add_manual(s, "Test FM", "http://127.0.0.1:9/stream")
         view = self.view(ctx)
-        assert view.radio.labels("lw") == ["On the Air", "Commercials"]
-        assert view.radio.labels("police") == ["Shadow", "Whistler"]
+        assert view.radio.labels("police") == ["On the Air"]
+        assert view.radio.labels("sw2") == ["Shadow", "Whistler"]
+        assert view.radio.labels("lw") == ["Commercials"]
         assert view.radio.labels("fm") == ["Test FM"]
+        assert view.radio.labels("am") == []
 
     def test_tuning_from_the_dial_and_info_card(self, ctx, tuner, library):
         view = self.view(ctx)
-        view.set_band("police")
-        view._on_tune_requested("police", view.radio.labels("police").index("Shadow"))
+        view.set_band("sw2")
+        view._on_tune_requested("sw2", view.radio.labels("sw2").index("Shadow"))
         assert tuner.tuned == ("show", library["The Shadow"])
-        assert view.radio.band == "police"
+        assert view.radio.band == "sw2"
         assert view.info_name.text() == "The Shadow"
         assert view.info_title.text() == "Death House Rescue"
         assert "September 26, 1937" in view.info_sub.text()
@@ -322,20 +358,30 @@ class TestTunerPage:
     def test_moving_a_show_to_another_band(self, ctx, tuner, library, db):
         view = self.view(ctx)
         tuner.tune_show(library["The Whistler"])
-        view.move_to_band("am")
-        assert "Whistler" in view.radio.labels("am")
-        assert view.radio.band == "am"
+        view.move_to_band("sw1")
+        assert "Whistler" in view.radio.labels("sw1")
+        assert view.radio.band == "sw1"
         with db.session_scope() as s:
-            assert s.get(RadioShow, library["The Whistler"]).band == "am"
+            assert s.get(RadioShow, library["The Whistler"]).band == "sw1"
 
     def test_empty_fm_band_offers_stations(self, ctx, tuner, library):
         view = self.view(ctx)
         view.set_band("fm")
         assert view.btn_starters.isVisibleTo(view) and view.btn_find.isVisibleTo(view)
+        assert view.station_band() == "fm"
+
+    def test_empty_am_band_offers_stations_too(self, ctx, tuner, library):
+        view = self.view(ctx)
+        view.set_band("am")
+        assert view.btn_starters.isVisibleTo(view) and view.btn_find.isVisibleTo(view)
+        assert view.info_name.text() == "No stations on the AM band yet"
+        assert view.station_band() == "am"
+        view.set_band("sw2")
+        assert view.station_band() == "fm"
 
     def test_no_folder_yet_asks_for_it(self, ctx, tuner):
         view = self.view(ctx)
-        view.set_band("am")
+        view.set_band("sw1")
         assert view.btn_folder.isVisibleTo(view)
 
     def test_episodes_dialog_lists_and_toggles(self, ctx, tuner, library, db):
