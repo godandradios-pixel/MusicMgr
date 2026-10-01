@@ -167,14 +167,26 @@ def _read_csv_text(path: Path) -> str:
 
 
 def _candidate_tracks(session: Session, title_key: str) -> list[tuple[int, str, str]]:
-    """Cheap prefilter: tracks sharing a leading token with the chart title."""
+    """Cheap prefilter: tracks with exactly this title, then tracks sharing
+    a leading token with it.
+
+    2026-10-01 - the exact-title tracks come first and always: the token
+    search is capped at 400 rows, and a common first word ("baby" is in
+    over a thousand of James's titles) could crowd out the very record the
+    chart entry is about."""
+    cols = select(Track.id, Track.title, Track.artist_display)
+    rows: dict[int, tuple[int, str, str]] = {}
+    if title_key:
+        for r in session.execute(cols.where(Track.title_key == title_key).limit(400)):
+            rows[r[0]] = (r[0], r[1], r[2] or "")
     first_word = title_key.split(" ")[0] if title_key else ""
-    stmt = select(Track.id, Track.title, Track.artist_display)
     if len(first_word) >= 3:
-        stmt = stmt.where(Track.title_key.like(f"%{first_word}%"))
+        stmt = cols.where(Track.title_key.like(f"%{first_word}%"))
     else:
-        stmt = stmt.where(Track.title_key.like(f"{title_key}%"))
-    return [(r[0], r[1], r[2] or "") for r in session.execute(stmt.limit(400))]
+        stmt = cols.where(Track.title_key.like(f"{title_key}%"))
+    for r in session.execute(stmt.limit(400)):
+        rows.setdefault(r[0], (r[0], r[1], r[2] or ""))
+    return list(rows.values())
 
 
 def match_entry(session: Session, entry: ChartEntry, threshold: float = 0.72) -> bool:

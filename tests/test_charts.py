@@ -668,3 +668,58 @@ class TestRemoveOrphanedPlaybackCharts:
         assert removed == 1
         assert session.get(Chart, stale.id) is None
         assert session.get(Chart, keep.id) is not None
+
+
+class TestArtistMustMatch:
+    """2026-10-01: an exact title used to match almost any artist - James's
+    Billboard 1949 Year End linked Blue Barron's and Perry Como's hits to
+    Russ Morgan's records of the same songs (30 entries, 28 songs)."""
+
+    def test_same_title_by_another_artist_is_not_a_match(self):
+        from musicmgr.services.matching import score_pair
+
+        assert score_pair("Cruising Down the River", "Blue Barron Orchestra",
+                          "Cruising Down The River", "Russ Morgan") == 0.0
+        assert score_pair("That Lucky Old Sun", "Frankie Laine",
+                          "That Lucky Old Sun", "Ray Charles") == 0.0
+
+    def test_credit_variations_still_match(self):
+        from musicmgr.services.matching import best_match
+
+        for chart_artist, track_artist in (
+            ("Russ Morgan Orchestra", "Russ Morgan"),
+            ("The 4 Seasons Featuring the \"Sound of Frankie Valli\"", "Four Seasons"),
+            ("Junior M.A.F.I.A. Featuring The Notorious B.I.G.", "Junior MAFIA"),
+            ("Pink", "P!nk ft. Nate Ruess"),
+        ):
+            assert best_match("Song", chart_artist, [(1, "Song", track_artist)]) is not None
+
+    def test_a_shared_featured_artist_is_not_enough(self):
+        from musicmgr.services.matching import best_match
+
+        assert best_match("Hold On", "Future Featuring Drake",
+                          [(1, "Hold On", "DJ Khaled ft. Drake, Rick Ross")]) is None
+
+    def test_two_versions_in_one_chart_match_their_own_records(self, session):
+        russ = make_owned_track(session, "Cruising Down the River", "Russ Morgan")
+        chart = charts.get_or_create_chart(session, "Year End 1949")
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(1949, 12, 31))
+        session.add(issue)
+        session.flush()
+        entries = []
+        for rank, artist in ((7, "Russ Morgan Orchestra"), (11, "Blue Barron Orchestra")):
+            e = ChartEntry(issue_id=issue.id, rank=rank, title="Cruising Down the River",
+                           artist_name=artist, title_key=normalize("Cruising Down the River"),
+                           artist_key=normalize(artist))
+            session.add(e)
+            entries.append(e)
+        session.flush()
+        assert [charts.match_entry(session, e) for e in entries] == [True, False]
+        assert entries[0].track_id == russ.id and entries[1].track_id is None
+
+    def test_exact_title_is_always_a_candidate(self, session):
+        for i in range(450):
+            make_owned_track(session, f"Baby Song {i:03d}", f"Artist {i}")
+        target = make_owned_track(session, "Baby, It's Cold Outside", "Margaret Whiting & Johnny Mercer")
+        ids = [c[0] for c in charts._candidate_tracks(session, normalize("Baby, It's Cold Outside"))]
+        assert target.id in ids

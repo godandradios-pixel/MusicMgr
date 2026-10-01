@@ -109,13 +109,42 @@ def similarity(a: str, b: str) -> float:
     return ratio
 
 
+#: below this artist similarity a chart entry never matches, however exact
+#: the title (see score_pair)
+MIN_ARTIST_SIMILARITY = 0.45
+#: comparing individual names out of "A featuring B" / "A & B" credits must
+#: be this close to count - two different people sharing a surname
+#: ("Chuck Jackson" / "Jermaine Jackson") shouldn't
+NAME_PAIR_SIMILARITY = 0.75
+
+
+def artist_similarity(artist_a: str, artist_b: str) -> float:
+    """How alike two artist credits are: the whole credits, or - for
+    "Missy Elliott Featuring Ludacris" vs "Missy Elliott ft. Ciara" - the
+    two lead artists. Only the lead names count: "Future Featuring Drake"
+    and "DJ Khaled ft. Drake" share Drake but aren't the same record."""
+    full = similarity(normalize(artist_a), normalize(artist_b))
+    lead = similarity(normalize(primary_artist(artist_a)), normalize(primary_artist(artist_b)))
+    return max(full, lead if lead >= NAME_PAIR_SIMILARITY else 0.0)
+
+
 def score_pair(
     title_a: str, artist_a: str, title_b: str, artist_b: str
 ) -> float:
-    """Combined title+artist confidence, title weighted more heavily."""
+    """Combined title+artist confidence, title weighted more heavily.
+
+    2026-10-01 - the artist now always has to be reasonably close. This
+    used to let an exact title through with almost any artist ("if a < 0.45
+    and t < 0.95"), which on James's library had linked about 29,600 of
+    285,600 chart entries to someone else's song of the same name - Phil
+    Collins to Tom Jones, and two 1949 hits that charted for two artists at
+    once (Cruising Down the River, Forever and Ever) both to Russ Morgan's
+    record, so a 30-song chart saved as a 28-song playlist. Found via
+    exactly that: James's Billboard 1949 Year End playlist coming up short.
+    """
     t = similarity(normalize(title_a), normalize(title_b))
-    a = similarity(normalize(artist_a), normalize(artist_b))
-    if a < 0.45 and t < 0.95:
+    a = artist_similarity(artist_a, artist_b)
+    if a < MIN_ARTIST_SIMILARITY:
         return 0.0
     return round(t * 0.65 + a * 0.35, 4)
 
