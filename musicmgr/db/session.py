@@ -72,6 +72,8 @@ _COLUMN_ADDITIONS = {
     # every other already-shipped column this project has never bothered
     # dropping.
     "tracks": [("rating", "INTEGER"), ("lastfm_popularity", "INTEGER")],
+    # 2026-10-01 radio - see db.models.Artist.similar_fetched_at
+    "artists": [("similar_fetched_at", "DATETIME")],
     # 2026-09-07 follow-up: genre chips on the Jukebox page (James: "I would
     # like the jukebox page to have a chip of 5 genres... select the
     # location and what genre page a track will be organized by") - see

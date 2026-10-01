@@ -250,6 +250,15 @@ class NowPlayingView(BaseView):
         qa_layout.setSpacing(12)
         self.queue_meta = dim_label("")
         qa_layout.addWidget(self.queue_meta)
+        # 2026-10-01 radio (services/radio.py): an endless mix seeded by
+        # whatever's playing; the same button stops it
+        self.radio_button = make_compact(TouchButton("Start radio"))
+        self.radio_button.setToolTip("Keep playing songs like this one")
+        self.radio_button.setEnabled(False)
+        self.radio_button.clicked.connect(self._toggle_radio)
+        qa_layout.addWidget(self.radio_button)
+        # wide enough for "Stop radio" so the label swap doesn't jiggle the row
+        self.radio_button.setMinimumWidth(self.radio_button.sizeHint().width() + 12)
         self.clear_queue_button = make_compact(TouchButton("Clear queue"))
         self.clear_queue_button.clicked.connect(ctx.player.clear_queue)
         qa_layout.addWidget(self.clear_queue_button)
@@ -297,6 +306,7 @@ class NowPlayingView(BaseView):
 
         ctx.player.trackChanged.connect(self._on_track_changed)
         ctx.player.queueChanged.connect(self._refresh_queue)
+        ctx.radio.stateChanged.connect(self._on_radio_state)
         ctx.player.positionChanged.connect(self._on_position)
         ctx.player.playbackStateChanged.connect(
             lambda state: self.turntable.set_playing(state == "playing"))
@@ -335,8 +345,10 @@ class NowPlayingView(BaseView):
             self.jukebox_toggle.set_on(False)
             self.lyrics_panel.load_for_path(None)
             self._refresh_queue()
+            self._sync_radio_button()
             return
         self._current_track_id = item.track_id
+        self._sync_radio_button()
         self.track_title.setText(item.title)
         self.track_artist.setText(item.artist)
         self.track_album.setText(tracknum.with_side(item.album, item.position))
@@ -584,12 +596,35 @@ class NowPlayingView(BaseView):
                 "index": idx,
             })
         self.queue_list.set_rows(rows)
-        self.queue_meta.setText(
-            f"{len(rows)} tracks · {format_duration(total_ms)}" if rows else "empty"
+        meta = f"{len(rows)} tracks · {format_duration(total_ms)}" if rows else "empty"
+        if self.ctx.radio.active:
+            meta = f"Radio · {len(rows)} tracks"
+        self.queue_meta.setText(meta)
+        self.queue_meta.setToolTip(
+            f"Radio from {self.ctx.radio.label}" if self.ctx.radio.active else ""
         )
         if 0 <= current_index < len(rows):
             self.queue_list.setCurrentRow(current_index)
             self.queue_list.scrollToItem(self.queue_list.item(current_index))
+
+    # -- radio (2026-10-01) -------------------------------------------------
+
+    def _toggle_radio(self) -> None:
+        radio = self.ctx.radio
+        if radio.active:
+            radio.stop()
+            self.ctx.notify("Radio off — the queue stays as it is")
+        elif self._current_track_id is not None:
+            radio.start_from_track(self._current_track_id)
+
+    def _on_radio_state(self, active: bool, _label: str) -> None:
+        self._sync_radio_button()
+        self._refresh_queue()
+
+    def _sync_radio_button(self) -> None:
+        active = self.ctx.radio.active
+        self.radio_button.setText("Stop radio" if active else "Start radio")
+        self.radio_button.setEnabled(active or self._current_track_id is not None)
 
     def _on_queue_tapped(self, payload: Optional[dict]) -> None:
         if payload and payload.get("index") is not None:

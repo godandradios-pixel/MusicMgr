@@ -429,6 +429,9 @@ class MainWindow(QMainWindow):
         # 2026-10-01 volume levelling: a track being measured in the
         # background (services/player.py:LoudnessThread)
         stop_background_measuring()
+        from ..services.radio import stop_background_work as stop_radio_work
+
+        stop_radio_work()
         settings = self.views.get("settings")
         if settings is not None and hasattr(settings, "shutdown"):
             settings.shutdown()

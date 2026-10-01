@@ -97,6 +97,11 @@ class AppContext(QObject):
     def __init__(self, player: PlayerController, parent=None) -> None:
         super().__init__(parent)
         self.player = player
+        #: 2026-10-01 "radio from this song" - services/radio.py
+        from ..services.radio import RadioController
+
+        self.radio = RadioController(player, self)
+        self.radio.notified.connect(self.notify)
         #: the tracks behind whatever release/artist page is currently on
         #: screen, kept in sync by ReleaseDetailPanel.set_release and
         #: ArtistDetailPanel.set_artist via set_viewing() - never queued or

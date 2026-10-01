@@ -552,6 +552,18 @@ class PlayerController(QObject):
         return self._item_at(self._cursor)
 
     @property
+    def source(self) -> str:
+        """What the current queue was started from ("library", "artist:12",
+        "radio", ...) - the radio uses it to notice something else took over."""
+        return self._source
+
+    def remaining_count(self) -> int:
+        """Tracks still to come after the current one, in play order."""
+        if not self._order:
+            return 0
+        return max(0, len(self._order) - max(self._cursor, 0) - 1)
+
+    @property
     def current_index(self) -> int:
         return self._order[self._cursor] if 0 <= self._cursor < len(self._order) else -1
 

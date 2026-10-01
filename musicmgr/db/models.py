@@ -106,6 +106,10 @@ class Artist(Base):
     lastfm_top_tracks: Mapped[list["ArtistTopTrack"]] = relationship(
         back_populates="artist", cascade="all, delete-orphan"
     )
+    #: 2026-10-01 radio - when Last.fm's similar-artists list was last
+    #: fetched for this artist (rows in ArtistSimilar; none = Last.fm knew
+    #: no similar artists). NULL = never fetched. See services/radio.py.
+    similar_fetched_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
 
     __table_args__ = (UniqueConstraint("name_key", name="uq_artist_name_key"),)
 
@@ -200,6 +204,27 @@ class ArtistTopTrack(Base):
 # --------------------------------------------------------------------------
 # labels & companies
 # --------------------------------------------------------------------------
+
+
+class ArtistSimilar(Base):
+    """One entry of Last.fm's `artist.getSimilar` list for an artist in the
+    library (2026-10-01, "radio from this song" - services/radio.py). Like
+    ArtistTopTrack, stored whether or not James owns anything by the similar
+    artist; `name_key` (matching.normalize) is matched against
+    Artist.name_key when a radio batch is built, so adding that artist to
+    the library later is picked up without a new fetch. Replaced wholesale
+    on each fetch."""
+
+    __tablename__ = "artist_similar"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artist_id: Mapped[int] = mapped_column(
+        ForeignKey("artists.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(400))
+    name_key: Mapped[str] = mapped_column(String(400), index=True)
+    #: Last.fm's 0..1 similarity
+    match: Mapped[float] = mapped_column(Float, default=0.0)
 
 
 class Label(Base):

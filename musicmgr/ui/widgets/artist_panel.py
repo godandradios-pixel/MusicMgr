@@ -380,7 +380,12 @@ class ArtistDetailPanel(QWidget):
         shuffle.clicked.connect(lambda: self.play(shuffle=True))
         queue = make_compact(TouchButton("Add to queue"))
         queue.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
-        for b in (play, shuffle, queue):
+        # 2026-10-01 artist radio - services/radio.py
+        radio = make_compact(TouchButton("Radio"))
+        radio.setToolTip("An endless mix of this artist and similar ones")
+        radio.clicked.connect(self.start_radio)
+        self.radio_button = radio
+        for b in (play, shuffle, queue, radio):
             actions.addWidget(b)
         actions.addStretch(1)
         meta.addLayout(actions)
@@ -611,6 +616,10 @@ class ArtistDetailPanel(QWidget):
         # bottom PlayerBar's play button start this artist's tracks even
         # before "Play everything"/a release/a track's been tapped.
         self.ctx.set_viewing(self._tracks, source=f"artist:{artist_id}")
+
+    def start_radio(self) -> None:
+        if self._artist_id is not None and self.ctx.radio.start_from_artist(self._artist_id):
+            self.ctx.navigateRequested.emit("nowplaying")
 
     def play(self, shuffle: bool = False) -> None:
         if not self._tracks:
