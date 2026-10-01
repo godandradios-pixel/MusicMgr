@@ -380,3 +380,27 @@ class TestLibraryDataChoices:
         again = SettingsView(ctx)
         assert not again.usb_data_cbs[ls.JUKEBOX].isChecked()
         assert again.usb_data_cbs[ls.PLAYS].isChecked()
+
+
+class TestSyncShowsWhatItsDoing:
+    """James: "Is there a way I can tell what MusicMgr is doing during a USB
+    sync? I click the button and I get no visual of what its doing"."""
+
+    def test_progress_is_shown_in_the_group_and_on_the_pinned_line(self, setup):
+        view = setup[0]
+        view.show()
+        view._sections["usb"].set_expanded(False)
+        view._usb_show("Reading D:\\Music… 12,345 files")
+        assert view.progress.isVisibleTo(view) and view.progress.maximum() == 0
+        assert view.progress_label.text() == "USB sync: Reading D:\\Music… 12,345 files"
+        # the folded group's header says it too
+        assert view._sections["usb"].summary.text() == "Reading D:\\Music… 12,345 files"
+        view._on_usb_progress(50, 100, "Hells Bells.mp3")
+        assert view.progress.maximum() == 1000 and view.progress.value() == 500
+        assert "Copying Hells Bells.mp3" in view.progress_label.text()
+        view._on_usb_stage("Exchanging charts…")
+        assert view.progress_label.text() == "USB sync: Exchanging charts…"
+        view._usb_idle()
+        assert not view.progress.isVisibleTo(view) and view.progress_label.text() == ""
+        view._sections["usb"].refresh_summary()
+        assert view._sections["usb"].summary.text() == view.usb_drive_label.text()

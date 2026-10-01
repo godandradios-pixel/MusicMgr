@@ -81,6 +81,8 @@ class UsbSyncThread(QThread):
     left. `finished_with(result_or_None, library_message, error_or_None)`."""
 
     progress = Signal(int, int, str)
+    #: what it's doing between copies (2026-10-01): "Adding … to your library"
+    stage = Signal(str)
     finished_with = Signal(object, str, object)
     #: (folders, answer) - see `_confirm_removals`
     removals_found = Signal(object, object)
@@ -114,6 +116,12 @@ class UsbSyncThread(QThread):
                     progress=lambda done, total, name: self.progress.emit(done, total, name),
                     should_stop=self.isInterruptionRequested,
                 )
+            arrived = len(result.new_local_paths or [])
+            if arrived:
+                self.stage.emit(f"Adding {arrived:,} new file{'s' if arrived != 1 else ''} "
+                                "to your library…")
+            else:
+                self.stage.emit("Updating your library…")
             with session_scope() as db:
                 message = us.update_library(db, result)
             if not result.cancelled:
@@ -130,11 +138,13 @@ class UsbSyncThread(QThread):
         A failure here never undoes the file sync; it's just reported."""
         from ...services import library_state
 
+        self.stage.emit("Exchanging playlists, plays, ratings, the Jukebox and radio…")
         try:
             with session_scope() as db:
                 notes = library_state.sync_library_state(
                     db, self.plan.drive, us.get_pc_id(db),
                     confirm_removals=self._confirm_removals if self.confirm_removals else None,
+                    stage=self.stage.emit,
                 )
         except Exception as exc:
             log.exception("library data sync failed")

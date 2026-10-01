@@ -1286,7 +1286,7 @@ class SettingsView(BaseView):
             lambda: "Verify, purge, locate or move your library files")
         self._sections["services"].set_summary(lambda: "Last.fm and Discogs keys")
         self._sections["updates"].set_summary(lambda: self.version_label.text())
-        self._sections["usb"].set_summary(lambda: self.usb_drive_label.text())
+        self._sections["usb"].set_summary(self._usb_summary)
 
         ctx.libraryChanged.connect(self.refresh)
         ctx.videosChanged.connect(self.refresh)
@@ -1511,19 +1511,55 @@ class SettingsView(BaseView):
             return
         self._usb_pending_plan = None
         thread = UsbCompareThread(drive, auto=auto, parent=self)
-        thread.progress.connect(self.usb_status.setText)
+        thread.progress.connect(lambda text: self._usb_show(text))
         thread.finished_with.connect(lambda plan, error: self._on_usb_compare_done(plan, error, auto))
         self._usb_compare_thread = thread
-        self.usb_status.setText("Checking the USB…")
-        self.usb_progress.setRange(0, 0)
-        self.usb_progress.setVisible(True)
+        self._usb_show("Checking the USB…")
         self._show_cancel()
         thread.start()
         self._refresh_usb_controls()
 
+    def _usb_show(self, text: str, value: Optional[int] = None) -> None:
+        """What a USB check or sync is doing right now (2026-10-01 - James:
+        "Is there a way I can tell what MusicMgr is doing during a USB
+        sync? I click the button and I get no visual of what its doing").
+        Shown in the USB sync group and, so it's in view wherever the page
+        is scrolled and even with that group folded, on the progress line
+        pinned under the page. `value` (0-1000) for a copy's progress;
+        None for a step with no count (a moving bar)."""
+        self.usb_status.setText(text)
+        self._usb_busy = True
+        for bar in (self.usb_progress, self.progress):
+            if value is None:
+                bar.setRange(0, 0)
+            else:
+                bar.setRange(0, 1000)
+                bar.setValue(value)
+            bar.setVisible(True)
+        self.progress_label.setText(f"USB sync: {text}")
+        sec = getattr(self, "_sections", {}).get("usb")
+        if sec is not None:
+            sec.refresh_summary()
+
+    def _usb_idle(self) -> None:
+        """A USB check or sync finished: put the progress line away."""
+        self._usb_busy = False
+        self.usb_progress.setVisible(False)
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
+
+    def _on_usb_stage(self, text: str) -> None:
+        self._usb_show(text)
+
+    def _usb_summary(self) -> str:
+        """The folded USB group's header: what's happening, else the drive."""
+        if getattr(self, "_usb_busy", False):
+            return self.usb_status.text()
+        return self.usb_drive_label.text()
+
     def _on_usb_compare_done(self, plan, error, auto: bool) -> None:
         thread = self._usb_compare_thread
-        self.usb_progress.setVisible(False)
+        self._usb_idle()
         self.cancel_btn.setVisible(False)
         if thread is not None:
             thread.wait()
@@ -1581,17 +1617,19 @@ class SettingsView(BaseView):
         thread = UsbSyncThread(plan, parent=self)
         thread.confirm_removals = self._confirm_usb_folder_removals
         thread.progress.connect(self._on_usb_progress)
+        thread.stage.connect(self._on_usb_stage)
         thread.finished_with.connect(
             lambda result, message, error: self._on_usb_sync_done(result, message, error, quiet)
         )
         self._usb_sync_thread = thread
         self._usb_pending_plan = None
-        if not quiet:
-            self.usb_status.setText("Syncing…")
-            self.usb_progress.setRange(0, 1000)
-            self.usb_progress.setValue(0)
-            self.usb_progress.setVisible(True)
-            self._show_cancel()
+        if quiet:
+            # keeps the "Files: everything is in sync · checking playlists
+            # and library data…" line _on_usb_compare_done just wrote
+            self._usb_show(self.usb_status.text())
+        else:
+            self._usb_show("Syncing…", 0)
+        self._show_cancel()
         thread.start()
         self._refresh_usb_controls()
 
@@ -1621,12 +1659,12 @@ class SettingsView(BaseView):
 
     def _on_usb_progress(self, done: int, total: int, name: str) -> None:
         if total > 0:
-            self.usb_progress.setValue(int(1000 * min(done, total) / total))
-            self.usb_status.setText(f"Copying {name} — {human_size(done)} of {human_size(total)}")
+            self._usb_show(f"Copying {name} — {human_size(done)} of {human_size(total)}",
+                           int(1000 * min(done, total) / total))
 
     def _on_usb_sync_done(self, result, message: str, error, quiet: bool = False) -> None:
         thread = self._usb_sync_thread
-        self.usb_progress.setVisible(False)
+        self._usb_idle()
         self.cancel_btn.setVisible(False)
         if thread is not None:
             thread.wait()

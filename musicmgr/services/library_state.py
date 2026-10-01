@@ -1227,7 +1227,8 @@ ConfirmRemovals = Callable[[list[FolderRemoval]], bool]
 
 def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[SyncPair]] = None,
                        include: Optional[frozenset] = None,
-                       confirm_removals: Optional[ConfirmRemovals] = None) -> MergeNotes:
+                       confirm_removals: Optional[ConfirmRemovals] = None,
+                       stage: Optional[Callable[[str], None]] = None) -> MergeNotes:
     """Merge this library with the drive's state, apply it here, and write
     the result back to the drive and to this library's base copy.
 
@@ -1340,6 +1341,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         # SETTINGS Sync to USB". Its own files; see chart_sync.py
         from .chart_sync import sync_charts
 
+        if stage is not None:
+            stage("Exchanging charts…")
         notes.charts = sync_charts(db, drive, idx, pc_id)
     return notes
 
