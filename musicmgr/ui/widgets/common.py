@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from musicmgr import config
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QThread, Signal, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QThread, Signal, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -20,6 +20,11 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QAbstractScrollArea,
+    QAbstractSlider,
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -31,6 +36,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollBar,
     QScroller,
     QSizePolicy,
     QStyle,
@@ -96,6 +102,49 @@ JUKEBOX_OFF = "○"  # ○  WHITE CIRCLE
 # --------------------------------------------------------------------------
 # small building blocks
 # --------------------------------------------------------------------------
+
+
+class WheelGuard(QObject):
+    """Keeps the mouse wheel from changing a setting while scrolling a page
+    (James, 2026-10-01: "when I scroll down the page, it gets into the
+    Crossfade block and starts scrolling the crossfade seconds instead of
+    the page. We need to make sure I don't accidently change a setting
+    while scrolling down").
+
+    A guarded drop-down, spin box or slider only takes the wheel after it's
+    been clicked (has keyboard focus); until then the wheel scrolls the page
+    it sits on, as if the control weren't under the pointer."""
+
+    _CONTROLS = (QComboBox, QAbstractSpinBox, QAbstractSlider)
+
+    def __init__(self, scroll: QAbstractScrollArea) -> None:
+        super().__init__(scroll)
+        self._scroll = scroll
+
+    def guard(self, root: QWidget) -> None:
+        """Guard every control under `root` (call again for ones added later)."""
+        for cls in self._CONTROLS:
+            for w in root.findChildren(cls):
+                if isinstance(w, QScrollBar):
+                    continue  # a list's own scroll bar, not a setting
+                w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # no focus from the wheel
+                w.removeEventFilter(self)
+                w.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, QWidget) and not obj.hasFocus():
+            bar = self._scroll.verticalScrollBar()
+            if bar is not None:
+                QApplication.sendEvent(bar, event)
+            return True
+        return False
+
+
+def guard_wheel(scroll: QAbstractScrollArea, root: Optional[QWidget] = None) -> WheelGuard:
+    """Install a WheelGuard on the controls inside a scroll area."""
+    guard = WheelGuard(scroll)
+    guard.guard(root or scroll.widget() or scroll)
+    return guard
 
 
 def title_label(text: str) -> QLabel:

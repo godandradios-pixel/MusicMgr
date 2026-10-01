@@ -812,3 +812,51 @@ class TestCancelButton:
         view._on_metadata_scan_done(result)
 
         assert view._last_metadata_scan is result
+
+
+class TestWheelScrollsThePage:
+    """James: "when I scroll down the page, it gets into the Crossfade block
+    and starts scrolling the crossfade seconds instead of the page"."""
+
+    def _wheel(self, widget, down=True):
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QWheelEvent
+        from PySide6.QtWidgets import QApplication
+
+        pos = QPointF(widget.rect().center())
+        delta = -120 if down else 120
+        event = QWheelEvent(pos, QPointF(widget.mapToGlobal(pos.toPoint())), QPoint(0, 0),
+                            QPoint(0, delta), Qt.MouseButton.NoButton,
+                            Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(widget, event)
+
+    def test_wheel_over_crossfade_scrolls_the_page_not_the_setting(self, view):
+        from PySide6.QtWidgets import QScrollArea
+
+        view.resize(900, 500)
+        view.show()
+        scroll = view.findChild(QScrollArea)
+        bar = scroll.verticalScrollBar()
+        assert bar.maximum() > 0
+        combo = view.crossfade_combo
+        before = combo.currentIndex()
+        for _ in range(3):
+            self._wheel(combo)
+        assert combo.currentIndex() == before
+        assert bar.value() > 0
+
+    def test_wheel_changes_a_setting_once_clicked(self, view):
+        view.show()
+        combo = view.crossfade_combo
+        combo.setCurrentIndex(0)
+        combo.setFocus()
+        if combo.hasFocus():
+            self._wheel(combo)
+            assert combo.currentIndex() == 1
+
+    def test_every_drop_down_is_guarded(self, view):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QComboBox
+
+        boxes = view.findChildren(QComboBox)
+        assert boxes and all(b.focusPolicy() == Qt.FocusPolicy.StrongFocus for b in boxes)

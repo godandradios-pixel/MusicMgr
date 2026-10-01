@@ -197,6 +197,7 @@ from ..widgets.common import (
     TouchList,
     VerifyFilesThread,
     dim_label,
+    guard_wheel,
 )
 from ..widgets.usb_sync import (
     UsbCompareThread,
@@ -1233,6 +1234,10 @@ class SettingsView(BaseView):
         self._usb_timer.start()
         self._refresh_usb_controls()
         QTimer.singleShot(1500, self.poll_usb)
+
+        # the wheel scrolls the page, never a drop-down it passes over -
+        # click a control first to change it with the wheel
+        self._wheel_guard = guard_wheel(scroll, content)
 
         ctx.libraryChanged.connect(self.refresh)
         ctx.videosChanged.connect(self.refresh)
