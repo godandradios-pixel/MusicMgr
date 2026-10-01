@@ -147,6 +147,91 @@ def guard_wheel(scroll: QAbstractScrollArea, root: Optional[QWidget] = None) -> 
     return guard
 
 
+class CollapsibleSection(QWidget):
+    """A titled group that folds away to a single header line (James,
+    2026-10-01: "The Settings page is now way to 'busy' how can we better
+    organize the settings? Maybe collapsable groups").
+
+    The header shows a chevron, the group's title and - while folded - a
+    one-line summary of what's inside (e.g. the crossfade setting, or which
+    USB drive is plugged in), so a folded page still says what it holds.
+    Click anywhere on the header to open or fold it. Put the group's
+    widgets in `content_layout`."""
+
+    toggled = Signal(bool)
+
+    def __init__(self, title: str, key: str, expanded: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.key = key
+        self._summary_fn: Optional[Callable[[], str]] = None
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        self.header = QFrame()
+        self.header.setObjectName("SectionHeader")
+        self.header.setCursor(Qt.PointingHandCursor)
+        self.header.setMinimumHeight(TOUCH["button_height"] - 8)
+        self.header.mousePressEvent = self._header_pressed  # type: ignore[assignment]
+        row = QHBoxLayout(self.header)
+        row.setContentsMargins(16, 6, 16, 6)
+        row.setSpacing(12)
+        self.chevron = QLabel()
+        self.chevron.setObjectName("SectionChevron")
+        self.chevron.setFixedWidth(18)
+        self.title = QLabel(title)
+        self.title.setObjectName("SectionTitle")
+        self.summary = QLabel("")
+        self.summary.setObjectName("Dim")
+        self.summary.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        row.addWidget(self.chevron)
+        row.addWidget(self.title)
+        row.addWidget(self.summary, 1)
+        outer.addWidget(self.header)
+
+        self.content = QWidget()
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(0, 0, 0, 6)
+        self.content_layout.setSpacing(10)
+        outer.addWidget(self.content)
+        self._expanded = not expanded  # force the first set_expanded to apply
+        self.set_expanded(expanded, emit=False)
+
+    def _header_pressed(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.set_expanded(not self._expanded)
+
+    @property
+    def expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool, emit: bool = True) -> None:
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        self.content.setVisible(expanded)
+        self.chevron.setText("\u25BE" if expanded else "\u25B8")
+        self.refresh_summary()
+        if emit:
+            self.toggled.emit(expanded)
+
+    def set_summary(self, fn: Callable[[], str]) -> None:
+        """What the folded header says - asked again on refresh_summary()."""
+        self._summary_fn = fn
+        self.refresh_summary()
+
+    def refresh_summary(self) -> None:
+        text = ""
+        if not self._expanded and self._summary_fn is not None:
+            try:
+                text = self._summary_fn() or ""
+            except Exception:  # a summary must never break the page
+                text = ""
+        self.summary.setText(text)
+        self.summary.setToolTip(text)
+
+
 def title_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setObjectName("Title")

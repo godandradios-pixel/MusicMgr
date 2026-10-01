@@ -184,6 +184,7 @@ from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS
 from ..widgets.common import (
+    CollapsibleSection,
     ArtistImagesImportThread,
     ArtworkBulkThread,
     BioDownloadThread,
@@ -207,6 +208,10 @@ from ..widgets.usb_sync import (
     human_size,
 )
 from .base import BaseView
+
+#: which Settings groups are open, comma separated (2026-10-01)
+SECTIONS_OPEN_KEY = "settings_sections_open"
+SECTIONS_OPEN_DEFAULT = ("library",)
 
 
 class LoudnessAnalyzeThread(QThread):
@@ -667,7 +672,11 @@ class _ToolRow(QWidget):
         title_label = QLabel(title)
         title_label.setStyleSheet("font-weight: 600;")
         text_col.addWidget(title_label)
-        text_col.addWidget(dim_label(description))
+        desc = dim_label(description)
+        # wraps rather than widening the page past the window (a long
+        # description used to push a sideways scroll bar onto Settings)
+        desc.setWordWrap(True)
+        text_col.addWidget(desc)
         row.addLayout(text_col, 1)
 
 
@@ -781,7 +790,27 @@ class SettingsView(BaseView):
         grid.addWidget(self.total_time, 2, 0, 1, 6, alignment=Qt.AlignHCenter)
         body.addWidget(card)
 
+        # ---- collapsible groups (2026-10-01) ----
+        # James: "The Settings page is now way to 'busy' how can we better
+        # organize the settings? Maybe collapsable groups". Everything below
+        # the library numbers sits in a folding group (CollapsibleSection);
+        # a folded group's header still says what's in it. Which groups are
+        # open is remembered (SECTIONS_OPEN_KEY); Library starts open.
+        # `body` is pointed at each group's own layout in turn, so the code
+        # building each part of the page is unchanged.
+        page = body
+        self._sections: dict[str, CollapsibleSection] = {}
+        open_keys = self._load_open_sections()
+
+        def section(title: str, key: str) -> QVBoxLayout:
+            sec = CollapsibleSection(title, key, expanded=key in open_keys)
+            sec.toggled.connect(lambda _on: self._save_open_sections())
+            page.addWidget(sec)
+            self._sections[key] = sec
+            return sec.content_layout
+
         # ---- folders ----
+        body = section("Library", "library")
         folder_head = QHBoxLayout()
         label = QLabel("Watched folders")
         label.setObjectName("Crumb")
@@ -837,7 +866,9 @@ class SettingsView(BaseView):
         self.progress = QProgressBar()
         self.progress.setObjectName("ProgressWarm")  # this page's brown pallet - see theme.py
         self.progress.setVisible(False)
-        body.addWidget(self.progress)
+        # pinned below the scrolling groups (2026-10-01), so a running job's
+        # progress and Cancel stay in view whichever groups are open
+        self.body().addWidget(self.progress)
 
         # 2026-09-22 - James: "add a real cancel button that stops any
         # process running within Settings" (asked right after being told
@@ -859,14 +890,12 @@ class SettingsView(BaseView):
         self.cancel_btn.setVisible(False)
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
         progress_row.addWidget(self.cancel_btn, 0, Qt.AlignRight)
-        body.addLayout(progress_row)
+        self.body().addLayout(progress_row)
 
         # ---- playback (2026-10-01) ----
         # Crossfade/gapless and volume levelling - see services/player.py's
         # module docstring and services/replaygain.py.
-        playback_label = QLabel("Playback")
-        playback_label.setObjectName("Crumb")
-        body.addWidget(playback_label)
+        body = section("Playback", "playback")
         playback_card = QFrame()
         playback_card.setObjectName("Card")
         pgrid = QGridLayout(playback_card)
@@ -914,25 +943,28 @@ class SettingsView(BaseView):
         # between the rows") - dropped the `divider()` separator this used
         # to add between every row; the Card frame's own outline already
         # groups these into one list without it.
-        tools_label = QLabel("Maintenance")
-        tools_label.setObjectName("Crumb")
-        body.addWidget(tools_label)
-
-        tools_card = QFrame()
-        tools_card.setObjectName("Card")
-        tools_layout = QVBoxLayout(tools_card)
-        tools_layout.setContentsMargins(20, 2, 20, 2)
-        tools_layout.setSpacing(0)
-
+        # Maintenance (2026-10-01): one list of fifteen tools became three
+        # groups - artwork and track info, files and data, online services.
         tool_rows: list[_ToolRow] = []
+        tools: dict[str, QVBoxLayout] = {}
+
+        def tools_group(title: str, key: str) -> None:
+            tools_card = QFrame()
+            tools_card.setObjectName("Card")
+            tools_layout = QVBoxLayout(tools_card)
+            tools_layout.setContentsMargins(20, 2, 20, 2)
+            tools_layout.setSpacing(0)
+            section(title, key).addWidget(tools_card)
+            tools["layout"] = tools_layout
 
         def add_tool_row(title: str, description: str, button_text: str, handler) -> TouchButton:
             row = _ToolRow(title, description, button_text)
             row.button.clicked.connect(handler)
-            tools_layout.addWidget(row)
+            tools["layout"].addWidget(row)
             tool_rows.append(row)
             return row.button
 
+        tools_group("Artwork & track info", "info")
         # 2026-09-22 follow-up (James: "move that missing metadata settings
         # option up closer to the progress bar") - first in this list
         # rather than after the other four enrichment-source rows, since
@@ -980,12 +1012,6 @@ class SettingsView(BaseView):
             "Relink",
             self.relink_artwork,
         )
-        add_tool_row(
-            "Verify files",
-            "Check that every track's file can still be found on disk.",
-            "Verify",
-            self.verify_files,
-        )
         # 2026-10-01 - volume levelling, see services/replaygain.py
         add_tool_row(
             "Volume levels",
@@ -1000,6 +1026,20 @@ class SettingsView(BaseView):
             "Re-match",
             self.rematch_all,
         )
+
+        tools_group("Files & data", "files")
+        add_tool_row(
+            "Verify files",
+            "Check that every track's file can still be found on disk.",
+            "Verify",
+            self.verify_files,
+        )
+        add_tool_row(
+            "Missing files",
+            "Remove tracks whose files can no longer be found.",
+            "Purge…",
+            self.purge_missing_files,
+        )
         add_tool_row(
             "Data location",
             "See where your library database and media files live.",
@@ -1012,12 +1052,18 @@ class SettingsView(BaseView):
             "Move…",
             self.move_data,
         )
+        # 2026-09-19 - James: "Create for me a 'nuke' option. Where you
+        # completely wipe out library.db and start with a fresh database."
+        # Deliberately last in this list - the most destructive action
+        # here by a wide margin, see NukeConfirmDialog/nuke_library below.
         add_tool_row(
-            "Missing files",
-            "Remove tracks whose files can no longer be found.",
-            "Purge…",
-            self.purge_missing_files,
+            "Nuke library",
+            "Permanently erase your entire library database and start completely fresh.",
+            "Nuke…",
+            self.nuke_library,
         )
+
+        tools_group("Online services", "services")
         # 2026-09-22 follow-up (James: "move the 2 API key and token
         # options to the bottom just above the nuke") - Last.fm API key/
         # Discogs API token used to sit next to the button that actually
@@ -1041,19 +1087,8 @@ class SettingsView(BaseView):
             "Set token…",
             self.open_discogs_credentials,
         )
-        # 2026-09-19 - James: "Create for me a 'nuke' option. Where you
-        # completely wipe out library.db and start with a fresh database."
-        # Deliberately last in this list - the most destructive action
-        # here by a wide margin, see NukeConfirmDialog/nuke_library below.
-        add_tool_row(
-            "Nuke library",
-            "Permanently erase your entire library database and start completely fresh.",
-            "Nuke…",
-            self.nuke_library,
-        )
-        _size_tool_row_buttons(tool_rows)
 
-        body.addWidget(tools_card)
+        _size_tool_row_buttons(tool_rows)
 
         # ---- updates (2026-09-23) ----
         # See the "in-app updates" classes above and services/updater.py.
@@ -1061,9 +1096,7 @@ class SettingsView(BaseView):
         # used to sit here - the version now leads this card instead, since
         # "which version am I on" and "is there a newer one" are the same
         # question.
-        updates_label = QLabel("Updates")
-        updates_label.setObjectName("Crumb")
-        body.addWidget(updates_label)
+        body = section("Updates", "updates")
 
         updates_card = QFrame()
         updates_card.setObjectName("Card")
@@ -1130,9 +1163,7 @@ class SettingsView(BaseView):
         # a check for new music against my USB thumb drive", two-way for
         # music, videos and movies. See services/usb_sync.py and
         # claude/2026-09-23-usb-sync-plan.md.
-        usb_label = QLabel("USB sync")
-        usb_label.setObjectName("Crumb")
-        body.addWidget(usb_label)
+        body = section("USB sync", "usb")
 
         usb_card = QFrame()
         usb_card.setObjectName("Card")
@@ -1238,6 +1269,19 @@ class SettingsView(BaseView):
         # the wheel scrolls the page, never a drop-down it passes over -
         # click a control first to change it with the wheel
         self._wheel_guard = guard_wheel(scroll, content)
+
+        # what each group's header says while it's folded
+        self._sections["library"].set_summary(self._library_summary)
+        self._sections["playback"].set_summary(
+            lambda: f"Crossfade: {self.crossfade_combo.currentText()}  ·  "
+                    f"Levelling: {self.levelling_combo.currentText().split(' — ')[0]}")
+        self._sections["info"].set_summary(
+            lambda: "Artwork, biographies, popularity, volume levels, chart matching")
+        self._sections["files"].set_summary(
+            lambda: "Verify, purge, locate or move your library files")
+        self._sections["services"].set_summary(lambda: "Last.fm and Discogs keys")
+        self._sections["updates"].set_summary(lambda: self.version_label.text())
+        self._sections["usb"].set_summary(lambda: self.usb_drive_label.text())
 
         ctx.libraryChanged.connect(self.refresh)
         ctx.videosChanged.connect(self.refresh)
@@ -1400,6 +1444,12 @@ class SettingsView(BaseView):
             self.check_usb(auto=True)
 
     def _refresh_usb_controls(self) -> None:
+        self._refresh_usb_buttons()
+        sec = getattr(self, "_sections", {}).get("usb")
+        if sec is not None:
+            sec.refresh_summary()
+
+    def _refresh_usb_buttons(self) -> None:
         drive = self._usb_drive
         running = self._usb_running()
         self.usb_setup_btn.setEnabled(not running)
@@ -1930,6 +1980,37 @@ class SettingsView(BaseView):
             f"Total run time {format_duration(stats['total_ms'])}{missing}"
         )
         self.folder_list.set_rows(rows)
+        self._refresh_section_summaries()
+
+    # -- groups --------------------------------------------------------------
+
+    def _load_open_sections(self) -> set[str]:
+        """Which groups were left open (Library only, the first time)."""
+        with self.ctx.session() as db:
+            value = updater.get_pref(db, SECTIONS_OPEN_KEY)
+        if value is None:
+            return set(SECTIONS_OPEN_DEFAULT)
+        return {k for k in value.split(",") if k}
+
+    def _save_open_sections(self) -> None:
+        keys = ",".join(k for k, sec in self._sections.items() if sec.expanded)
+        self._save_update_pref(SECTIONS_OPEN_KEY, keys)
+
+    def _refresh_section_summaries(self) -> None:
+        for sec in getattr(self, "_sections", {}).values():
+            sec.refresh_summary()
+
+    def _library_summary(self) -> str:
+        tracks = self._stat_labels["Tracks"].text()
+        folders = self.folder_list.count()
+        return f"{tracks} tracks  ·  {folders} watched folder{'s' if folders != 1 else ''}"
+
+    def expand_section(self, key: str) -> None:
+        """Open a group (and remember it), e.g. when something inside needs
+        attention."""
+        sec = self._sections.get(key)
+        if sec is not None:
+            sec.set_expanded(True)
 
     # -- actions -------------------------------------------------------------
 

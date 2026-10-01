@@ -769,6 +769,25 @@ QFrame#PlayerBar {{
     border-top: 1px solid {c['border']};
 }}
 QFrame#Divider {{ background: {c['border']}; max-height: 1px; }}
+/* Collapsible groups (ui/widgets/common.py CollapsibleSection) - the
+   Settings page's folding headers (James: "The Settings page is now way to
+   'busy' ... Maybe collapsable groups"). */
+QFrame#SectionHeader {{
+    background: {c['surface_alt']};
+    border: 1px solid {c['border']};
+    border-radius: 12px;
+}}
+QFrame#SectionHeader:hover {{ background: {c['surface_hi']}; }}
+QLabel#SectionTitle {{
+    font-size: {t['font_base'] + 2}px;
+    font-weight: 600;
+    background: transparent;
+}}
+QLabel#SectionChevron {{
+    color: {c['jukebox_key_hi']};
+    font-size: {t['font_base'] + 2}px;
+    background: transparent;
+}}
 QProgressBar {{
     background: {c['surface_hi']};
     border: none;

@@ -833,6 +833,7 @@ class TestWheelScrollsThePage:
     def test_wheel_over_crossfade_scrolls_the_page_not_the_setting(self, view):
         from PySide6.QtWidgets import QScrollArea
 
+        view.expand_section("playback")
         view.resize(900, 500)
         view.show()
         scroll = view.findChild(QScrollArea)
@@ -846,6 +847,7 @@ class TestWheelScrollsThePage:
         assert bar.value() > 0
 
     def test_wheel_changes_a_setting_once_clicked(self, view):
+        view.expand_section("playback")
         view.show()
         combo = view.crossfade_combo
         combo.setCurrentIndex(0)
@@ -860,3 +862,60 @@ class TestWheelScrollsThePage:
 
         boxes = view.findChildren(QComboBox)
         assert boxes and all(b.focusPolicy() == Qt.FocusPolicy.StrongFocus for b in boxes)
+
+
+class TestCollapsibleGroups:
+    """James: "The Settings page is now way to 'busy' how can we better
+    organize the settings? Maybe collapsable groups"."""
+
+    KEYS = ["library", "playback", "info", "files", "services", "updates", "usb"]
+
+    def test_groups_in_order_with_only_library_open_at_first(self, view):
+        assert list(view._sections) == self.KEYS
+        assert [k for k, s in view._sections.items() if s.expanded] == ["library"]
+        view.show()
+        assert not view.crossfade_combo.isVisibleTo(view)
+        assert view.folder_list.isVisibleTo(view)
+
+    def test_tools_are_split_into_their_groups(self, view):
+        from musicmgr.ui.views.settings import _ToolRow
+
+        def titles(key):
+            rows = view._sections[key].content.findChildren(_ToolRow)
+            return [r.findChildren(type(view.version_label))[0].text() for r in rows]
+
+        assert "Missing metadata" in titles("info") and "Charts" in titles("info")
+        assert "Nuke library" in titles("files") and "Verify files" in titles("files")
+        assert titles("services") == ["Last.fm API key", "Discogs API token"]
+
+    def test_header_click_opens_and_folds(self, view):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        sec = view._sections["playback"]
+        QTest.mouseClick(sec.header, Qt.LeftButton)
+        assert sec.expanded and sec.summary.text() == ""
+        QTest.mouseClick(sec.header, Qt.LeftButton)
+        assert not sec.expanded
+        assert sec.summary.text().startswith("Crossfade:")
+
+    def test_open_groups_are_remembered(self, ctx, view):
+        view.expand_section("usb")
+        view._sections["library"].set_expanded(False)
+        again = SettingsView(ctx)
+        assert [k for k, s in again._sections.items() if s.expanded] == ["usb"]
+
+    def test_folded_headers_say_whats_inside(self, view):
+        view.refresh()
+        assert view._sections["library"].summary.text() == ""  # open: no summary
+        view._sections["library"].set_expanded(False)
+        assert "watched folder" in view._sections["library"].summary.text()
+        assert view._sections["updates"].summary.text() == view.version_label.text()
+        assert view._sections["usb"].summary.text() == view.usb_drive_label.text()
+
+    def test_progress_and_cancel_stay_outside_the_groups(self, view):
+        from PySide6.QtWidgets import QScrollArea
+
+        content = view.findChild(QScrollArea).widget()
+        assert not content.isAncestorOf(view.cancel_btn)
+        assert not content.isAncestorOf(view.progress_label)
