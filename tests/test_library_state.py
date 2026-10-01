@@ -742,3 +742,97 @@ class TestRadioStations:
             json.dump(data, fh)
         notes = pc1.sync()
         assert notes.stations_removed == [] and len(self._dial(pc1)) == 1
+
+
+class TestRadioShowProgress:
+    """James: "Please add moves for shows ... the Mint PC to pick up where
+    you left off"."""
+
+    EPS = ("1937-09-26 - Death House Rescue", "1937-10-17 - Murder By The Dead",
+           "1937-10-24 - The Temple Bells")
+
+    def _radio(self, pc, with_whistler=True):
+        import wave
+
+        from musicmgr.services import otr
+
+        root = pc.root / "Radio"
+        files = [root / "The Shadow" / f"{e}.wav" for e in self.EPS]
+        if with_whistler:
+            files.append(root / "The Whistler" / "Whistler 44-11-20 (130) Death Sees Double.wav")
+        for f in files:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(f), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(8000)
+                w.writeframes(b"\x00\x00" * 3200)
+        pc.use()
+        otr.scan(db_session.new_session, str(root), read_tags=lambda p: {"length": 0.4})
+
+    def _show(self, s, name):
+        from musicmgr.db.models import RadioShow
+
+        return s.scalar(select(RadioShow).where(RadioShow.name == name))
+
+    def test_band_moves_heard_episodes_and_resume_point_travel(self, two_pcs):
+        from musicmgr.services import otr
+
+        pc1, pc2, _drive = two_pcs
+        self._radio(pc1)
+        self._radio(pc2)
+        pc1.use()
+        with db_session.session_scope() as s:
+            shadow = self._show(s, "The Shadow")
+            otr.set_band(s, shadow.id, "lw")
+            eps = otr.episodes(s, shadow.id)
+            otr.mark_played(s, eps[0])                    # heard the first
+            eps[1].position_ms = 754_000                  # stopped 12:34 into the second
+            shadow.current_episode_id = eps[1].id
+        pc1.sync()
+
+        notes = pc2.sync()
+        assert notes.otr_in and "radio show progress updated" in notes.summary()
+        pc2.use()
+        with db_session.session_scope() as s:
+            shadow = self._show(s, "The Shadow")
+            eps = otr.episodes(s, shadow.id)
+            assert shadow.band == "lw"
+            assert [e.played for e in eps] == [True, False, False]
+            assert eps[1].position_ms == 754_000
+            cur = otr.current_episode(s, shadow)
+            assert cur.id == eps[1].id                    # Mint picks up where PC1 left off
+            # Mint finishes it and moves The Whistler
+            otr.mark_played(s, eps[1])
+            otr.set_band(s, self._show(s, "The Whistler").id, "sw1")
+        pc2.sync()
+
+        pc1.sync()
+        pc1.use()
+        with db_session.session_scope() as s:
+            shadow = self._show(s, "The Shadow")
+            eps = otr.episodes(s, shadow.id)
+            assert [e.played for e in eps] == [True, True, False]
+            assert eps[1].position_ms == 0
+            assert otr.current_episode(s, shadow).id == eps[2].id
+            assert self._show(s, "The Whistler").band == "sw1"
+        assert pc1.sync().otr_in == 0
+
+    def test_a_show_one_pc_doesnt_have_keeps_its_progress(self, two_pcs):
+        from musicmgr.services import otr
+
+        pc1, pc2, _drive = two_pcs
+        self._radio(pc1)
+        self._radio(pc2, with_whistler=False)
+        pc1.use()
+        with db_session.session_scope() as s:
+            w = self._show(s, "The Whistler")
+            otr.mark_played(s, otr.episodes(s, w.id)[0])
+        pc1.sync()
+        pc2.sync()
+        pc2.sync()                                        # twice: nothing read as removed
+        pc1.sync()
+        pc1.use()
+        with db_session.session_scope() as s:
+            w = self._show(s, "The Whistler")
+            assert otr.episodes(s, w.id)[0].played

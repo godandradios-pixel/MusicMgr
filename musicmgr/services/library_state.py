@@ -18,8 +18,9 @@ library.db - never the database file itself:
   option"): the internet stations on the Radio page's FM and AM bands,
   keyed by stream address, with their name, band and place on the dial.
   Each PC downloads a station's logo itself the next time the Radio page
-  opens. Old-time radio shows aren't included - they're folders on each
-  PC, read from its own radio folder
+  opens. Rides with it, old-time radio progress: each show's band, which
+  episodes were heard and where one was stopped (services/otr_sync.py);
+  the show files themselves are each PC's own radio folder
 
 Everything is keyed by names and paths, never by database ids (ids differ
 on every PC). A track's key is its path inside a synced folder, as the
@@ -106,8 +107,10 @@ _NEXT_SLOT_KEY = "jukebox_next_slot_number"
 PLAYS, RATINGS, PLAYLISTS, JUKEBOX = "plays", "ratings", "playlists", "jukebox"
 #: charts (2026-09-30) - their own files on the drive, see chart_sync.py
 CHARTS = "charts"
-#: the Radio page's internet stations (2026-10-01)
+#: the Radio page's internet stations (2026-10-01) - and, riding with them,
+#: old-time radio progress (otr_sync.py)
 RADIO = "radio"
+OTR = "otr"
 CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS, RADIO)
 #: the ones kept in library-state.json.gz itself
 _STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, RADIO)
@@ -343,7 +346,13 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
 
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: read_images(db), FOLDERS: {path: True for path in _folders_by_path(db)},
-            RADIO: read_stations(db)}
+            RADIO: read_stations(db), OTR: _read_otr(db)}
+
+
+def _read_otr(db: Session) -> dict:
+    from .otr_sync import read_otr
+
+    return read_otr(db)
 
 
 def read_stations(db: Session) -> dict[str, dict]:
@@ -506,7 +515,7 @@ def _set(db: Session, key: str, value: str) -> None:
 
 def empty_state() -> dict:
     return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": [],
-            IMAGES: {}, "images_unplaced": [], FOLDERS: {}, RADIO: {}}
+            IMAGES: {}, "images_unplaced": [], FOLDERS: {}, RADIO: {}, OTR: {}}
 
 
 def load_state(path: Path) -> Optional[dict]:
@@ -530,6 +539,8 @@ def load_state(path: Path) -> Optional[dict]:
     if RADIO not in data:
         # ...and radio stations (2026-10-01)
         state[RADIO] = None
+    if OTR not in data:
+        state[OTR] = None
     if data.get("playlist_keys") != PLAYLIST_KEYS:
         state["playlists"] = _rekey_playlists(state["playlists"] or {})
     state["images_placed"] = bool(data.get("images_placed"))
@@ -600,13 +611,16 @@ class MergeNotes:
     stations_in: list[str] = field(default_factory=list)
     stations_removed: list[str] = field(default_factory=list)
     stations_out: int = 0
+    #: old-time radio progress (2026-10-01): changes taken / sent
+    otr_in: int = 0
+    otr_out: int = 0
 
     def received(self) -> bool:
         """Did anything change in this library? (Views refresh if so.)"""
         return bool(self.plays_in or self.ratings_in or self.playlists_in
                     or self.playlists_removed or self.images_in or self.folders_in
                     or self.folders_removed or self.board_in
-                    or self.stations_in or self.stations_removed
+                    or self.stations_in or self.stations_removed or self.otr_in
                     or (self.charts is not None
                         and (self.charts.charts_in or self.charts.charts_removed)))
 
@@ -649,6 +663,8 @@ class MergeNotes:
         if self.stations_removed:
             n = len(self.stations_removed)
             parts.append(f"{n} radio station{'s' if n != 1 else ''} removed")
+        if self.otr_in:
+            parts.append("radio show progress updated")
         ch = self.charts
         if ch is not None:
             if ch.charts_in:
@@ -681,6 +697,8 @@ class MergeNotes:
         if self.stations_out:
             n = self.stations_out
             sent.append(f"{n} radio station{'s' if n != 1 else ''}")
+        if self.otr_out:
+            sent.append("radio show progress")
         if ch is not None and ch.charts_out:
             n = ch.charts_out
             sent.append(f"{n} chart{'s' if n != 1 else ''}")
@@ -729,7 +747,9 @@ def _strip(value, drop: str):
     return {k: v for k, v in value.items() if k != drop}
 
 
-def merge(local: dict, usb: dict, base: dict) -> tuple[dict, MergeNotes]:
+def merge(local: dict, usb: dict, base: dict,
+          otr_prefer_usb: Optional[Callable[[str, object, object], bool]] = None,
+          ) -> tuple[dict, MergeNotes]:
     notes = MergeNotes()
 
     ratings, taken = _merge_dict(local["ratings"], usb["ratings"], base["ratings"])
@@ -815,8 +835,16 @@ def merge(local: dict, usb: dict, base: dict) -> tuple[dict, MergeNotes]:
     notes.stations_removed = sorted(u for u in local_st if u not in stations)
     notes.stations_out = _changed(stations, usb.get(RADIO) or {})
 
+    # old-time radio progress: three-way per key (otr_sync.py)
+    lo, uo = local.get(OTR) or {}, usb.get(OTR) or {}
+    otr, taken_otr = _merge_dict(
+        lo, uo, base.get(OTR) or {},
+        newer=(lambda k: otr_prefer_usb(k, lo[k], uo[k])) if otr_prefer_usb else None)
+    notes.otr_in = len(taken_otr) + sum(1 for k in (local.get(OTR) or {}) if k not in otr)
+    notes.otr_out = _changed(otr, usb.get(OTR) or {})
+
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
-            IMAGES: images, FOLDERS: folders, RADIO: stations}, notes
+            IMAGES: images, FOLDERS: folders, RADIO: stations, OTR: otr}, notes
 
 
 # --------------------------------------------------------------------------
@@ -1184,10 +1212,13 @@ def set_category_enabled(db: Session, category: str, enabled: bool) -> None:
 
 #: not checkboxes of their own - synced whenever Playlists is
 _WITH_PLAYLISTS = (IMAGES, FOLDERS)
+#: ...or whenever Radio is
+_WITH_RADIO = (OTR,)
 
 
 def _included(cat: str, include: frozenset) -> bool:
-    return cat in include or (cat in _WITH_PLAYLISTS and PLAYLISTS in include)
+    return (cat in include or (cat in _WITH_PLAYLISTS and PLAYLISTS in include)
+            or (cat in _WITH_RADIO and RADIO in include))
 
 
 #: asked when a sync would empty whole playlist folders here; True = remove
@@ -1233,16 +1264,25 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     if usb[RADIO] is None:
         # ...or radio stations
         usb[RADIO] = copy.deepcopy(base[RADIO])
+    if base[OTR] is None:
+        base[OTR] = {}
+    if usb[OTR] is None:
+        usb[OTR] = copy.deepcopy(base[OTR])
     original_base = dict(base)
-    for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS:
+    for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS + _WITH_RADIO:
         if not _included(cat, include):
             # look exactly like the drive, so nothing moves either way
             local[cat] = copy.deepcopy(usb[cat])
             base[cat] = copy.deepcopy(usb[cat])
     carry_unresolved(local, base, idx)
+    from .otr_sync import OtrIndex, apply_otr, carry_unplaced
+
+    otr_idx = OtrIndex(db)
+    if RADIO in include:
+        carry_unplaced(local[OTR], base[OTR], otr_idx)
     targets = _image_targets(db)
     carried = carry_images(local, base, targets) if PLAYLISTS in include else set()
-    merged, notes = merge(local, usb, base)
+    merged, notes = merge(local, usb, base, otr_prefer_usb=otr_idx.prefer_usb)
     revive(merged, base, idx, notes)
     if confirm_removals is not None and PLAYLISTS in include:
         # 2026-09-30: never empty a whole folder of playlists without asking
@@ -1264,9 +1304,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         notes.plays_out = 0
     if RADIO not in include:
         notes.stations_in, notes.stations_removed, notes.stations_out = [], [], 0
+        notes.otr_in = notes.otr_out = 0
     apply_state(db, idx, local, merged, notes, include)
     if RADIO in include:
         apply_stations(db, merged, local, notes)
+        notes.otr_in = apply_otr(db, otr_idx, merged[OTR], local[OTR])
     if PLAYLISTS in include:
         # after apply_state, so playlists/folders that just arrived get theirs
         apply_images(db, merged, local, notes, carried)
@@ -1283,7 +1325,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     # (plays for tracks this PC doesn't have stay in it for the others)
     save_state(usb_state_path(drive), merged, pc_id)
     base_copy = dict(merged)
-    for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS:
+    for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS + _WITH_RADIO:
         if not _included(cat, include):
             base_copy[cat] = original_base[cat]
     if PLAYLISTS not in include:

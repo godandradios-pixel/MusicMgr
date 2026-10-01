@@ -1197,7 +1197,7 @@ class SettingsView(BaseView):
             (library_state.JUKEBOX, "Jukebox"),
             # 2026-09-30 - James: "I would like to have Charts be added"
             (library_state.CHARTS, "Charts"),
-            (library_state.RADIO, "Radio stations"),
+            (library_state.RADIO, "Radio"),
         ):
             cb = QCheckBox(text)
             if cat == library_state.PLAYLISTS:
@@ -1205,8 +1205,9 @@ class SettingsView(BaseView):
                 cb.setToolTip("Manual and smart playlists, plus the images chosen for any "
                               "playlist or folder")
             if cat == library_state.RADIO:
-                cb.setToolTip("The internet stations on the Radio page's FM and AM bands - "
-                              "names, bands and their places on the dial")
+                cb.setToolTip("The internet stations on the Radio page's FM and AM bands, "
+                              "and old-time radio progress: each show's band, the "
+                              "episodes heard and where one was stopped")
             if cat == library_state.CHARTS:
                 cb.setToolTip("Imported charts, their folders and editions, and matches "
                               "fixed by hand. Each PC matches the rest to its own library")
