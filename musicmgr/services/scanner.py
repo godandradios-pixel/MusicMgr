@@ -435,6 +435,25 @@ def _shared_track_files(session: Session, files: list[Path]) -> list[Path]:
     return [p for p in files if str(p) in shared]
 
 
+def import_single(session: Session, path: Path | str) -> Optional[Track]:
+    """Import one file the user picked by hand (Charts' Fix match "Browse
+    for file..."), and return its own track. A file already in the library
+    whose track also holds other files is re-read, so a version folded into
+    another artist's track before the 2026-10-01 fix comes out as its own
+    track instead of handing back the other artist's (James: "When I pick
+    Perry Como with the file picker it still shows Russ Morgan")."""
+    path = Path(path)
+    result = ScanResult()
+    if _shared_track_files(session, [path]):
+        _reimport_on_same_album(session, path, result)
+        if result.separated_from:
+            _rematch_separated(session, result)
+        session.flush()
+        mf = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+        return mf.track if mf is not None else None
+    return import_file(session, path, result)
+
+
 def _reimport_on_same_album(session: Session, path: Path, result: ScanResult) -> None:
     """Re-read one unchanged file and file it again - on the album it's
     already on, so only its track can change."""

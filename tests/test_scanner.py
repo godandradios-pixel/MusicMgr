@@ -730,3 +730,25 @@ class TestSameSongByDifferentArtists:
 
         again = scanner.scan_folder(session, tmp_path)
         assert again.separated == 0 and again.unchanged == 4
+
+    def test_picking_a_folded_file_by_hand_gives_its_own_track(self, session, tmp_path):
+        # James: "When I pick Perry Como with the file picker it still shows
+        # Russ Morgan" (Charts › Fix match › Browse for file...)
+        folder = self._folder(tmp_path)
+        scanner.scan_folder(session, tmp_path)
+        versions = self._versions(session)
+        keep = versions["Russ Morgan"]
+        for artist, track in versions.items():
+            if track is not keep:
+                for mf in list(track.files):
+                    mf.track = keep
+                session.delete(track)
+        session.flush()
+
+        track = scanner.import_single(session, folder / "Perry Como - Forever And Ever.mp3")
+
+        assert track.artist_display == "Perry Como" and track.id != keep.id
+        assert [Path(m.path).name for m in track.files] == ["Perry Como - Forever And Ever.mp3"]
+        # a file that's already its own track just comes back as it is
+        again = scanner.import_single(session, folder / "Perry Como - Forever And Ever.mp3")
+        assert again.id == track.id

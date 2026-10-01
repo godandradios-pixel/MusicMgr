@@ -826,7 +826,7 @@ class ChartsView(BaseView):
         existing row instead of creating a duplicate."""
         with self.ctx.session() as session:
             try:
-                track = scanner_svc.import_file(session, Path(path), scanner_svc.ScanResult())
+                track = scanner_svc.import_single(session, Path(path))
             except Exception:
                 return None
             if track is None:
