@@ -355,6 +355,25 @@ class TestTunerPage:
         assert "September 26, 1937" in view.info_sub.text()
         assert view.btn_episodes.isVisibleTo(view)
 
+    def test_renaming_a_station(self, ctx, tuner, library, db):
+        # James: "I would like to be able to rename the radio station text.
+        # For example the 100.7 WMMS - CLEVELAND, OHIO is way too long"
+        with db.session_scope() as s:
+            stations.add_manual(s, "WQED Pittsburgh", "http://127.0.0.1:9/a")
+            stations.add_manual(s, "100.7 WMMS - CLEVELAND, OHIO", "http://127.0.0.1:9/b")
+        view = self.view(ctx)
+        view.set_band("fm")
+        view.radio.set_tuned("fm", 1, animate=False)
+        view._update_info()
+        assert view.btn_rename.isVisibleTo(view)
+        view.rename_station("  WMMS  ")
+        assert view.radio.labels("fm") == ["WQED Pittsburgh", "WMMS"]
+        assert view.info_name.text() == "WMMS"
+        view.rename_station("   ")  # blank is ignored
+        assert view.radio.labels("fm") == ["WQED Pittsburgh", "WMMS"]
+        with db.session_scope() as s:
+            assert sorted(st.name for st in stations.dial(s)) == ["WMMS", "WQED Pittsburgh"]
+
     def test_moving_a_show_to_another_band(self, ctx, tuner, library, db):
         view = self.view(ctx)
         tuner.tune_show(library["The Whistler"])

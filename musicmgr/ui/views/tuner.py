@@ -483,6 +483,9 @@ class TunerView(BaseView):
         self.btn_band = make_compact(TouchButton("Band…"))
         self.btn_band.setToolTip("Move to another band of the dial")
         self.btn_band.clicked.connect(self._band_menu)
+        self.btn_rename = make_compact(TouchButton("Rename…"))
+        self.btn_rename.setToolTip("Change the name printed on the dial")
+        self.btn_rename.clicked.connect(self._ask_rename_station)
         self.btn_move_left = make_compact(TouchButton("◀ Move"))
         self.btn_move_left.clicked.connect(lambda: self._move_station(-1))
         self.btn_move_right = make_compact(TouchButton("Move ▶"))
@@ -618,8 +621,9 @@ class TunerView(BaseView):
 
     def _all_buttons(self):
         return (self.btn_listen, self.btn_episodes, self.btn_prev, self.btn_next,
-                self.btn_new_evening, self.btn_band, self.btn_move_left, self.btn_move_right,
-                self.btn_remove, self.btn_folder, self.btn_starters, self.btn_find)
+                self.btn_new_evening, self.btn_band, self.btn_rename, self.btn_move_left,
+                self.btn_move_right, self.btn_remove, self.btn_folder, self.btn_starters,
+                self.btn_find)
 
     def _show_buttons(self, *buttons) -> None:
         for b in self._all_buttons():
@@ -765,7 +769,8 @@ class TunerView(BaseView):
                 st.country, (st.codec or "").upper(),
                 f"{st.bitrate} kbps" if st.bitrate else "") if x))
             self.info_extra.setText(st.homepage or "")
-        buttons = [self.btn_band, self.btn_move_left, self.btn_move_right, self.btn_remove]
+        buttons = [self.btn_band, self.btn_rename, self.btn_move_left, self.btn_move_right,
+                   self.btn_remove]
         if not self._live:
             buttons.insert(0, self.btn_listen)
         self._show_buttons(*buttons)
@@ -907,6 +912,34 @@ class TunerView(BaseView):
             stations.move(s, ident, delta)
             s.commit()
         self._changed()
+
+    def _ask_rename_station(self) -> None:  # pragma: no cover - dialog
+        kind, ident, _live = self._pointed()
+        if kind != "station":
+            return
+        with self.ctx.session() as s:
+            st = s.get(RadioStation, ident)
+            current = st.name if st else ""
+        name, ok = QInputDialog.getText(self, "Rename station", "Name on the dial:", text=current)
+        if ok:
+            self.rename_station(name)
+
+    def rename_station(self, name: str) -> None:
+        """Rename the station the card describes."""
+        kind, ident, live = self._pointed()
+        if kind != "station" or not (name or "").strip():
+            return
+        with self.ctx.session() as s:
+            stations.rename(s, ident, name)
+            s.commit()
+        item = self.ctx.player.current
+        if live and item is not None and item.kind == "stream" and item.station_id == ident:
+            item.title = name.strip()  # the player bar shows it from the next update
+        self._rebuild()
+        b, idx = self._locate("station", ident)
+        if idx >= 0:
+            self.radio.set_tuned(b, idx, animate=False)
+        self._update_info()
 
     def _remove_station(self) -> None:
         kind, ident, live = self._pointed()

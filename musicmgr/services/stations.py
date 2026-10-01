@@ -206,6 +206,17 @@ def set_band(session: Session, station_id: int, band: str) -> None:
         st.band = band
 
 
+def rename(session: Session, station_id: int, name: str) -> Optional[RadioStation]:
+    """The name printed on the dial (James, 2026-10-01: "I would like to be
+    able to rename the radio station text. For example the 100.7 WMMS -
+    CLEVELAND, OHIO is way too long"). Blank names are ignored."""
+    st = session.get(RadioStation, station_id)
+    name = (name or "").strip()
+    if st is not None and name:
+        st.name = name[:300]
+    return st
+
+
 def remove(session: Session, station_id: int) -> None:
     st = session.get(RadioStation, station_id)
     if st is not None:
