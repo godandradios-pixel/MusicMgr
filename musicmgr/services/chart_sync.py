@@ -341,6 +341,21 @@ def _fingerprints_one(db: Session, chart_id: int) -> str:
     return _fingerprints(db).get(chart_id, "")
 
 
+def mark_edited(db: Session, chart_id: int) -> None:
+    """A position was added, edited or removed by hand (2026-10-03, the
+    Charts page's Add/Edit/Remove song buttons). The fingerprint above is
+    cheap but not exact - retyping a title to one of the same length
+    leaves it unchanged - so forget this chart's cached fingerprint. The
+    next sync then re-hashes it, sees the new ``sig`` and stamps it
+    changed now, so the edit wins over the drive's older copy. A chart
+    that has never synced has no cache entry and needs nothing."""
+    cache = _load_cache(db)
+    entry = cache.get(str(chart_id))
+    if entry:
+        entry[0] = ""
+        _save_cache(db, cache)
+
+
 # --------------------------------------------------------------------------
 # writing a chart that arrived
 # --------------------------------------------------------------------------

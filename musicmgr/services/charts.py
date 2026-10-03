@@ -384,6 +384,167 @@ def set_entry_track(session: Session, entry_id: int, track_id: Optional[int]) ->
     return entry
 
 
+# --------------------------------------------------------------------------
+# editing positions by hand
+# --------------------------------------------------------------------------
+#
+# 2026-10-03, James: "I would like to be able to edit my Chart songs. For
+# example, the 2003 Billboard Top Country chart is missing #40 Trace Adkins
+# - Then They Do." Imported CSVs are sometimes short a row or carry a typo;
+# these let the Charts page fix one edition in place instead of editing the
+# CSV and re-importing it.
+
+
+class RankTaken(ValueError):
+    """The position asked for already holds another song. `holder` is that
+    song's "Title — Artist", for the question the Charts page then asks."""
+
+    def __init__(self, rank: int, holder: str) -> None:
+        super().__init__(f"#{rank} is already {holder}")
+        self.rank = rank
+        self.holder = holder
+
+
+def _issue_rows(session: Session, issue_id: int) -> list[ChartEntry]:
+    return list(session.scalars(
+        select(ChartEntry).where(ChartEntry.issue_id == issue_id).order_by(ChartEntry.rank)
+    ))
+
+
+def _renumber(session: Session, moves: dict[ChartEntry, int]) -> None:
+    """Give several rows new ranks without tripping the (issue, rank)
+    unique constraint mid-way: park them all on negative ranks first."""
+    if not moves:
+        return
+    for entry in moves:
+        entry.rank = -entry.id
+    session.flush()
+    for entry, rank in moves.items():
+        entry.rank = rank
+    session.flush()
+
+
+def _after_edit(session: Session, issue_id: int, rank: Optional[int] = None) -> None:
+    issue = session.get(ChartIssue, issue_id)
+    if issue is None:
+        return
+    chart = session.get(Chart, issue.chart_id)
+    if chart is not None and rank and (chart.size is None or rank > chart.size):
+        chart.size = rank
+    session.flush()
+    from . import chart_sync  # chart_sync imports this module
+
+    chart_sync.mark_edited(session, issue.chart_id)
+
+
+def suggested_rank(session: Session, issue_id: int) -> int:
+    """The first missing position in an edition (#40 when 1-39 and 41-100
+    are there), or one past the last when nothing is missing."""
+    ranks = set(session.scalars(select(ChartEntry.rank).where(ChartEntry.issue_id == issue_id)))
+    rank = 1
+    while rank in ranks:
+        rank += 1
+    return rank
+
+
+def add_entry(
+    session: Session,
+    issue_id: int,
+    rank: int,
+    title: str,
+    artist: str,
+    last_week: Optional[int] = None,
+    peak_pos: Optional[int] = None,
+    weeks_on_chart: Optional[int] = None,
+    shift: bool = False,
+    threshold: float = 0.72,
+) -> ChartEntry:
+    """Add a song at `rank` and match it to the library. If that position
+    is taken, raises RankTaken - unless `shift`, which moves that song and
+    every one below it down a place. A missing peak defaults to the rank,
+    same as an import."""
+    title, artist = title.strip(), artist.strip()
+    if rank < 1 or not title:
+        raise ValueError("a position needs a rank of 1 or more and a title")
+    if session.get(ChartIssue, issue_id) is None:
+        raise ValueError(f"no chart edition {issue_id}")
+    rows = _issue_rows(session, issue_id)
+    holder = next((e for e in rows if e.rank == rank), None)
+    if holder is not None:
+        if not shift:
+            raise RankTaken(rank, f"{holder.title} — {holder.artist_name}")
+        _renumber(session, {e: e.rank + 1 for e in rows if e.rank >= rank})
+    entry = ChartEntry(
+        issue_id=issue_id, rank=rank, title=title, artist_name=artist,
+        title_key=normalize(title), artist_key=normalize(artist),
+        last_week=last_week, peak_pos=peak_pos or rank, weeks_on_chart=weeks_on_chart,
+    )
+    session.add(entry)
+    session.flush()
+    match_entry(session, entry, threshold)
+    _after_edit(session, issue_id, max([rank] + [e.rank for e in rows]))
+    return entry
+
+
+def update_entry(
+    session: Session,
+    entry_id: int,
+    rank: int,
+    title: str,
+    artist: str,
+    last_week: Optional[int] = None,
+    peak_pos: Optional[int] = None,
+    weeks_on_chart: Optional[int] = None,
+    shift: bool = False,
+    threshold: float = 0.72,
+) -> ChartEntry:
+    """Change one position. Moving it onto a position another song holds
+    raises RankTaken unless `shift`, which slides the songs in between up
+    or down a place (like dragging a row in a list). A changed title or
+    artist is re-matched, unless the match was fixed by hand."""
+    entry = session.get(ChartEntry, entry_id)
+    if entry is None:
+        raise ValueError(f"no chart entry {entry_id}")
+    title, artist = title.strip(), artist.strip()
+    if rank < 1 or not title:
+        raise ValueError("a position needs a rank of 1 or more and a title")
+    if rank != entry.rank:
+        rows = [e for e in _issue_rows(session, entry.issue_id) if e.id != entry.id]
+        holder = next((e for e in rows if e.rank == rank), None)
+        if holder is not None and not shift:
+            raise RankTaken(rank, f"{holder.title} — {holder.artist_name}")
+        moves: dict[ChartEntry, int] = {entry: rank}
+        if holder is not None:
+            old = entry.rank
+            if rank < old:      # moving up: rank..old-1 slide down one
+                moves.update({e: e.rank + 1 for e in rows if rank <= e.rank < old})
+            else:               # moving down: old+1..rank slide up one
+                moves.update({e: e.rank - 1 for e in rows if old < e.rank <= rank})
+        _renumber(session, moves)
+    renamed = (title, artist) != (entry.title, entry.artist_name)
+    entry.title, entry.artist_name = title, artist
+    entry.title_key, entry.artist_key = normalize(title), normalize(artist)
+    entry.last_week, entry.peak_pos, entry.weeks_on_chart = last_week, peak_pos, weeks_on_chart
+    session.flush()
+    if renamed and not entry.match_locked:
+        match_entry(session, entry, threshold)
+    _after_edit(session, entry.issue_id, rank)
+    return entry
+
+
+def delete_entry(session: Session, entry_id: int) -> None:
+    """Remove one position. The ranks below keep their numbers - a gap is
+    honest about a chart's missing row, and "Add song…" fills it back in.
+    The matched track itself is untouched."""
+    entry = session.get(ChartEntry, entry_id)
+    if entry is None:
+        return
+    issue_id = entry.issue_id
+    session.delete(entry)
+    session.flush()
+    _after_edit(session, issue_id)
+
+
 #: Setting.key row this module owns - see db.models.Setting and
 #: services/lastfm_popularity.py's API_KEY_KEY for the pattern this follows
 #: (a generic key/value table, not QSettings - this app has no config file

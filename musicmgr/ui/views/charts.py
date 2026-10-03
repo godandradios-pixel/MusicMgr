@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
+    QSpinBox,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -242,6 +244,81 @@ class MatchTrackDialog(QDialog):
         self.accept()
 
 
+class ChartEntryDialog(QDialog):
+    """"Add song…" / "Edit song…" on the Charts page (2026-10-03, James: "I
+    would like to be able to edit my Chart songs" - e.g. the 2003 Billboard
+    Top Country chart missing #40 Trace Adkins - Then They Do). Position,
+    title and artist, plus the optional last week / peak / weeks figures a
+    weekly chart carries; 0 in those shows as "—" and means blank. After
+    Ok, `values()` holds what was entered."""
+
+    def __init__(
+        self,
+        parent,
+        heading: str,
+        rank: int = 1,
+        title: str = "",
+        artist: str = "",
+        last_week: Optional[int] = None,
+        peak_pos: Optional[int] = None,
+        weeks_on_chart: Optional[int] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(heading)
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.rank = QSpinBox()
+        self.rank.setRange(1, 9999)
+        self.rank.setValue(max(1, rank))
+        form.addRow("Position", self.rank)
+        self.title_edit = QLineEdit(title)
+        self.title_edit.setPlaceholderText("Song title")
+        form.addRow("Title", self.title_edit)
+        self.artist_edit = QLineEdit(artist)
+        self.artist_edit.setPlaceholderText("Artist")
+        form.addRow("Artist", self.artist_edit)
+
+        def optional(value: Optional[int]) -> QSpinBox:
+            box = QSpinBox()
+            box.setRange(0, 9999)
+            box.setSpecialValueText("—")
+            box.setValue(value or 0)
+            return box
+
+        self.last_week = optional(last_week)
+        form.addRow("Last week", self.last_week)
+        self.peak = optional(peak_pos)
+        form.addRow("Peak", self.peak)
+        self.weeks = optional(weeks_on_chart)
+        form.addRow("Weeks on chart", self.weeks)
+        layout.addLayout(form)
+        layout.addWidget(dim_label("Leave Peak at — to use the position."))
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.ok_button = buttons.button(QDialogButtonBox.Ok)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.title_edit.textChanged.connect(self._sync_ok)
+        self._sync_ok()
+        self.title_edit.setFocus()
+
+    def _sync_ok(self) -> None:
+        self.ok_button.setEnabled(bool(self.title_edit.text().strip()))
+
+    def values(self) -> dict:
+        return {
+            "rank": self.rank.value(),
+            "title": self.title_edit.text().strip(),
+            "artist": self.artist_edit.text().strip(),
+            "last_week": self.last_week.value() or None,
+            "peak_pos": self.peak.value() or None,
+            "weeks_on_chart": self.weeks.value() or None,
+        }
+
+
 class ChartsView(BaseView):
     title_text = "Charts"
 
@@ -366,6 +443,22 @@ class ChartsView(BaseView):
             actions.addWidget(b)
         actions.addStretch(1)
         layout.addLayout(actions)
+
+        # 2026-10-03, James: "I would like to be able to edit my Chart
+        # songs" - fix one edition's positions in place (a row the CSV
+        # was missing, a typo) rather than re-importing it.
+        edit_actions = QHBoxLayout()
+        edit_actions.setSpacing(8)
+        self.add_entry_btn = TouchButton("Add song…")
+        self.add_entry_btn.clicked.connect(self.add_entry)
+        self.edit_entry_btn = TouchButton("Edit song…")
+        self.edit_entry_btn.clicked.connect(self.edit_entry)
+        self.delete_entry_btn = TouchButton("Remove song")
+        self.delete_entry_btn.clicked.connect(self.delete_entry)
+        for b in (self.add_entry_btn, self.edit_entry_btn, self.delete_entry_btn):
+            edit_actions.addWidget(b)
+        edit_actions.addStretch(1)
+        layout.addLayout(edit_actions)
 
         self.entry_list = TouchList(row_height=76)
         # 2026-09-17 follow-up, James: a single click used to both select
@@ -543,6 +636,8 @@ class ChartsView(BaseView):
         self.delete_issue_btn.setEnabled(self._issue_id is not None)
         self.fix_match_btn.setEnabled(self._issue_id is not None)
         self.unmatched_only.setEnabled(self._issue_id is not None)
+        for b in (self.add_entry_btn, self.edit_entry_btn, self.delete_entry_btn):
+            b.setEnabled(self._issue_id is not None)
 
     def _load_folder_detail(self, folder_id: int) -> None:
         with self.ctx.session() as session:
@@ -802,6 +897,119 @@ class ChartsView(BaseView):
         # already set up to react to it (see import_csv's own use below).
         self.ctx.libraryChanged.emit()
         self._load_entries()
+
+    # -- editing positions (2026-10-03) ---------------------------------------
+
+    def _ask_entry(self, heading: str, **initial) -> Optional[dict]:
+        """Show ChartEntryDialog; the values entered, or None if cancelled.
+        Its own method so tests can answer it."""
+        dialog = ChartEntryDialog(self, heading, **initial)
+        return dialog.values() if dialog.exec() == QDialog.Accepted else None
+
+    def _confirm(self, title: str, text: str) -> bool:
+        return QMessageBox.question(self, title, text) == QMessageBox.Yes
+
+    def _select_entry(self, entry_id: Optional[int]) -> None:
+        for row in range(self.entry_list.count()):
+            payload = self.entry_list.payload_at(row) or {}
+            if payload.get("entry_id") == entry_id:
+                self.entry_list.setCurrentRow(row)
+                self.entry_list.scrollToItem(self.entry_list.item(row))
+                return
+
+    def _after_entry_change(self, entry_id: Optional[int] = None) -> None:
+        # just this edition's list - same as "Fix match…"; a full refresh()
+        # would rebuild the tree and jump a chart selection back to its
+        # latest edition
+        self._load_entries()
+        self._select_entry(entry_id)
+
+    def add_entry(self) -> None:
+        """Add a song to the edition on screen, at its first missing
+        position by default (#40 when only #40 is missing)."""
+        if self._issue_id is None:
+            self.ctx.notify("Select a chart edition first")
+            return
+        with self.ctx.session() as session:
+            rank = chart_svc.suggested_rank(session, self._issue_id)
+        values = self._ask_entry("Add song", rank=rank)
+        if values is None:
+            return
+        entry_id = self._save_entry(None, values)
+        if entry_id is not None:
+            self.ctx.notify(f"Added #{values['rank']} {values['title']}")
+            self._after_entry_change(entry_id)
+
+    def edit_entry(self) -> None:
+        payload = self.entry_list.current_payload()
+        entry_id = payload.get("entry_id") if payload else None
+        if entry_id is None:
+            self.ctx.notify("Select a position first")
+            return
+        with self.ctx.session() as session:
+            entry = session.get(ChartEntry, entry_id)
+            if entry is None:
+                return
+            initial = dict(
+                rank=entry.rank, title=entry.title, artist=entry.artist_name,
+                last_week=entry.last_week, peak_pos=entry.peak_pos,
+                weeks_on_chart=entry.weeks_on_chart,
+            )
+        values = self._ask_entry("Edit song", **initial)
+        if values is None:
+            return
+        if self._save_entry(entry_id, values) is not None:
+            self._after_entry_change(entry_id)
+
+    def _save_entry(self, entry_id: Optional[int], values: dict) -> Optional[int]:
+        """Add (entry_id None) or update a position. When the position asked
+        for is held by another song, ask before sliding the others along.
+        Returns the saved entry's id, or None if nothing was saved."""
+        shift = False
+        while True:
+            try:
+                with self.ctx.session() as session:
+                    if entry_id is None:
+                        entry = chart_svc.add_entry(session, self._issue_id, shift=shift, **values)
+                    else:
+                        entry = chart_svc.update_entry(session, entry_id, shift=shift, **values)
+                    return entry.id
+            except chart_svc.RankTaken as taken:
+                if shift:
+                    return None
+                verb = "down" if entry_id is None else "along"
+                if not self._confirm(
+                    "Position taken",
+                    f"#{taken.rank} is already {taken.holder}.\n\n"
+                    f"Put “{values['title']}” at #{taken.rank} and move the "
+                    f"songs after it {verb} one place?",
+                ):
+                    return None
+                shift = True
+            except ValueError as exc:
+                QMessageBox.warning(self, "Can't save", str(exc))
+                return None
+
+    def delete_entry(self) -> None:
+        payload = self.entry_list.current_payload()
+        entry_id = payload.get("entry_id") if payload else None
+        if entry_id is None:
+            self.ctx.notify("Select a position first")
+            return
+        with self.ctx.session() as session:
+            entry = session.get(ChartEntry, entry_id)
+            if entry is None:
+                return
+            label = f"#{entry.rank} {entry.title} — {entry.artist_name}"
+        if not self._confirm(
+            "Remove song",
+            f"Remove {label} from this edition?\n\nThe other positions keep "
+            "their numbers, and the song stays in your library.",
+        ):
+            return
+        with self.ctx.session() as session:
+            chart_svc.delete_entry(session, entry_id)
+        self._after_entry_change()
 
     def _search_tracks_for_match(self, artist_query: str, track_query: str) -> list[dict]:
         with self.ctx.session() as session:
