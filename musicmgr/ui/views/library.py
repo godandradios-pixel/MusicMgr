@@ -241,7 +241,11 @@ class LibraryView(BaseView):
         # picker there since 2026-09-05, so nothing else shared it). It now
         # sits at the right end of the search row, like Title Details'
         # "Videos only" checkbox, and the grids' own header row is hidden.
-        for grid in (self.album_grid, self.artist_grid):
+        #
+        # Same for Tracks ("Do the same for Tracks"): its "N albums · N
+        # tracks" count moves up too, and its "Album and Tracks" heading
+        # goes with the hidden row - the sidebar already says Tracks.
+        for grid in (self.album_grid, self.artist_grid, self.track_panel):
             self.header_controls.addWidget(grid.count_label)
             grid.header_bar.setVisible(False)
         self.panes.currentChanged.connect(self._sync_grid_counts)
@@ -259,10 +263,11 @@ class LibraryView(BaseView):
 
     def _sync_grid_counts(self, _index: int = 0) -> None:
         """Show the count for whichever grid is on screen - Albums or
-        Artists - and neither on the detail pages, Tracks or Title Details."""
+        Artists or Tracks - and none on the detail pages or Title Details."""
         current = self.panes.currentIndex()
         self.album_grid.count_label.setVisible(current == PANE_ALBUM_GRID)
         self.artist_grid.count_label.setVisible(current == PANE_ARTIST_GRID)
+        self.track_panel.count_label.setVisible(current == PANE_TRACKS)
 
     # -- construction ---------------------------------------------------------
 

@@ -423,7 +423,11 @@ class AlbumTracksPanel(QWidget):
         self.count_label = QLabel("")
         self.count_label.setObjectName("Dim")
         head.addWidget(self.count_label)
-        root.addLayout(head)
+        # In its own widget (2026-10-03) so LibraryView can move count_label
+        # into its search row and hide this row, same as the Albums grid.
+        self.header_bar = QWidget()
+        self.header_bar.setLayout(head)
+        root.addWidget(self.header_bar)
 
         self.list = QListWidget()
         self.list.setObjectName("Document")
