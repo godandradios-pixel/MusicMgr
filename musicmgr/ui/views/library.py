@@ -235,6 +235,18 @@ class LibraryView(BaseView):
         self.panes.addWidget(self._build_track_list())      # 5
         self.body().addWidget(self.panes, 1)
 
+        # 2026-10-03, James: "on the Albums page, let's move up the 6365
+        # albums to free up an entire row of space". The grids' "N albums"
+        # / "N artists" count had a row to itself above the tiles (no sort
+        # picker there since 2026-09-05, so nothing else shared it). It now
+        # sits at the right end of the search row, like Title Details'
+        # "Videos only" checkbox, and the grids' own header row is hidden.
+        for grid in (self.album_grid, self.artist_grid):
+            self.header_controls.addWidget(grid.count_label)
+            grid.header_bar.setVisible(False)
+        self.panes.currentChanged.connect(self._sync_grid_counts)
+        self._sync_grid_counts()
+
         ctx.libraryChanged.connect(self._on_library_changed)
         ctx.openArtistRequested.connect(self._open_artist_from_elsewhere)
         ctx.openReleaseRequested.connect(self._open_release_from_elsewhere)
@@ -244,6 +256,13 @@ class LibraryView(BaseView):
         ctx.openReleaseFromMissingMetadataRequested.connect(
             self._open_release_from_missing_metadata
         )
+
+    def _sync_grid_counts(self, _index: int = 0) -> None:
+        """Show the count for whichever grid is on screen - Albums or
+        Artists - and neither on the detail pages, Tracks or Title Details."""
+        current = self.panes.currentIndex()
+        self.album_grid.count_label.setVisible(current == PANE_ALBUM_GRID)
+        self.artist_grid.count_label.setVisible(current == PANE_ARTIST_GRID)
 
     # -- construction ---------------------------------------------------------
 

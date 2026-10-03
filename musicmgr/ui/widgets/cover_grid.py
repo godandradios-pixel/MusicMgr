@@ -455,7 +455,14 @@ class CoverGrid(QWidget):
             self.next_btn.clicked.connect(lambda: self._page(1))
             bar.addWidget(self.prev_btn)
             bar.addWidget(self.next_btn)
-        root.addLayout(bar)
+        # In its own widget (2026-10-03) so a caller that moves count_label
+        # elsewhere can hide the then-empty row - see LibraryView, which
+        # puts the Albums/Artists count in its search row to free a row
+        # of tiles.
+        self.header_bar = QWidget()
+        bar.setContentsMargins(0, 0, 0, 0)
+        self.header_bar.setLayout(bar)
+        root.addWidget(self.header_bar)
 
         body = QHBoxLayout()
         body.setSpacing(6)
