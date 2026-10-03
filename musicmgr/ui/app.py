@@ -48,10 +48,12 @@ from ..version import RELEASE_VERSION
 #: Title Details used to nest under one collapsible "Library" button (see
 #: LIBRARY_MODE_KEYS below); each now gets its own top-level slot here,
 #: in the exact order James asked for.
+#: 2026-10-03 - James: "Let's move Jukebox to the top left menu option" -
+#: it's also the page MusicMgr opens on, so it leads the rail.
 NAV_ITEMS = [
+    ("jukebox", "Jukebox"),
     ("artist", "Artists"),
     ("album", "Albums"),
-    ("jukebox", "Jukebox"),
     ("track", "Tracks"),
     ("details", "Title Details"),
     # Videos briefly got a real sidebar entry here (2026-09-15), reverted

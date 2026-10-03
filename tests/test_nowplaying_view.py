@@ -568,11 +568,18 @@ class TestRemoveSelected:
 
 
 class TestButtons:
+    def test_the_chip_row_sits_in_the_page_header(self, view):
+        # 2026-10-03: Up next / Lyrics / Edit lyrics moved up beside "Back"
+        # so the queue and lyrics get that row back
+        assert view.header.indexOf(view.right_head) == 1
+        assert view.right_head.isAncestorOf(view.right_actions)
+        assert view.right_head.isAncestorOf(view.lyrics_panel.edit_button)
+
     def test_the_back_button_emits_now_playing_back_requested(self, ctx, view):
         requests = []
         ctx.nowPlayingBackRequested.connect(lambda: requests.append(True))
 
-        view.header.itemAt(0).widget().click()
+        view.back_button.click()
 
         assert requests == [True]
 

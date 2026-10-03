@@ -112,7 +112,7 @@ class NowPlayingView(BaseView):
         # view choosing a target itself: it doesn't know what was on screen
         # before it, only MainWindow does (see MainWindow.navigate/
         # _go_back_from_nowplaying).
-        back = TouchButton("‹ Back")
+        back = self.back_button = TouchButton("‹ Back")
         back.clicked.connect(ctx.nowPlayingBackRequested.emit)
         self.header.insertWidget(0, back)
 
@@ -274,7 +274,28 @@ class NowPlayingView(BaseView):
         self.right_actions.addWidget(lyrics_actions)  # 1
 
         qhead.addWidget(self.right_actions)
-        right.addLayout(qhead)
+
+        # 2026-10-03 - James: "Can Up next, Lyrics and Edit lyrics pills be
+        # moved up to give us more space for the lyrics?" The chip row sits
+        # in the page header now, beside "‹ Back" / "Now Playing", instead
+        # of taking a row of its own above the queue/lyrics. The header is
+        # rebuilt as two columns with the same 2:3 split and 28px gap as
+        # `row` below, so the chips still line up over the right column.
+        self.right_head = QWidget()
+        self.right_head.setLayout(qhead)
+        qhead.setContentsMargins(0, 0, 0, 0)
+        while self.header.count():
+            self.header.takeAt(0)
+        head_left = QWidget()
+        hl_layout = QHBoxLayout(head_left)
+        hl_layout.setContentsMargins(0, 0, 0, 0)
+        hl_layout.setSpacing(12)
+        hl_layout.addWidget(back)
+        hl_layout.addWidget(self.title)
+        hl_layout.addStretch(1)
+        self.header.setSpacing(28)
+        self.header.addWidget(head_left, 2)
+        self.header.addWidget(self.right_head, 3)
 
         self.right_panes = QStackedWidget()
 
