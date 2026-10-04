@@ -24,14 +24,15 @@ news and American history, SW1 drama and comedy, SW2 crime and mystery,
 LW speeches, Paul Harvey and commercials. Shows already scanned move over
 once (services/otr.py:migrate_band_layout).
 
-Below the set, a card describes what's tuned in (or what the pointer rests
-on), with the actions that go with it.
+The page header says, in one line, what's tuned in (or what the pointer
+rests on) beyond what the player bar already shows, with the actions that
+go with it beside it. (Until 2026-10-03 this was a card under the set.)
 
 2026-10-03: FM/AM stations sit at the frequency in their name; Move ◀/▶
 only applies to internet-only stations (the others are placed by their
 frequency). The magic eye follows the stream's signal, and a station
 that's gone off the air is faded on the glass with a "Find a new link…"
-button on its card (ReplacementDialog).
+button in the header (ReplacementDialog).
 """
 
 from __future__ import annotations
@@ -45,12 +46,10 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMenu,
-    QProgressBar,
     QVBoxLayout,
     QWidget,
 )
@@ -62,7 +61,8 @@ from ...services import otr, stations
 from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS, make_compact
-from ..widgets.common import ChipButton, CoverArt, SearchBar, TouchButton, TouchList, dim_label
+from ..widgets.common import ChipButton, SearchBar, TouchButton, TouchList, dim_label
+from ..widgets.player_bar import ElidingLabel
 from ..widgets.radio_dial import BAND_KEYS, BANDS, BY_KEY, SIGNAL_NONE, RadioSet
 from .base import BaseView
 
@@ -545,6 +545,28 @@ class TunerView(BaseView):
         self.find_btn.clicked.connect(self.find_stations)
         self.rescan_btn = make_compact(TouchButton("Rescan shows"))
         self.rescan_btn.clicked.connect(self.rescan)
+
+        # 2026-10-03 - James: "Don't like the redundant 105.9 The X WXDX.
+        # Maybe we move the Band Rename Remove to the top and just eliminate
+        # that whole block to give more room for the radio dials". The info
+        # card under the set is gone: what it said that the player bar
+        # doesn't (the song a station is playing, an episode's broadcast
+        # date, off the air, what to do on an empty band) is one line in the
+        # page header, and its buttons sit beside it.
+        while self.header.count() > 1:          # keep the title, drop the stretch
+            self.header.takeAt(1)
+        self.status = ElidingLabel("")
+        self.status.setObjectName("Dim")
+        self.status.setMinimumWidth(120)
+        self.header.addWidget(self.status, 1)
+        self.actions = QHBoxLayout()
+        self.actions.setContentsMargins(0, 0, 0, 0)
+        self.actions.setSpacing(8)
+        actions_box = QWidget()
+        actions_box.setStyleSheet("background: transparent;")
+        actions_box.setLayout(self.actions)
+        self.header.addWidget(actions_box)
+        self.header.addSpacing(8)
         self.header.addWidget(self.find_btn)
         self.header.addWidget(self.rescan_btn)
 
@@ -556,42 +578,8 @@ class TunerView(BaseView):
         self.radio.contextRequested.connect(self._dial_menu)
         self.radio.set_volume(ctx.player.volume)
         self.body().addWidget(self.radio, 1)
-
-        # info card
-        card = QFrame()
-        card.setObjectName("Card")
-        cl = QHBoxLayout(card)
-        cl.setContentsMargins(16, 12, 16, 12)
-        cl.setSpacing(16)
-        self.cover = CoverArt(112)
-        cl.addWidget(self.cover, 0, Qt.AlignTop)
-        text = QVBoxLayout()
-        text.setSpacing(3)
-        self.info_name = QLabel("")
-        self.info_name.setStyleSheet("font-size: 22px; font-weight: 700;")
-        self.info_title = QLabel("")
-        self.info_title.setStyleSheet("font-size: 17px;")
-        self.info_title.setWordWrap(True)
-        self.info_sub = dim_label("")
-        self.info_sub.setWordWrap(True)
-        self.info_extra = dim_label("")
-        for w in (self.info_name, self.info_title, self.info_sub, self.info_extra):
-            text.addWidget(w)
-        self.progress = QProgressBar()
-        self.progress.setObjectName("ProgressWarm")
-        self.progress.setVisible(False)
-        self.progress.setMaximumHeight(8)
-        self.progress.setTextVisible(False)
-        text.addWidget(self.progress)
-        text.addStretch(1)
-        cl.addLayout(text, 1)
-        self.actions = QHBoxLayout()
-        self.actions.setSpacing(8)
-        actions_box = QWidget()
-        actions_box.setStyleSheet("background: transparent;")
-        actions_box.setLayout(self.actions)
-        cl.addWidget(actions_box, 0, Qt.AlignBottom)
-        self.body().addWidget(card, 0)
+        #: "Reading your radio programs…" while a rescan runs
+        self._scan_text = ""
 
         self.btn_listen = make_compact(TouchButton("Listen ▶", primary=True))
         self.btn_listen.clicked.connect(self._listen_pointed)
@@ -623,8 +611,6 @@ class TunerView(BaseView):
         self.btn_folder.clicked.connect(self.choose_folder)
         self.btn_starters = make_compact(TouchButton("Add old-time radio stations", primary=True))
         self.btn_starters.clicked.connect(self._add_starters)
-        self.btn_find = make_compact(TouchButton("Find stations…"))
-        self.btn_find.clicked.connect(self.find_stations)
         for b in self._all_buttons():
             self.actions.addWidget(b)
             b.setVisible(False)
@@ -764,7 +750,7 @@ class TunerView(BaseView):
         return (self.btn_listen, self.btn_episodes, self.btn_prev, self.btn_next,
                 self.btn_new_evening, self.btn_band, self.btn_rename, self.btn_move_left,
                 self.btn_move_right, self.btn_remove, self.btn_relink, self.btn_folder,
-                self.btn_starters, self.btn_find)
+                self.btn_starters)
 
     def _show_buttons(self, *buttons) -> None:
         for b in self._all_buttons():
@@ -789,11 +775,18 @@ class TunerView(BaseView):
         if kind:
             self._tune(kind, ident)
 
+    def _set_status(self, *parts: str, tip: str = "", warn: bool = False) -> None:
+        text = " · ".join(p for p in parts if p)
+        if self._scan_text:
+            text = self._scan_text
+        self.status.setText(text)
+        self.status.setToolTip(tip or text)
+        self.status.setStyleSheet(f"color: {COLORS['jukebox_key_hi']};" if warn else "")
+
     def _update_info(self) -> None:
         kind, ident, live = self._pointed()
         self._live = live
         band = self.radio.band
-        self.progress.setVisible(False)
         if not self._entries.get(band):
             self._empty_band(band)
         elif kind == "show":
@@ -803,43 +796,35 @@ class TunerView(BaseView):
         elif kind == "station":
             self._info_station(ident)
         else:
-            self.cover.set_source(None, "Radio")
-            self.info_name.setText(f"{BY_KEY[band].label} band")
-            self.info_title.setText("Tap a name on the lit band, drag the pointer, or turn the "
-                                    "TUNING knob.")
-            self.info_sub.setText(BAND_BLURBS.get(band, ""))
-            self.info_extra.setText("")
+            self._set_status(f"{BY_KEY[band].label} band — tap a name on the lit band, drag the "
+                             "pointer, or turn the TUNING knob")
             self._show_buttons()
-        if self._scan_thread is not None and self._scan_thread.isRunning():
-            self.progress.setVisible(True)
 
     def _empty_band(self, band: str) -> None:
-        self.cover.set_source(None, BY_KEY[band].label)
-        self.info_extra.setText("")
         with self.ctx.session() as s:
             root = otr.get_root(s)
             any_shows = bool(otr.list_shows(s))
+        label = BY_KEY[band].label
         if band in otr.STATION_BANDS:
-            self.info_name.setText(f"No stations on the {BY_KEY[band].label} band yet")
-            self.info_title.setText("Find internet stations in the free Radio Browser directory, "
-                                    "add one by its stream address, or start with a few "
-                                    "old-time radio stations.")
-            self.info_sub.setText(BAND_BLURBS[band])
-            self._show_buttons(self.btn_starters, self.btn_find)
+            self._set_status(f"No stations on the {label} band yet",
+                             "find some in the free Radio Browser directory",
+                             tip="Find internet stations in the free Radio Browser directory, "
+                                 "add one by its stream address, or start with a few old-time "
+                                 "radio stations.")
+            self._show_buttons(self.btn_starters)
             return
         if not any_shows:
-            self.info_name.setText("Old-time radio")
             if root:
-                self.info_title.setText(f"No shows found in {root}")
-                self.info_sub.setText("Each show should be a folder of episodes inside it.")
+                self._set_status(f"No shows found in {root}",
+                                 "each show should be a folder of episodes inside it")
             else:
-                self.info_title.setText("Choose the folder that holds your radio programs")
-                self.info_sub.setText("One folder per show (The Shadow, Lone Ranger, …).")
+                self._set_status("Choose the folder that holds your radio programs",
+                                 "one folder per show (The Shadow, Lone Ranger, …)")
             self._show_buttons(self.btn_folder)
             return
-        self.info_name.setText(f"Nothing on {BY_KEY[band].label} yet")
-        self.info_title.setText(BAND_BLURBS.get(band, ""))
-        self.info_sub.setText("Move a show or station here with its Band… button.")
+        self._set_status(f"Nothing on {label} yet",
+                         "move a show or station here with its Band… button",
+                         tip=BAND_BLURBS.get(band, ""))
         self._show_buttons()
 
     def _info_show(self, show_id: int) -> None:
@@ -854,48 +839,33 @@ class TunerView(BaseView):
                 ep = s.get(RadioEpisode, item.episode_id)
             if ep is None:
                 ep = otr.current_episode(s, show)
-            self.cover.set_source(show.cover_path, show.name)
-            self.info_name.setText(show.name)
-            self.info_title.setText(ep.title if ep else "")
             bits = []
             if ep is not None:
                 if ep.air_date:
-                    bits.append(f"Broadcast {otr.format_air_date(ep.air_date)}")
+                    bits.append(f"broadcast {otr.format_air_date(ep.air_date)}")
                 if ep.episode_no:
-                    bits.append(f"Episode {ep.episode_no}")
-            self.info_sub.setText(" · ".join(bits))
-            resume = ""
+                    bits.append(f"episode {ep.episode_no}")
+            heard_text = f"{heard:,} of {total:,} heard" if total else ""
             if not self._live and ep is not None and ep.position_ms:
-                resume = f" · picks up at {format_duration(ep.position_ms)}"
-            self.info_extra.setText(f"{heard:,} of {total:,} broadcasts heard{resume}")
-            self.progress.setVisible(total > 0)
-            self.progress.setRange(0, max(1, total))
-            self.progress.setValue(heard)
+                heard_text += f", picks up at {format_duration(ep.position_ms)}"
+            # the player bar already names what's playing; say the show
+            # only when the pointer rests on one that isn't on
+            self._set_status("" if self._live else show.name,
+                             ep.title if (ep and not self._live) else "",
+                             *bits, heard_text)
         if self._live:
             self._show_buttons(self.btn_episodes, self.btn_prev, self.btn_next, self.btn_band)
         else:
             self._show_buttons(self.btn_listen, self.btn_episodes, self.btn_band)
 
     def _info_onair(self) -> None:
-        item = self.ctx.player.current
         year = self.ctx.tuner.onair_year
-        self.info_extra.setText("Programs from your collection, with commercials and news "
-                                "bulletins between them")
+        tip = "Programs from your collection, with commercials and news bulletins between them"
         if not self._live:
-            self.cover.set_source(None, "On the Air")
-            self.info_name.setText("On the Air")
-            self.info_title.setText("A night of radio from your collection")
-            self.info_sub.setText("")
+            self._set_status("On the Air", "a night of radio from your collection", tip=tip)
             self._show_buttons(self.btn_listen)
             return
-        self.cover.set_source(item.cover_path if item else None, "On the Air")
-        self.info_name.setText(f"On the Air — an evening in {year}" if year else "On the Air")
-        if item is not None and item.kind == "episode":
-            self.info_title.setText(f"{item.artist}: {item.title}")
-            self.info_sub.setText(item.album)
-        else:
-            self.info_title.setText("")
-            self.info_sub.setText("")
+        self._set_status(f"On the Air — an evening in {year}" if year else "On the Air", tip=tip)
         self._show_buttons(self.btn_next, self.btn_new_evening)
 
     def _info_station(self, station_id: int) -> None:
@@ -906,19 +876,20 @@ class TunerView(BaseView):
             band = st.band if st.band in otr.STATION_BANDS else "fm"
             freq = stations.frequency(st.name, band)
             off_air = bool(st.off_air_since)
-            self.cover.set_source(st.favicon_path, st.name)
-            self.info_name.setText(st.name)
-            if off_air:
-                self.info_title.setText("Off the air — its stream stopped answering")
-            else:
-                self.info_title.setText(self._stream_title if self._live else "")
-            where = ""
-            if freq is not None:
-                where = f"{freq:g} {BY_KEY[band].unit}"
-            self.info_sub.setText(" · ".join(x for x in (
-                where, st.country, (st.codec or "").upper(),
-                f"{st.bitrate} kbps" if st.bitrate else "") if x))
-            self.info_extra.setText(st.homepage or "")
+            # (no frequency here - it's in the name, and placed on the glass)
+            detail = " · ".join(x for x in (
+                st.country, (st.codec or "").upper(),
+                f"{st.bitrate} kbps" if st.bitrate else "") if x)
+            tip = "\n".join(x for x in (st.name, detail, st.homepage or "") if x)
+            name = st.name
+        if off_air:
+            self._set_status(name, "off the air — its stream stopped answering",
+                             tip=tip, warn=True)
+        elif self._live:
+            # the player bar names the station; here, what it's playing
+            self._set_status(f"♪ {self._stream_title}" if self._stream_title else detail, tip=tip)
+        else:
+            self._set_status(name, detail, tip=tip)
         buttons = [self.btn_band, self.btn_rename]
         if freq is None:
             # placed by its frequency otherwise, so moving it means nothing
@@ -951,21 +922,19 @@ class TunerView(BaseView):
             return
         if self._scan_thread is not None and self._scan_thread.isRunning():
             return
-        self.info_extra.setText("Reading your radio programs…")
-        self.progress.setVisible(True)
-        self.progress.setRange(0, 0)
+        self._scan_text = "Reading your radio programs…"
+        self._update_info()
         self._scan_thread = OtrScanThread(root, self)
         self._scan_thread.progress.connect(self._on_scan_progress)
         self._scan_thread.finished_with.connect(self._on_scan_done)
         self._scan_thread.start()
 
     def _on_scan_progress(self, done: int, total: int, name: str) -> None:
-        self.progress.setRange(0, max(1, total))
-        self.progress.setValue(done)
-        self.info_extra.setText(f"Reading {name}… {done:,} of {total:,}")
+        self._scan_text = f"Reading {name}… {done:,} of {total:,}"
+        self.status.setText(self._scan_text)
 
     def _on_scan_done(self, result) -> None:
-        self.progress.setVisible(False)
+        self._scan_text = ""
         self.ctx.notify(f"Old-time radio: {result.summary()}" if result else
                         "Couldn't read the old-time radio folder")
         self._changed()

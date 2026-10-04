@@ -258,7 +258,7 @@ class TestRadioPage:
         view.refresh()
         return view
 
-    def test_station_card_shows_frequency_and_hides_move_for_it(self, ctx, db):
+    def test_frequency_station_hides_move(self, ctx, db):
         with db.session_scope() as s:
             f, loose = add(s, "102.5 WDVE").id, add(s, "Gold").id
         view = self.view(ctx)
@@ -266,7 +266,7 @@ class TestRadioPage:
         band, idx = view._locate("station", f)
         view.radio.set_tuned(band, idx, animate=False)
         view._update_info()
-        assert view.info_sub.text().startswith("102.5 MHz")
+        assert view.status.text() == "102.5 WDVE"
         assert not view.btn_move_left.isVisibleTo(view)
         band, idx = view._locate("station", loose)
         view.radio.set_tuned(band, idx, animate=False)
@@ -283,7 +283,7 @@ class TestRadioPage:
         view.set_band(band)
         view.radio.set_tuned(band, idx, animate=False)
         view._update_info()
-        assert view.info_title.text().startswith("Off the air")
+        assert "off the air" in view.status.text()
         assert view.btn_relink.isVisibleTo(view) and view.btn_listen.isVisibleTo(view)
 
     def test_replacement_dialog_saves_the_chosen_link(self, ctx, db, monkeypatch):
@@ -301,6 +301,28 @@ class TestRadioPage:
         assert replaced == [sid]
         with db.session_scope() as s:
             assert s.get(RadioStation, sid).stream_url == "http://new/x"
+
+    def test_card_is_gone_and_the_header_carries_the_actions(self, ctx, db):
+        # James: "Don't like the redundant 105.9 The X WXDX. Maybe we move the
+        # Band Rename Remove to the top and just eliminate that whole block"
+        from PySide6.QtWidgets import QFrame
+
+        with db.session_scope() as s:
+            sid = add(s, "105.9 The X WXDX").id
+        view = self.view(ctx)
+        assert not [f for f in view.findChildren(QFrame) if f.objectName() == "Card"]
+        band, idx = view._locate("station", sid)
+        view.set_band(band)
+        view.radio.set_tuned(band, idx, animate=False)
+        view._update_info()
+        header = [view.header.itemAt(i).widget() for i in range(view.header.count())]
+        actions_box = next(w for w in header if w is not None and w.isAncestorOf(view.btn_band))
+        assert actions_box.isAncestorOf(view.btn_rename) and actions_box.isAncestorOf(view.btn_remove)
+        # live: the player bar names the station, so the line doesn't repeat it
+        view._live = True
+        view._stream_title = "Foo Fighters - Everlong"
+        view._info_station(sid)
+        assert view.status.text() == "♪ Foo Fighters - Everlong"
 
     def test_eye_follows_the_player_only_for_stations(self, ctx, db):
         view = self.view(ctx)

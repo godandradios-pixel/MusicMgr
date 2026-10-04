@@ -350,9 +350,9 @@ class TestTunerPage:
         view._on_tune_requested("sw2", view.radio.labels("sw2").index("Shadow"))
         assert tuner.tuned == ("show", library["The Shadow"])
         assert view.radio.band == "sw2"
-        assert view.info_name.text() == "The Shadow"
-        assert view.info_title.text() == "Death House Rescue"
-        assert "September 26, 1937" in view.info_sub.text()
+        # playing: the player bar names the show; the header line adds the rest
+        assert "September 26, 1937" in view.status.text()
+        assert "The Shadow" not in view.status.text()
         assert view.btn_episodes.isVisibleTo(view)
 
     def test_renaming_a_station(self, ctx, tuner, library, db):
@@ -368,7 +368,7 @@ class TestTunerPage:
         assert view.btn_rename.isVisibleTo(view)
         view.rename_station("  WMMS  ")
         assert view.radio.labels("fm") == ["WQED Pittsburgh", "WMMS"]
-        assert view.info_name.text() == "WMMS"
+        assert view.status.text().startswith("WMMS")
         view.rename_station("   ")  # blank is ignored
         assert view.radio.labels("fm") == ["WQED Pittsburgh", "WMMS"]
         with db.session_scope() as s:
@@ -386,14 +386,14 @@ class TestTunerPage:
     def test_empty_fm_band_offers_stations(self, ctx, tuner, library):
         view = self.view(ctx)
         view.set_band("fm")
-        assert view.btn_starters.isVisibleTo(view) and view.btn_find.isVisibleTo(view)
+        assert view.btn_starters.isVisibleTo(view) and view.find_btn.isVisibleTo(view)
         assert view.station_band() == "fm"
 
     def test_empty_am_band_offers_stations_too(self, ctx, tuner, library):
         view = self.view(ctx)
         view.set_band("am")
-        assert view.btn_starters.isVisibleTo(view) and view.btn_find.isVisibleTo(view)
-        assert view.info_name.text() == "No stations on the AM band yet"
+        assert view.btn_starters.isVisibleTo(view) and view.find_btn.isVisibleTo(view)
+        assert view.status.text().startswith("No stations on the AM band yet")
         assert view.station_band() == "am"
         view.set_band("sw2")
         assert view.station_band() == "fm"
