@@ -267,7 +267,8 @@ class TestRadioSet:
     def test_static_loop_is_generated(self, tmp_path):
         path = radio_dial.make_static_wav(tmp_path / "static.wav", seconds=0.2)
         with wave.open(str(path)) as w:
-            assert w.getnframes() == int(0.2 * 22050)
+            assert w.getnframes() == int(0.2 * radio_dial.STATIC_RATE)
+            assert w.getnchannels() == 2
 
     def test_paints(self, qapp):
         w = radio_dial.RadioSet()

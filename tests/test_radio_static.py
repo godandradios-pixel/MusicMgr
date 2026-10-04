@@ -10,6 +10,9 @@ the Radio page passes reception to PlayerController.set_reception.
 
 from __future__ import annotations
 
+import wave
+
+import numpy as np
 import pytest
 from PySide6.QtTest import QTest
 
@@ -131,3 +134,61 @@ class TestPlayerAndPage:
         assert ctx.player.reception == pytest.approx(0.3)
         ctx.tuner._set_tuned("", 0)                # something else took over
         assert ctx.player.reception == 1.0
+
+
+class FakeEffect:
+    def __init__(self):
+        self.volume, self.playing = 0.0, False
+
+    def setVolume(self, v):
+        self.volume = v
+
+    def isPlaying(self):
+        return self.playing
+
+    def play(self):
+        self.playing = True
+
+    def stop(self):
+        self.playing = False
+
+
+class TestStaticSound:
+    """2026-10-04 (James: "can we put some radio static in there?"): the
+    first loop was about -40 dBFS and muffled, so it was hard to hear."""
+
+    def read(self, path):
+        with wave.open(str(path)) as w:
+            pcm = np.frombuffer(w.readframes(w.getnframes()), "<i2").reshape(-1, w.getnchannels())
+        return pcm / 32767
+
+    def test_loop_is_as_loud_as_a_station_and_seamless(self, tmp_path):
+        a = self.read(radio_dial.make_static_wav(tmp_path / "s.wav", seconds=1.0))
+        rms_db = 20 * np.log10(np.sqrt(np.mean(a ** 2)))
+        assert -19 < rms_db < -13
+        typical = np.abs(np.diff(a[:, 0])).mean()
+        assert abs(a[-1, 0] - a[0, 0]) < 4 * typical   # no click at the loop point
+
+    def test_hiss_is_bright_not_a_rumble(self, tmp_path):
+        a = self.read(radio_dial.make_static_wav(tmp_path / "s.wav", seconds=1.0))[:, 0]
+        spec = np.abs(np.fft.rfft(a))
+        freq = np.fft.rfftfreq(len(a), 1 / radio_dial.STATIC_RATE)
+        low = spec[freq < 150].mean()
+        mid = spec[(freq > 1000) & (freq < 4000)].mean()
+        assert mid > 2 * low
+
+    def test_new_file_name_so_the_old_quiet_loop_is_not_reused(self):
+        assert radio_dial.STATIC_FILE != "tuner_static.wav"
+
+    def test_static_between_stations_follows_the_volume_knob(self, qapp):
+        w = dial(qapp)
+        w.set_static_path(radio_dial.Path("unused.wav"))
+        w._static = FakeEffect()
+        w.set_volume(0.8)
+        drag_to(w, (w.positions()[1] + w.positions()[2]) / 2)
+        between = w._static.volume
+        assert w._static.playing
+        assert between >= 0.8 * radio_dial.STATIC_GAIN * 0.7   # (flutter takes some off)
+        drag_to(w, w.positions()[1] + 0.002)
+        assert w._static.volume < between / 2                 # almost gone on a station
+        w._drag = None

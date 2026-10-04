@@ -39,15 +39,15 @@ DWELL_MS and it's tuned in there and then, coming up through the static
 as the pointer closes on it, rather than only once you let go.
 Interaction: tap a station name or anywhere on the lit band, drag the
 pointer, drag the TUNING knob or scroll; let go and it settles on the
-nearest station and tunes in. Between stations there's a little tuning
-static (can be switched off). Everything is painted - no images shipped.
+nearest station and tunes in. Between stations there's tuning static,
+as loud as a station halfway between two (can be switched off; louder
+and brighter since 2026-10-04). Everything is painted - no images shipped.
 """
 
 from __future__ import annotations
 
 import math
 import random
-import struct
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -139,28 +139,76 @@ def station_positions(n: int) -> list[float]:
     return station_svc.even_positions(n)
 
 
-def make_static_wav(path: Path, seconds: float = 2.0, rate: int = 22050) -> Path:
-    """A loop of AM-band tuning static: filtered noise with crackle and a
-    faint heterodyne whistle, written once next to the library."""
-    rng = random.Random(7)
-    frames = bytearray()
-    lp = 0.0
-    n = int(seconds * rate)
-    for i in range(n):
-        white = rng.uniform(-1, 1)
-        lp = lp * 0.82 + white * 0.18
-        sample = lp * 0.55
-        if rng.random() < 0.0015:
-            sample += rng.choice((-1, 1)) * rng.uniform(0.3, 0.8)
-        sample += 0.05 * math.sin(2 * math.pi * (1800 + 300 * math.sin(i / rate * 3)) * i / rate)
-        edge = min(1.0, i / 600, (n - i) / 600)
-        frames += struct.pack("<h", int(max(-1, min(1, sample * edge)) * 12000))
+#: the generated static loop; the name carries a version so a set that
+#: kept an older, quieter loop next to its library makes the new one
+STATIC_FILE = "tuner_static_v2.wav"
+STATIC_RATE = 44100
+#: static loudness between stations, relative to the VOLUME knob
+STATIC_GAIN = 0.85
+
+
+def make_static_wav(path: Path, seconds: float = 3.0, rate: int = STATIC_RATE) -> Path:
+    """A loop of AM-band tuning static, written once next to the library.
+
+    2026-10-04 (James: "can we put some radio static in there?"): the first
+    loop sat around -40 dBFS and was filtered down to a dull rumble, so
+    under a station it was all but inaudible. This one is a brighter hiss
+    (band-passed roughly 200 Hz to 5 kHz, the way an AM set sounds between
+    stations) with a slow breathing swell, crackles and a faint heterodyne
+    whistle, levelled to about -16 dBFS RMS - as loud as a station - and
+    stereo 16-bit at 44.1 kHz, which every sound device takes. It loops
+    without a seam: the filters run over two passes of the same noise and
+    the second pass is kept, and the swell and whistle complete whole
+    cycles within the loop.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    n = max(1, int(seconds * rate))
+    t = np.arange(n) / rate
+    out = np.empty((n, 2))
+    for ch in range(2):
+        white = rng.uniform(-1.0, 1.0, n)
+        x = np.concatenate([white, white])
+        # one-pole high-pass (~200 Hz) then two one-pole low-passes (~5 kHz)
+        a_hp = math.exp(-2 * math.pi * 200 / rate)
+        a_lp = math.exp(-2 * math.pi * 5000 / rate)
+        y = []
+        hp = lp1 = lp2 = 0.0
+        prev = 0.0
+        b_lp = 1 - a_lp
+        for v in x.tolist():
+            hp = a_hp * (hp + v - prev)
+            prev = v
+            lp1 = lp1 * a_lp + hp * b_lp
+            lp2 = lp2 * a_lp + lp1 * b_lp
+            y.append(lp2)
+        out[:, ch] = y[n:]
+    # the two channels share most of the hiss, with a little width
+    mid = out.mean(axis=1, keepdims=True)
+    out = 0.8 * mid + 0.2 * out
+    # a slow swell, whole cycles in the loop
+    out *= (0.85 + 0.15 * np.sin(2 * math.pi * 2 * t / seconds))[:, None]
+    # crackle: short decaying pops
+    for start in rng.choice(n, size=int(seconds * 9), replace=False):
+        length = min(n - start, int(rate * rng.uniform(0.002, 0.012)))
+        pop = rng.uniform(-1, 1, length) * np.exp(-np.arange(length) / (length / 4 + 1))
+        out[start:start + length] += (pop * rng.uniform(0.6, 1.4))[:, None] * out.std() * 4
+    # a faint heterodyne whistle drifting around 1.8 kHz (phase wraps with the loop)
+    wobble = 300 * np.sin(2 * math.pi * 1 * t / seconds)
+    phase = 2 * math.pi * np.cumsum(1800 + wobble) / rate
+    phase *= round(phase[-1] / (2 * math.pi)) * 2 * math.pi / phase[-1]
+    rms = float(np.sqrt(np.mean(out ** 2))) or 1.0
+    out = out / rms * 10 ** (-16 / 20)
+    out += (0.025 * np.sin(phase))[:, None]
+    out = np.clip(out, -0.98, 0.98)
+    pcm = (out * 32767).astype("<i2")
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
+        w.setnchannels(2)
         w.setsampwidth(2)
         w.setframerate(rate)
-        w.writeframes(bytes(frames))
+        w.writeframes(pcm.tobytes())
     return path
 
 
@@ -549,10 +597,10 @@ class RadioSet(QWidget):
         if effect is None:
             return
         # the hiss rises as the playing station fades, and wavers against it
-        level = max((1.0 - self._closeness()) ** 0.8, 1.0 - self._reception) * 0.35
+        level = max((1.0 - self._closeness()) ** 0.8, 1.0 - self._reception)
         if wobble:
             level *= 0.75 + 0.5 * wobble
-        effect.setVolume(min(0.5, level) * self._volume)
+        effect.setVolume(min(1.0, level * STATIC_GAIN) * self._volume)
         if not effect.isPlaying():
             effect.play()
         self._static_off.stop()

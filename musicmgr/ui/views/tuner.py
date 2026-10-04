@@ -63,7 +63,7 @@ from ..context import AppContext
 from ..theme import COLORS, make_compact
 from ..widgets.common import ChipButton, SearchBar, TouchButton, TouchList, dim_label
 from ..widgets.player_bar import ElidingLabel
-from ..widgets.radio_dial import BAND_KEYS, BANDS, BY_KEY, SIGNAL_NONE, RadioSet
+from ..widgets.radio_dial import BAND_KEYS, BANDS, BY_KEY, SIGNAL_NONE, STATIC_FILE, RadioSet
 from .base import BaseView
 
 log = logging.getLogger(__name__)
@@ -571,7 +571,7 @@ class TunerView(BaseView):
         self.header.addWidget(self.rescan_btn)
 
         self.radio = RadioSet()
-        self.radio.set_static_path(config.DATA_DIR / "tuner_static.wav")
+        self.radio.set_static_path(config.DATA_DIR / STATIC_FILE)
         self.radio.tuneRequested.connect(self._on_tune_requested)
         self.radio.bandRequested.connect(self.set_band)
         self.radio.volumeRequested.connect(ctx.player.set_volume)
