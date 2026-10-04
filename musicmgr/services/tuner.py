@@ -16,6 +16,12 @@ Three kinds of thing sit on the dial:
 
 Anything else played from elsewhere in the app simply takes over the
 player; the dial stays where it was.
+
+A station whose stream drops (2026-10-03) is retuned once on its own, the
+way you'd nudge the dial; if it still won't come in it's marked off the
+air (RadioStation.off_air_since) and the Radio page offers to look up a
+new link. A station that's stuck connecting or buffering for
+STALL_TIMEOUT_MS counts as dropped too.
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ import logging
 import random
 from typing import Optional
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from ..db.models import RadioEpisode, RadioShow, RadioStation, Setting
 from ..db.session import session_scope
@@ -40,6 +46,11 @@ SOURCE_STATION = "station"
 SAVE_EVERY_MS = 10_000
 ON_AIR_REFILL_WHEN_LEFT = 2
 
+#: a stream still connecting/buffering after this long counts as lost
+STALL_TIMEOUT_MS = 20_000
+#: wait this long before the one automatic retune
+RETUNE_DELAY_MS = 2_500
+
 #: where the dial was left: "band|kind|id" in the settings table
 LAST_TUNED_KEY = "tuner_last"
 
@@ -51,6 +62,8 @@ class TunerController(QObject):
     #: on-air: the evening's year changed (0 = unknown)
     onAirYearChanged = Signal(int)
     notified = Signal(str)
+    #: a station went off the air (True) or came back (False)
+    stationAirChanged = Signal(int, bool)
 
     def __init__(self, player, parent=None) -> None:
         super().__init__(parent)
@@ -68,6 +81,16 @@ class TunerController(QObject):
         player.queueChanged.connect(self._check)
         player.playbackStateChanged.connect(self._on_state)
         player.itemFinished.connect(self._on_item_finished)
+        #: the station already retuned once since it was last heard fine
+        self._retried: Optional[int] = None
+        self._stall = QTimer(self)
+        self._stall.setSingleShot(True)
+        self._stall.setInterval(STALL_TIMEOUT_MS)
+        self._stall.timeout.connect(lambda: self._on_signal("lost"))
+        self._retune_timer = QTimer(self)
+        self._retune_timer.setSingleShot(True)
+        self._retune_timer.timeout.connect(self._retune)
+        player.signalChanged.connect(self._on_signal)
 
     # -- what's tuned -----------------------------------------------------
 
@@ -159,7 +182,10 @@ class TunerController(QObject):
         self.onAirYearChanged.emit(state.year or 0)
         return True
 
-    def tune_station(self, station_id: int) -> bool:
+    def tune_station(self, station_id: int, _retune: bool = False) -> bool:
+        if not _retune:
+            self._retried = None
+            self._retune_timer.stop()
         with session_scope() as session:
             st = session.get(RadioStation, station_id)
             if st is None:
@@ -175,6 +201,63 @@ class TunerController(QObject):
             threading.Thread(target=stations.register_click, args=(uuid,), daemon=True).start()
         return True
 
+    def step_station(self, delta: int) -> bool:
+        """The player bar's previous/next while a station is on: the next
+        station along the same band, in the order the dial shows them,
+        wrapping round at the ends."""
+        kind, ident = self._tuned
+        if kind != "station":
+            return False
+        with session_scope() as session:
+            target = stations.neighbour(session, ident, delta)
+        return target is not None and self.tune_station(target)
+
+    # -- signal -------------------------------------------------------------
+
+    def _on_signal(self, level: str) -> None:
+        kind, ident = self._tuned
+        if kind != "station":
+            self._stall.stop()
+            return
+        if level in ("connecting", "buffering"):
+            if not self._stall.isActive():
+                self._stall.start()
+            return
+        self._stall.stop()
+        if level == "good":
+            self._retried = None
+            self._mark_off_air(ident, False)
+        elif level == "lost":
+            if self._retune_timer.isActive():
+                return
+            if self._retried != ident:
+                self._retried = ident
+                self.notified.emit("Lost the signal - retuning…")
+                self._retune_timer.start(RETUNE_DELAY_MS)
+                return
+            self.player.stop()
+            if self._mark_off_air(ident, True):
+                with session_scope() as session:
+                    st = session.get(RadioStation, ident)
+                    name = st.name if st else "The station"
+                self.notified.emit(f"{name} seems to be off the air - its stream isn't "
+                                   "answering. Try Find a new link… on the Radio page.")
+
+    def _retune(self) -> None:
+        kind, ident = self._tuned
+        if kind == "station":
+            self.tune_station(ident, _retune=True)
+
+    def _mark_off_air(self, station_id: int, off: bool) -> bool:
+        try:
+            with session_scope() as session:
+                changed = stations.set_off_air(session, station_id, off)
+        except Exception:  # pragma: no cover
+            return False
+        if changed:
+            self.stationAirChanged.emit(station_id, off)
+        return changed
+
     # -- keeping track ----------------------------------------------------
 
     def _check(self) -> None:
@@ -189,6 +272,8 @@ class TunerController(QObject):
         )
         if kind and (not still_ours or not self.player.queue):
             self._onair = None
+            self._stall.stop()
+            self._retune_timer.stop()
             self._tuned = ("", 0)
             self.tunedChanged.emit("", 0)
             return

@@ -26,6 +26,12 @@ once (services/otr.py:migrate_band_layout).
 
 Below the set, a card describes what's tuned in (or what the pointer rests
 on), with the actions that go with it.
+
+2026-10-03: FM/AM stations sit at the frequency in their name; Move ◀/▶
+only applies to internet-only stations (the others are placed by their
+frequency). The magic eye follows the stream's signal, and a station
+that's gone off the air is faded on the glass with a "Find a new link…"
+button on its card (ReplacementDialog).
 """
 
 from __future__ import annotations
@@ -57,7 +63,7 @@ from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS, make_compact
 from ..widgets.common import ChipButton, CoverArt, SearchBar, TouchButton, TouchList, dim_label
-from ..widgets.radio_dial import BAND_KEYS, BANDS, BY_KEY, RadioSet
+from ..widgets.radio_dial import BAND_KEYS, BANDS, BY_KEY, SIGNAL_NONE, RadioSet
 from .base import BaseView
 
 log = logging.getLogger(__name__)
@@ -130,6 +136,21 @@ class StationSearchThread(QThread):
     def run(self) -> None:  # pragma: no cover - network
         try:
             self.finished_with.emit(stations.search(self.text, self.params), "")
+        except Exception as exc:
+            self.finished_with.emit([], str(exc))
+
+
+class ReplacementSearchThread(QThread):
+    finished_with = Signal(object, str)  # list[Found], error text
+
+    def __init__(self, name: str, rb_uuid: Optional[str], url: str, parent=None) -> None:
+        super().__init__(parent)
+        self.name, self.rb_uuid, self.url = name, rb_uuid, url
+
+    def run(self) -> None:  # pragma: no cover - network
+        try:
+            self.finished_with.emit(
+                stations.find_replacements(self.name, self.rb_uuid, self.url), "")
         except Exception as exc:
             self.finished_with.emit([], str(exc))
 
@@ -250,6 +271,107 @@ class EpisodesDialog(QDialog):
         if payload and payload.get("episode_id") is not None:
             self.episodeChosen.emit(payload["episode_id"])
             self.accept()
+
+
+class ReplacementDialog(QDialog):
+    """A new stream link for a station that's gone off the air (2026-10-03):
+    the same directory entry again if the station has moved its stream,
+    then stations found by its call letters and name. Choosing one keeps
+    the station's name, band, place and logo and tunes it in."""
+
+    #: a link was chosen and saved - tune the station in
+    replaced = Signal(int)
+    #: tests switch the directory lookup off
+    auto_search = True
+
+    def __init__(self, ctx: AppContext, station_id: int, parent=None) -> None:
+        super().__init__(parent)
+        self.ctx = ctx
+        self.station_id = station_id
+        with ctx.session() as s:
+            st = s.get(RadioStation, station_id)
+            self.name = st.name if st else ""
+            self.url = st.stream_url if st else ""
+            rb_uuid = st.rb_uuid if st else None
+        self.setWindowTitle(f"New link — {self.name}")
+        self.setMinimumSize(760, 560)
+        self._results: list[stations.Found] = []
+        layout = QVBoxLayout(self)
+        head = QLabel(f"Find a new link for {self.name}")
+        head.setObjectName("Title")
+        layout.addWidget(head)
+        layout.addWidget(dim_label(
+            "Its stream stopped answering. These are the same station, or ones with the same "
+            "call letters or name, from the free Radio Browser directory. The name, band and "
+            "place on the dial stay as they are."))
+        self.status = dim_label("Searching…")
+        layout.addWidget(self.status)
+        self.list = TouchList()
+        self.list.currentItemChanged.connect(lambda *_: self._sync())
+        self.list.itemActivatedPayload.connect(lambda _p: self._use())
+        layout.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        self.use_btn = TouchButton("Use this link", primary=True)
+        self.use_btn.clicked.connect(self._use)
+        paste = TouchButton("Paste an address…")
+        paste.clicked.connect(self._paste)
+        row.addWidget(self.use_btn)
+        row.addWidget(paste)
+        row.addStretch(1)
+        close = TouchButton("Close")
+        close.clicked.connect(self.reject)
+        row.addWidget(close)
+        layout.addLayout(row)
+        self._sync()
+        self._thread = ReplacementSearchThread(self.name, rb_uuid, self.url, self)
+        self._thread.finished_with.connect(self.show_results)
+        if self.auto_search:
+            self._thread.start()
+
+    def show_results(self, results, error: str = "") -> None:
+        if error and not results:
+            self.status.setText(f"Couldn't reach the station directory ({error}).")
+            return
+        self._results = list(results)
+        self.status.setText(f"{len(self._results)} possible links" if self._results else
+                            "Nothing found — paste the station's stream address instead.")
+        self.list.set_rows([{
+            "primary": f.name,
+            "secondary": " · ".join(x for x in (f.detail, f.tags[:60]) if x),
+            "trail": f"{f.votes:,} likes" if f.votes else "",
+            "index": i,
+        } for i, f in enumerate(self._results)])
+        if self._results:
+            self.list.setCurrentRow(0)
+        self._sync()
+
+    def _sync(self) -> None:
+        self.use_btn.setEnabled(bool(self.list.current_payload()))
+
+    def _use(self) -> None:
+        payload = self.list.current_payload() or {}
+        i = payload.get("index")
+        if i is None or i >= len(self._results):
+            return
+        self.use(self._results[i])
+
+    def use(self, found: "stations.Found") -> None:
+        with self.ctx.session() as s:
+            stations.replace_link(s, self.station_id, found)
+            s.commit()
+        self.replaced.emit(self.station_id)
+        self.accept()
+
+    def _paste(self) -> None:  # pragma: no cover - dialog
+        url, ok = QInputDialog.getText(self, "New link", "Stream address (http://…):")
+        if ok and url.strip().lower().startswith(("http://", "https://")):
+            self.use(stations.Found(uuid="", name=self.name, url=url.strip()))
+
+    def done(self, result: int) -> None:  # noqa: D102
+        if self._thread.isRunning():
+            self._thread.finished_with.disconnect()
+            self._thread.wait(100)
+        super().done(result)
 
 
 class StationSearchDialog(QDialog):
@@ -417,6 +539,7 @@ class TunerView(BaseView):
         self._stream_title = ""
         self._initialised = False
         self._live = False
+        self._off_air: set[int] = set()
 
         self.find_btn = make_compact(TouchButton("Find stations…"))
         self.find_btn.clicked.connect(self.find_stations)
@@ -493,6 +616,9 @@ class TunerView(BaseView):
         self.btn_remove = make_compact(TouchButton("Remove"))
         self.btn_remove.setToolTip("Take this station off the dial")
         self.btn_remove.clicked.connect(self._remove_station)
+        self.btn_relink = make_compact(TouchButton("Find a new link…", primary=True))
+        self.btn_relink.setToolTip("Look up a working stream for this station")
+        self.btn_relink.clicked.connect(self.find_new_link)
         self.btn_folder = make_compact(TouchButton("Choose folder…", primary=True))
         self.btn_folder.clicked.connect(self.choose_folder)
         self.btn_starters = make_compact(TouchButton("Add old-time radio stations", primary=True))
@@ -509,6 +635,8 @@ class TunerView(BaseView):
         ctx.player.streamTitleChanged.connect(self._on_stream_title)
         ctx.player.playbackStateChanged.connect(self._on_state)
         ctx.player.volumeChanged.connect(self.radio.set_volume)
+        ctx.player.signalChanged.connect(lambda _l: self._sync_signal())
+        ctx.tuner.stationAirChanged.connect(lambda _id, _off: self._changed())
 
     # -- setup -------------------------------------------------------------
 
@@ -555,6 +683,7 @@ class TunerView(BaseView):
 
     def _rebuild(self) -> None:
         entries: dict[str, list[tuple[str, int, str]]] = {k: [] for k in BAND_KEYS}
+        off_air: set[int] = set()
         with self.ctx.session() as s:
             shows = otr.list_shows(s)
             if shows:
@@ -565,9 +694,14 @@ class TunerView(BaseView):
             for st in stations.dial(s):
                 band = st.band if st.band in entries else "fm"
                 entries[band].append(("station", st.id, st.name))
+                if st.off_air_since:
+                    off_air.add(st.id)
         self._entries = entries
+        self._off_air = off_air
         for band, items in entries.items():
-            self.radio.set_entries(band, [label for _, _, label in items])
+            self.radio.set_entries(band, [label for _, _, label in items],
+                                   faded=[i for i, (k, n, _) in enumerate(items)
+                                          if k == "station" and n in off_air])
 
     def _locate(self, kind: str, ident: int) -> tuple[str, int]:
         """(band, index) of a show/station on the dial, or ("", -1)."""
@@ -608,7 +742,14 @@ class TunerView(BaseView):
     def _on_tuned(self, kind: str, ident: int) -> None:
         if kind:
             self._point_at(kind, ident, animate=True)
+        self._sync_signal()
         self._update_info()
+
+    def _sync_signal(self) -> None:
+        """The magic eye shows the stream's signal only while a station is
+        tuned in; shows and On the Air are local files."""
+        live_station = self.ctx.tuner.tuned[0] == "station"
+        self.radio.set_signal(self.ctx.player.signal if live_station else SIGNAL_NONE)
 
     def _on_stream_title(self, title: str) -> None:
         self._stream_title = title
@@ -622,8 +763,8 @@ class TunerView(BaseView):
     def _all_buttons(self):
         return (self.btn_listen, self.btn_episodes, self.btn_prev, self.btn_next,
                 self.btn_new_evening, self.btn_band, self.btn_rename, self.btn_move_left,
-                self.btn_move_right, self.btn_remove, self.btn_folder, self.btn_starters,
-                self.btn_find)
+                self.btn_move_right, self.btn_remove, self.btn_relink, self.btn_folder,
+                self.btn_starters, self.btn_find)
 
     def _show_buttons(self, *buttons) -> None:
         for b in self._all_buttons():
@@ -762,16 +903,30 @@ class TunerView(BaseView):
             st = s.get(RadioStation, station_id)
             if st is None:
                 return
+            band = st.band if st.band in otr.STATION_BANDS else "fm"
+            freq = stations.frequency(st.name, band)
+            off_air = bool(st.off_air_since)
             self.cover.set_source(st.favicon_path, st.name)
             self.info_name.setText(st.name)
-            self.info_title.setText(self._stream_title if self._live else "")
+            if off_air:
+                self.info_title.setText("Off the air — its stream stopped answering")
+            else:
+                self.info_title.setText(self._stream_title if self._live else "")
+            where = ""
+            if freq is not None:
+                where = f"{freq:g} {BY_KEY[band].unit}"
             self.info_sub.setText(" · ".join(x for x in (
-                st.country, (st.codec or "").upper(),
+                where, st.country, (st.codec or "").upper(),
                 f"{st.bitrate} kbps" if st.bitrate else "") if x))
             self.info_extra.setText(st.homepage or "")
-        buttons = [self.btn_band, self.btn_rename, self.btn_move_left, self.btn_move_right,
-                   self.btn_remove]
-        if not self._live:
+        buttons = [self.btn_band, self.btn_rename]
+        if freq is None:
+            # placed by its frequency otherwise, so moving it means nothing
+            buttons += [self.btn_move_left, self.btn_move_right]
+        buttons.append(self.btn_remove)
+        if off_air:
+            buttons.insert(0, self.btn_relink)
+        if not self._live or off_air:
             buttons.insert(0, self.btn_listen)
         self._show_buttons(*buttons)
 
@@ -905,11 +1060,19 @@ class TunerView(BaseView):
         menu.exec(self.btn_band.mapToGlobal(self.btn_band.rect().topLeft()))
 
     def _move_station(self, delta: int) -> None:
+        """Swap places with the next internet-only station along the band -
+        the ones with a frequency stay at their frequency."""
         kind, ident, _ = self._pointed()
         if kind != "station":
             return
         with self.ctx.session() as s:
-            stations.move(s, ident, delta)
+            st = s.get(RadioStation, ident)
+            if st is None:
+                return
+            band = st.band if st.band in otr.STATION_BANDS else "fm"
+            loose = [x.id for x in stations.band_stations(s, band)
+                     if stations.frequency(x.name, band) is None]
+            stations.move(s, ident, delta, among=loose)
             s.commit()
         self._changed()
 
@@ -940,6 +1103,18 @@ class TunerView(BaseView):
         if idx >= 0:
             self.radio.set_tuned(b, idx, animate=False)
         self._update_info()
+
+    def find_new_link(self) -> None:  # pragma: no cover - dialog
+        kind, ident, _ = self._pointed()
+        if kind != "station":
+            return
+        dialog = ReplacementDialog(self.ctx, ident, self)
+        dialog.replaced.connect(self._relinked)
+        dialog.exec()
+
+    def _relinked(self, station_id: int) -> None:
+        self._changed()
+        self.ctx.tuner.tune_station(station_id)
 
     def _remove_station(self) -> None:
         kind, ident, live = self._pointed()

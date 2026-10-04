@@ -69,6 +69,18 @@ GAIN_RAMP_MS = 1200
 STREAM_GAIN_DB = -5.0
 
 
+#: QMediaPlayer media status -> PlayerController.signal, for a stream
+_STREAM_SIGNAL = {
+    QMediaPlayer.MediaStatus.LoadingMedia: "connecting",
+    QMediaPlayer.MediaStatus.LoadedMedia: "good",
+    QMediaPlayer.MediaStatus.BufferedMedia: "good",
+    QMediaPlayer.MediaStatus.BufferingMedia: "buffering",
+    QMediaPlayer.MediaStatus.StalledMedia: "buffering",
+    QMediaPlayer.MediaStatus.InvalidMedia: "lost",
+    QMediaPlayer.MediaStatus.EndOfMedia: "lost",
+}
+
+
 @dataclass
 class QueueItem:
     track_id: int
@@ -252,6 +264,10 @@ class PlayerController(QObject):
     #: the volume slider value changed (0..1) - the tuner's VOLUME knob and
     #: the player bar's slider keep each other in step through this
     volumeChanged = Signal(float)
+    #: how an internet station is coming in (2026-10-03, the tuner's magic
+    #: eye): "none" (not a stream), "connecting", "good", "buffering" or
+    #: "lost" (the stream errored or ended - a station never ends by itself)
+    signalChanged = Signal(str)
 
     #: background measuring of unlevelled tracks; tests switch it off
     auto_measure = True
@@ -290,10 +306,20 @@ class PlayerController(QObject):
         #: media_file_ids being measured, and ones already tried this session
         self._measuring: set[int] = set()
         self._measure_tried: set[int] = set()
+        self._signal = "none"
         self._apply_volume()
         self.reload_prefs()
 
     # -- preferences ------------------------------------------------------
+
+    @property
+    def signal(self) -> str:
+        return self._signal
+
+    def _set_signal(self, level: str) -> None:
+        if level != self._signal:
+            self._signal = level
+            self.signalChanged.emit(level)
 
     def reload_prefs(self) -> None:
         """Re-read Settings > Playback. Safe to call any time; a changed
@@ -749,6 +775,7 @@ class PlayerController(QObject):
         if item is None:
             for d in self._decks:
                 d.unload()
+            self._set_signal("none")
             self.trackChanged.emit(None)
             return
         if not item.is_stream and not os.path.exists(item.path):
@@ -766,6 +793,7 @@ class PlayerController(QObject):
             deck = self._active
             self._hydrate(item)
             deck.load(item, self._cursor)
+        self._set_signal("connecting" if item.is_stream else "none")
         deck.fade = 1.0
         deck.gain = deck.gain_target = self._gain_factor(item, self._cursor)
         self._apply_volume(deck)
@@ -815,6 +843,7 @@ class PlayerController(QObject):
             self._abort_fade()
             self._active.player.stop()
             self._refresh_preload()
+            self._set_signal("none")
             self.trackChanged.emit(None)
             return
         self._load_current()
@@ -922,6 +951,15 @@ class PlayerController(QObject):
                 deck.item.start_ms = 0
             if deck is self._active:
                 self._played_ms = max(self._played_ms, ms)
+        if deck is self._active and deck.item is not None and deck.item.is_stream:
+            # a station never ends by itself: running out means the stream
+            # dropped. Report it rather than moving on, and let the tuner
+            # decide whether to retune (services/tuner.py).
+            level = _STREAM_SIGNAL.get(status)
+            if level:
+                self._set_signal(level)
+            if status == QMediaPlayer.MediaStatus.EndOfMedia:
+                return
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
         if deck is self._fade_from:
@@ -972,6 +1010,7 @@ class PlayerController(QObject):
             return
         log.warning("player error: %s", message)
         if deck.item is not None and deck.item.is_stream:
+            self._set_signal("lost")
             self.errorOccurred.emit(f"Can't tune in {deck.item.title}: {message or 'no signal'}")
             return
         self.errorOccurred.emit(message or "Playback error")

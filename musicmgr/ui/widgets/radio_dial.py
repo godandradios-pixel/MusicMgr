@@ -21,6 +21,14 @@ Only the selected band's strip is lit; the piano keys below choose it.
 
 Below the glass: a 6E5 "magic eye" that closes as a station comes in,
 bakelite VOLUME and TUNING knobs, the band keys and a pilot lamp.
+
+2026-10-03 (James): FM and AM stations with a frequency in their name sit
+at that frequency on the scale ("102.5 WDVE" by the 102 mark, "KDKA 1020"
+just past 1000), internet-only ones fill the empty stretches
+(services/stations.py:dial_positions). The magic eye doubles as a signal
+meter once a station is on: shadow closed on a good stream, flickering
+while it buffers, wide open and dim when the signal is lost. A station
+that's off the air has its name faded on the glass.
 Interaction: tap a station name or anywhere on the lit band, drag the
 pointer, drag the TUNING knob or scroll; let go and it settles on the
 nearest station and tunes in. Between stations there's a little tuning
@@ -63,6 +71,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
+from ...services import stations as station_svc
+
 
 @dataclass(frozen=True)
 class Band:
@@ -75,8 +85,8 @@ class Band:
 
 
 BANDS: tuple[Band, ...] = (
-    Band("fm", "FM", "MHz", ("88", "90", "92", "94", "96", "98", "100", "102", "104", "106", "108")),
-    Band("am", "AM", "kc", ("540", "600", "700", "800", "900", "1000", "1200", "1400", "1600")),
+    Band("fm", "FM", "MHz", tuple(str(m) for m in station_svc.FM_MARKS)),
+    Band("am", "AM", "kc", tuple(str(m) for m in station_svc.AM_MARKS)),
     Band("police", "POLICE", "Mc", ("1.6", "1.8", "2.0", "2.2", "2.4", "2.6", "2.8", "3.0")),
     Band("sw1", "SW1", "Mc", ("5.9", "6.5", "7.1", "7.7", "8.3", "8.9", "9.5", "10.1"),
          ("49m", "41m", "31m")),
@@ -104,14 +114,14 @@ def _font(px: float, bold: bool = False, condensed: bool = True) -> QFont:
     return f
 
 
+#: what the magic eye shows once something's tuned in (PlayerController.signal)
+SIGNAL_NONE, SIGNAL_CONNECTING, SIGNAL_GOOD, SIGNAL_BUFFERING, SIGNAL_LOST = (
+    "none", "connecting", "good", "buffering", "lost")
+
+
 def station_positions(n: int) -> list[float]:
-    """Where n stations sit along the 0..1 dial."""
-    if n <= 0:
-        return []
-    if n == 1:
-        return [0.5]
-    lo, hi = 0.08, 0.92
-    return [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    """Where n stations sit along the 0..1 dial, evenly spaced."""
+    return station_svc.even_positions(n)
 
 
 def make_static_wav(path: Path, seconds: float = 2.0, rate: int = 22050) -> Path:
@@ -155,6 +165,15 @@ class RadioSet(QWidget):
         self._band = "am"
         self._labels: dict[str, list[str]] = {k: [] for k in BAND_KEYS}
         self._positions: dict[str, list[float]] = {k: [] for k in BAND_KEYS}
+        #: per band, which names are printed faded (stations off the air)
+        self._faded: dict[str, set[int]] = {k: set() for k in BAND_KEYS}
+        #: the tuned stream's health, for the magic eye (SIGNAL_*)
+        self._signal = SIGNAL_NONE
+        self._flicker = 0.0
+        self._flicker_rng = random.Random()
+        self._flicker_timer = QTimer(self)
+        self._flicker_timer.setInterval(90)
+        self._flicker_timer.timeout.connect(self._on_flicker)
         #: per band, the station tuned/last tuned there
         self._tuned: dict[str, int] = {k: -1 for k in BAND_KEYS}
         self._pos = 0.5
@@ -210,9 +229,13 @@ class RadioSet(QWidget):
             self._move_to(self._positions[band][idx], animate, tune=False)
         self.update()
 
-    def set_entries(self, band: str, labels: Sequence[str]) -> None:
+    def positions(self, band: Optional[str] = None) -> list[float]:
+        return list(self._positions[band or self._band])
+
+    def set_entries(self, band: str, labels: Sequence[str], faded: Sequence[int] = ()) -> None:
         self._labels[band] = list(labels)
-        self._positions[band] = station_positions(len(labels))
+        self._positions[band] = station_svc.dial_positions(band, labels)
+        self._faded[band] = set(faded)
         if self._tuned[band] >= len(labels):
             self._tuned[band] = -1
         self.update()
@@ -238,6 +261,31 @@ class RadioSet(QWidget):
         self._playing = playing
         self.update()
 
+    @property
+    def signal(self) -> str:
+        return self._signal
+
+    def set_signal(self, level: str) -> None:
+        """How the tuned station is coming in (SIGNAL_*): the magic eye
+        closes on a good stream, flickers while it connects or buffers and
+        opens wide, dimmed, when the signal is lost."""
+        if level == self._signal:
+            return
+        self._signal = level
+        if level in (SIGNAL_CONNECTING, SIGNAL_BUFFERING):
+            self._flicker_timer.start()
+        else:
+            self._flicker_timer.stop()
+            self._flicker = 0.0
+        self.update()
+
+    def _on_flicker(self) -> None:
+        # a restless shadow, the way a real eye jumps while the set hunts
+        # for a fading station
+        target = self._flicker_rng.uniform(0.25, 0.85)
+        self._flicker = self._flicker * 0.45 + target * 0.55
+        self.update()
+
     def set_static_enabled(self, on: bool) -> None:
         self._static_enabled = on
         if not on:
@@ -246,12 +294,19 @@ class RadioSet(QWidget):
     def set_static_path(self, path: Path) -> None:
         self._static_path = path
 
+    def _dial_order(self, band: Optional[str] = None) -> list[int]:
+        """The band's station indexes left to right as they sit on the
+        glass (on FM/AM that's by frequency, not by list order)."""
+        positions = self._positions[band or self._band]
+        return sorted(range(len(positions)), key=lambda i: (positions[i], i))
+
     def step(self, delta: int) -> None:
         positions = self._positions[self._band]
         if not positions:
             return
-        current = self._nearest()
-        target = max(0, min(len(positions) - 1, current + delta))
+        order = self._dial_order()
+        current = order.index(self._nearest())
+        target = order[max(0, min(len(order) - 1, current + delta))]
         self._move_to(positions[target], True, tune=True, debounce=650)
 
     def sizeHint(self) -> QSize:  # noqa: D102
@@ -317,7 +372,8 @@ class RadioSet(QWidget):
         if not positions:
             return 0.0
         i = self._nearest()
-        spacing = (positions[1] - positions[0]) if len(positions) > 1 else 0.4
+        others = [abs(positions[i] - t) for k, t in enumerate(positions) if k != i]
+        spacing = min(others) if others else 0.4
         return max(0.0, 1.0 - abs(self._pos - positions[i]) / max(1e-6, spacing / 2))
 
     def _move_to(self, target: float, animate: bool, tune: bool, debounce: int = 250) -> None:
@@ -645,36 +701,102 @@ class RadioSet(QWidget):
             p.drawText(QRectF(left, base, width, r.bottom() - base), Qt.AlignCenter, "· · ·")
             return
         name_area = QRectF(left, base + scale_h * 0.32, width, r.bottom() - base - scale_h * 0.32)
-        spacing = width * (0.84 / max(1, len(labels) - 1)) if len(labels) > 1 else width
+        xs = [left + width * t for t in positions]
+        order = sorted(range(len(labels)), key=lambda i: (positions[i], i))
         longest = max(len(label) for label in labels)
-        two_rows = spacing < longest * name_area.height() * 0.30 and name_area.height() > 26
-        rows = 2 if two_rows else 1
-        px = min(name_area.height() / rows * 0.62,
-                 max(8.0, spacing * rows * 0.95 / max(5, longest * 0.55)))
+
+        def room(rows: int) -> dict[int, float]:
+            """How wide each name may be: up to the next name along in its
+            own row (names alternate rows when there are two), so centred
+            names never overlap; an end name may also run to the glass
+            edge."""
+            out = {}
+            for k, i in enumerate(order):
+                prev = order[k - rows] if k - rows >= 0 else None
+                nxt = order[k + rows] if k + rows < len(order) else None
+                d_prev = xs[i] - xs[prev] if prev is not None else None
+                d_next = xs[nxt] - xs[i] if nxt is not None else None
+                if d_prev is None and d_next is None:
+                    out[i] = width * 0.96
+                elif d_prev is None:
+                    out[i] = min(d_next, (xs[i] - left) + d_next / 2)
+                elif d_next is None:
+                    out[i] = min(d_prev, (left + width - xs[i]) + d_prev / 2)
+                else:
+                    out[i] = min(d_prev, d_next)
+                out[i] = max(8.0, out[i] * 0.96)
+            return out
+
+        avail_one = room(1)
+        # the size the names would get spread evenly, so a crowded pair
+        # doesn't shrink every name on the band
+        typical = width * (0.84 / max(1, len(labels) - 1)) if len(labels) > 1 else width
+        h = name_area.height()
+        px = min(h * 0.62, max(8.0, typical * 0.95 / max(5, longest * 0.55)))
         tuned = self._tuned.get(band.key, -1)
-        for i, (label, t) in enumerate(zip(labels, positions)):
-            row = i % rows
+        faded = self._faded.get(band.key, set())
+
+        # Most names print in one row at a common size, shrinking a little
+        # if they must. Only names too crowded for that (two stations a few
+        # notches apart) are stacked, half height, one above the other -
+        # rather than halving every name on the band.
+        sizes: dict[int, float] = {}
+        widths: dict[int, float] = {}
+        stacked: list[int] = []
+        for i in order:
+            font = _font(px, bold=i == tuned)
+            need = QFontMetricsF(font).horizontalAdvance(labels[i].upper())
+            if need <= avail_one[i]:
+                sizes[i] = px
+            elif need * 0.8 <= avail_one[i] or h <= 26 or px * 0.8 <= 9:
+                sizes[i] = max(9.0, math.floor(px * avail_one[i] / need))
+            else:
+                stacked.append(i)
+                continue
+            f = _font(sizes[i], bold=i == tuned)
+            widths[i] = min(avail_one[i], QFontMetricsF(f).horizontalAdvance(labels[i].upper()))
+        stack_room = room(2)
+        row_of = {i: 0 for i in order}
+        for k, i in enumerate(stacked):
+            row_of[i] = 1 + (k % 2)
+            # stay clear of the full-height names either side
+            limit = stack_room[i]
+            pos_k = order.index(i)
+            for nb in (pos_k - 1, pos_k + 1):
+                if 0 <= nb < len(order) and order[nb] not in stacked:
+                    j = order[nb]
+                    limit = min(limit, 2 * max(4.0, abs(xs[i] - xs[j]) - widths[j] / 2 - 4))
+            stack_room[i] = limit
+            sizes[i] = min(h / 2 * 0.62, px)
+
+        for i, label in enumerate(labels):
+            row = row_of[i]
             is_tuned = i == tuned
-            font = _font(px, bold=is_tuned)
+            avail = stack_room[i] if row else avail_one[i]
+            font = _font(sizes[i], bold=is_tuned)
             fm = QFontMetricsF(font)
-            avail = spacing * rows * 0.96
             full = fm.horizontalAdvance(label.upper())
-            if full > avail and px > 9:
-                # shrink a long name to fit before resorting to "..."
-                font = _font(max(9.0, math.floor(font.pixelSize() * avail / full)), bold=is_tuned)
+            if full > avail and sizes[i] > 9:
+                font = _font(max(9.0, math.floor(sizes[i] * avail / full)), bold=is_tuned)
                 fm = QFontMetricsF(font)
             p.setFont(font)
             text = fm.elidedText(label.upper(), Qt.ElideRight, avail)
             tw = fm.horizontalAdvance(text)
-            cy = name_area.top() + name_area.height() * (row + 0.5) / rows
-            x = left + width * t
+            cy = name_area.top() + (h * 0.5 if row == 0 else h * (0.25 if row == 1 else 0.75))
+            x = xs[i]
             tx = max(left + 4, min(left + width - 4 - tw, x - tw / 2))
-            p.setPen(QColor("#ffb19a") if (is_tuned and active) else name_ink)
+            colour = QColor("#ffb19a") if (is_tuned and active) else QColor(name_ink)
+            mark = POINTER if (is_tuned and active) else QColor(ink)
+            if i in faded:
+                # off the air: printed faintly, like a station that's gone dark
+                colour.setAlpha(int(colour.alpha() * 0.38))
+                mark.setAlpha(int(mark.alpha() * 0.38))
+            p.setPen(colour)
             baseline = cy + (fm.ascent() - fm.descent()) / 2 - 1
             p.drawText(QPointF(tx, baseline), text)
             # marker bar under the name, centred on the station's spot
             bar = QRectF(x - 7, min(baseline + fm.descent() + 1.5, r.bottom() - 4), 14, 2.6)
-            p.fillRect(bar, POINTER if (is_tuned and active) else ink)
+            p.fillRect(bar, mark)
 
     def _paint_knob(self, p: QPainter, center: QPointF, radius: float, angle_deg: float, label: str) -> None:
         p.setPen(Qt.NoPen)
@@ -724,9 +846,25 @@ class RadioSet(QWidget):
         p.setPen(QColor("#4a2a12") if not down else POINTER.darker(140))
         p.drawText(r, Qt.AlignCenter, label)
 
+    def _eye_shadow(self) -> tuple[float, float]:
+        """(shadow wedge in degrees, glow 0..1) for the magic eye. While the
+        pointer moves it follows the tuning, as on a real set; once settled
+        on a playing stream it shows the signal."""
+        moving = self._drag in ("dial", "tune") or self._anim.state() == QVariantAnimation.Running
+        lit = 0.55 + 0.45 * (1.0 if self._playing else 0.6)
+        wedge = 8 + (1.0 - self._closeness()) * 92
+        if moving or self._signal in (SIGNAL_NONE, SIGNAL_GOOD):
+            return wedge, lit
+        if self._signal == SIGNAL_LOST:
+            return 110.0, 0.42
+        # connecting / buffering: the shadow jumps about
+        return max(wedge, 8 + self._flicker * 92), 0.55 + 0.35 * (1.0 - self._flicker)
+
     def _paint_eye(self, p: QPainter, center: QPointF, radius: float) -> None:
         """A 6E5 magic eye: green fan with a dark shadow wedge that closes as
-        the pointer lands on a station."""
+        the pointer lands on a station - and, once a stream's on, stays
+        closed while the signal's good (see _eye_shadow)."""
+        wedge, lit = self._eye_shadow()
         p.setPen(QPen(QColor("#1a1a14"), 3))
         bezel = QRadialGradient(center, radius * 1.3)
         bezel.setColorAt(0, QColor("#8a7a54"))
@@ -734,7 +872,6 @@ class RadioSet(QWidget):
         p.setBrush(bezel)
         p.drawEllipse(center, radius * 1.18, radius * 1.18)
         glow = QConicalGradient(center, 90)
-        lit = 0.55 + 0.45 * (1.0 if self._playing else 0.6)
         glow.setColorAt(0.0, QColor.fromRgbF(0.30 * lit, 1.0 * lit, 0.48 * lit))
         glow.setColorAt(0.5, QColor.fromRgbF(0.18 * lit, 0.75 * lit, 0.32 * lit))
         glow.setColorAt(1.0, QColor.fromRgbF(0.30 * lit, 1.0 * lit, 0.48 * lit))
@@ -743,7 +880,6 @@ class RadioSet(QWidget):
         p.drawEllipse(center, radius, radius)
         p.setBrush(QBrush(glow))
         p.drawEllipse(center, radius * 0.94, radius * 0.94)
-        wedge = 8 + (1.0 - self._closeness()) * 92
         p.setBrush(QColor("#041008"))
         rect = QRectF(center.x() - radius * 0.95, center.y() - radius * 0.95, radius * 1.9, radius * 1.9)
         p.drawPie(rect, int((90 - wedge / 2) * 16), int(wedge * 16))

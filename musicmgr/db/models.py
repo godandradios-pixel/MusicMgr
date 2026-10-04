@@ -1004,6 +1004,10 @@ class RadioStation(Base):
     #: band of the dial: FM or AM (the station bands), as RadioShow.band
     band: Mapped[str] = mapped_column(String(10), default="fm")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
+    #: 2026-10-03: set when the stream stopped answering (after one retry),
+    #: cleared when it plays again - the dial fades the name and the Radio
+    #: page offers to look up a new link. This PC only, not USB-synced.
+    off_air_since: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
 
 
 class Setting(Base):

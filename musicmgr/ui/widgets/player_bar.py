@@ -236,8 +236,25 @@ class PlayerBar(QFrame):
         self.seek.setRange(0, 1000)
         self.seek.sliderPressed.connect(lambda: setattr(self, "_seeking", True))
         self.seek.sliderReleased.connect(self._commit_seek)
+        # 2026-10-03 - James: on a live station "the -15s / +30s, shuffle
+        # and repeat buttons do nothing useful, and the seek bar just counts
+        # up to --:--". While an internet station plays those are hidden and
+        # this LIVE badge takes the seek bar's place; previous/next step
+        # along the station's band instead (see _set_live).
+        self.live_badge = QLabel("●  LIVE")
+        self.live_badge.setObjectName("LiveBadge")
+        self.live_badge.setAlignment(Qt.AlignCenter)
+        self.live_badge.setStyleSheet(
+            f"QLabel#LiveBadge {{ background: {COLORS['jukebox_key']}; color: #fff3e0;"
+            " border-radius: 11px; padding: 0 16px; font-size: 12px; font-weight: 700;"
+            " letter-spacing: 1px; }")
+        self.live_badge.setFixedHeight(22)
+        self.live_badge.setToolTip("Live internet radio")
+        self.live_badge.setVisible(False)
+        self._live = False
         seek_row.addWidget(self.elapsed)
         seek_row.addWidget(self.seek, 1)
+        seek_row.addWidget(self.live_badge, 0, Qt.AlignCenter)
         seek_row.addWidget(self.remaining)
         centre.addLayout(seek_row)
         root.addLayout(centre, 1)
@@ -278,8 +295,8 @@ class PlayerBar(QFrame):
         # shuffle/repeat are queue concepts a single video doesn't have, so
         # they're disabled rather than routed - see enter_video_mode.
         self.play_btn.clicked.connect(self._on_play_clicked)
-        self.next_btn.clicked.connect(lambda: self.player.next(user_initiated=True))
-        self.prev_btn.clicked.connect(self.player.previous)
+        self.next_btn.clicked.connect(lambda: self._skip(1))
+        self.prev_btn.clicked.connect(lambda: self._skip(-1))
         self.back_btn.clicked.connect(lambda: self._active().seek_relative(-15000))
         self.fwd_btn.clicked.connect(lambda: self._active().seek_relative(30000))
         self.shuffle_btn.toggled.connect(self.player.set_shuffle)
@@ -299,6 +316,28 @@ class PlayerBar(QFrame):
         btn.setToolTip(tip)
         btn.setCheckable(checkable)
         return btn
+
+    def _skip(self, delta: int) -> None:
+        """Previous/next: along the band while a station is on (like the
+        tuner's knob), else the queue."""
+        tuner = getattr(self.ctx, "tuner", None) if self.ctx is not None else None
+        if self._live and tuner is not None and tuner.step_station(delta):
+            return
+        if delta > 0:
+            self.player.next(user_initiated=True)
+        else:
+            self.player.previous()
+
+    def _set_live(self, live: bool) -> None:
+        """Swap the transport row between a normal queue and a live station."""
+        self._live = live
+        for b in (self.shuffle_btn, self.back_btn, self.fwd_btn, self.repeat_btn):
+            b.setVisible(not live)
+        for w in (self.elapsed, self.seek, self.remaining):
+            w.setVisible(not live)
+        self.live_badge.setVisible(live)
+        self.prev_btn.setToolTip("Previous station" if live else "Previous")
+        self.next_btn.setToolTip("Next station" if live else "Next")
 
     def _cycle_repeat(self) -> None:
         mode = self.player.cycle_repeat()
@@ -361,6 +400,7 @@ class PlayerBar(QFrame):
         # here is also what keeps a stale music track's bars from lingering
         # once the strip is hidden and no longer overwriting them itself.
         self._start_spectrum(None)
+        self._set_live(False)
         self.visualizer.setVisible(False)
         already_bound = self._video is controller
         self._video = controller
@@ -431,6 +471,7 @@ class PlayerBar(QFrame):
             self.volume.blockSignals(False)
 
     def on_track_changed(self, item: Optional[QueueItem]) -> None:
+        self._set_live(item is not None and item.is_stream and self._video is None)
         if item is None:
             self.title.setText("Nothing playing")
             self.subtitle.setText("")
