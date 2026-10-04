@@ -82,7 +82,7 @@ import math
 import struct
 from typing import List, Sequence
 
-from PySide6.QtCore import QEventLoop, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QAudioDecoder, QAudioFormat
 
 log = logging.getLogger(__name__)
@@ -374,3 +374,99 @@ class SpectrumThread(QThread):
             self.spectrumReady.emit(self._path, buckets)
         else:
             self.failed.emit(self._path)
+
+
+# --------------------------------------------------------------------------
+# live: internet radio (2026-10-03)
+# --------------------------------------------------------------------------
+
+#: the rolling peak a live stream's bands are scaled against falls by this
+#: much per bucket, so a loud passage doesn't flatten everything after it
+LIVE_PEAK_DECAY = 0.996
+#: never scale up quieter than this (raw Goertzel units, Int16 audio) - keeps
+#: hiss between programs from being blown up into a full-height show
+LIVE_PEAK_FLOOR = 40.0
+
+
+class LiveSpectrum(QObject):
+    """James, 2026-10-03: "Any way the visualizer at the bottom can pulse
+    with radio broadcasts". A station can't be decoded up front the way a
+    track is (`compute_spectrum`) - it never ends - so this analyses the
+    audio as it plays instead: PlayerController hands it each decoded
+    buffer from a QAudioBufferOutput tapped onto the deck playing the
+    stream, and it emits one reading per `bucket_ms`, the same five
+    bands as a track's buckets plus whether the bass just spiked
+    (the incremental form of `detect_beats`).
+
+    Unlike a track's buckets, which are scaled by the whole track's peak,
+    a live stream is scaled by a slowly falling rolling peak. To keep
+    it cheap on the GUI thread, every other sample is skipped at 32 kHz
+    and up (the 9 kHz treble band still sits under the reduced rate's
+    Nyquist limit)."""
+
+    #: five band magnitudes 0..1, and whether this bucket is a beat
+    bucketReady = Signal(list, bool)
+
+    def __init__(self, bucket_ms: int = BUCKET_MS, bands: Sequence[int] = BAND_FREQS,
+                 parent=None) -> None:
+        super().__init__(parent)
+        self.bucket_ms = bucket_ms
+        self.bands = tuple(bands)
+        self.reset()
+
+    def reset(self) -> None:
+        self._pending: List[float] = []
+        self._rate = 0
+        self._peak = LIVE_PEAK_FLOOR
+        self._history: List[float] = []
+        self._above = False
+        self._since_beat = 10_000
+
+    def feed_buffer(self, buf) -> None:
+        """A QAudioBuffer from QAudioBufferOutput.audioBufferReceived."""
+        try:
+            rate = buf.format().sampleRate()
+            mono = _buffer_to_mono(buf)
+            if buf.format().sampleFormat() == QAudioFormat.SampleFormat.Float:
+                mono = [v * 32767.0 for v in mono]
+            elif buf.format().sampleFormat() == QAudioFormat.SampleFormat.Int32:
+                mono = [v / 65536.0 for v in mono]
+            elif buf.format().sampleFormat() == QAudioFormat.SampleFormat.UInt8:
+                mono = [(v - 128) * 256.0 for v in mono]
+        except Exception:  # pragma: no cover - decorative, never worth an error
+            return
+        self.feed(mono, rate)
+
+    def feed(self, mono: Sequence[float], rate: int) -> None:
+        """Mono samples at `rate`, scaled like Int16."""
+        if not mono or rate <= 0:
+            return
+        step = 2 if rate >= 32000 else 1
+        if step > 1:
+            mono = mono[::step]
+        rate //= step
+        if rate != self._rate:
+            self._pending = []
+            self._rate = rate
+        self._pending.extend(mono)
+        n = max(1, int(rate * self.bucket_ms / 1000))
+        while len(self._pending) >= n:
+            chunk = self._pending[:n]
+            del self._pending[:n]
+            raw = [_goertzel_mag(chunk, rate, f) for f in self.bands]
+            self._peak = max(LIVE_PEAK_FLOOR, self._peak * LIVE_PEAK_DECAY, max(raw))
+            bands = [min(1.0, m / self._peak) for m in raw]
+            self.bucketReady.emit(bands, self._beat(bands[0]))
+
+    def _beat(self, level: float) -> bool:
+        window_n = max(1, BEAT_WINDOW_MS // self.bucket_ms)
+        refractory_n = max(1, BEAT_REFRACTORY_MS // self.bucket_ms)
+        avg = sum(self._history) / len(self._history) if self._history else level
+        hit = level >= BEAT_MIN_LEVEL and level > avg * BEAT_SENSITIVITY
+        beat = hit and not self._above and self._since_beat >= refractory_n
+        self._since_beat = 0 if beat else self._since_beat + 1
+        self._above = hit
+        self._history.append(level)
+        if len(self._history) > window_n:
+            self._history.pop(0)
+        return beat

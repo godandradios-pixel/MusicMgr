@@ -312,6 +312,13 @@ def _blend_band_color(bands: Sequence[float]) -> QColor:
     return QColor(int(round(r)), int(round(g)), int(round(b)))
 
 
+#: live mode (an internet station): readings older than this mean the
+#: stream has stalled, and the bars ease back to the idle pulse
+_LIVE_STALE_MS = 600
+#: and more than this many queued up means playback is ahead of us - skip on
+_LIVE_MAX_QUEUE = 6
+
+
 class PulseVisualizer(QWidget):
     """A full-width row of bars, tallest in the middle and tapering to a
     sliver at both edges (`_ENVELOPE`), driven by a track's real band
@@ -347,6 +354,14 @@ class PulseVisualizer(QWidget):
         #: (see module docstring)
         self._known_ms = 0.0
         self._elapsed_since_sync = 0.0
+
+        #: 2026-10-03 live mode (an internet station - see set_live): band
+        #: readings arrive as the stream plays rather than up front, queued
+        #: here and played out one per bucket_ms
+        self._live = False
+        self._live_queue: List[tuple] = []
+        self._live_clock = 0.0
+        self._live_idle_ms = 0.0
 
         self._tick_timer = QTimer(self)
         self._tick_timer.setInterval(_TICK_MS)
@@ -384,6 +399,35 @@ class PulseVisualizer(QWidget):
         self._current_bands = None
         self._flash = 0.0
 
+    @property
+    def live(self) -> bool:
+        return self._live
+
+    def set_live(self, live: bool) -> None:
+        """An internet station is playing (James, 2026-10-03: "Any way the
+        visualizer at the bottom can pulse with radio broadcasts"): there's
+        no whole-track analysis to follow by position, so readings come in
+        as the stream plays (`push_live`, from PlayerController.liveBands)
+        instead."""
+        if live == self._live:
+            return
+        self.clear_data()
+        self._live = live
+        self._live_queue = []
+        self._live_clock = 0.0
+        self._live_idle_ms = _LIVE_STALE_MS
+
+    def push_live(self, bands: Sequence[float], beat: bool = False) -> None:
+        if not self._live:
+            return
+        self._live_queue.append((list(bands), bool(beat)))
+        if len(self._live_queue) > _LIVE_MAX_QUEUE:
+            del self._live_queue[: len(self._live_queue) - 2]
+        self._live_idle_ms = 0.0
+
+    def _live_has_data(self) -> bool:
+        return self._live and self._live_idle_ms < _LIVE_STALE_MS
+
     def update_position(self, ms: int) -> None:
         """Resyncs the internal playback-position estimate to a real
         reading (see module docstring) and, if a track's data is already
@@ -410,7 +454,25 @@ class PulseVisualizer(QWidget):
         if idx in self._beats and idx != self._last_beat_idx:
             self._flash = 1.0
             self._last_beat_idx = idx
-        bands = self._buckets[idx]
+        self._show_bands(self._buckets[idx])
+
+    def _advance_live(self) -> None:
+        """Play out the queued live readings at their own pace: one per
+        bucket_ms of ticks, holding the last one if the next is late."""
+        self._live_idle_ms += _TICK_MS
+        self._live_clock += _TICK_MS
+        while self._live_queue and self._live_clock >= self._bucket_ms:
+            self._live_clock -= self._bucket_ms
+            bands, beat = self._live_queue.pop(0)
+            if beat:
+                self._flash = 1.0
+            self._show_bands(bands)
+        if not self._live_queue:
+            self._live_clock = min(self._live_clock, float(self._bucket_ms))
+        if self._current_bands is not None:
+            self._show_bands(self._current_bands)   # keep the flash boost current
+
+    def _show_bands(self, bands: Sequence[float]) -> None:
         self._current_bands = bands
         spread = _spread_bands_across_bars(bands, BAR_COUNT)
         flash_boost = self._flash * _FLASH_HEIGHT_BOOST
@@ -425,7 +487,10 @@ class PulseVisualizer(QWidget):
 
     def _tick(self) -> None:
         changed = False
-        if not self._active or not self._buckets:
+        if self._live and self._active:
+            self._advance_live()
+        has_data = bool(self._buckets) or self._live_has_data()
+        if not self._active or not has_data:
             # paused/stopped, or a just-started track's analysis hasn't
             # finished yet - same gentle placeholder motion either way
             # (see module docstring)
@@ -443,8 +508,9 @@ class PulseVisualizer(QWidget):
                 self._levels[i] = new_level
             self._flash = 0.0
         else:
-            self._elapsed_since_sync += _TICK_MS
-            self._refresh_from_position(self._known_ms + self._elapsed_since_sync)
+            if not self._live:
+                self._elapsed_since_sync += _TICK_MS
+                self._refresh_from_position(self._known_ms + self._elapsed_since_sync)
             for i, target in enumerate(self._targets):
                 level = self._levels[i]
                 step = _RISE if target > level else _FALL
@@ -470,7 +536,8 @@ class PulseVisualizer(QWidget):
         gap = 2.0
         bar_w = (w - gap * (n - 1)) / n
 
-        if self._active and self._buckets and self._current_bands is not None:
+        has_data = bool(self._buckets) or self._live_has_data()
+        if self._active and has_data and self._current_bands is not None:
             color = _blend_band_color(self._current_bands)
             if self._flash > _SETTLE_EPS:
                 color = color.lighter(100 + int(self._flash * _FLASH_BRIGHTEN))

@@ -307,6 +307,8 @@ class PlayerBar(QFrame):
         player.positionChanged.connect(self.on_position)
         player.durationChanged.connect(self.on_duration)
         player.playbackStateChanged.connect(self.on_state)
+        # 2026-10-03: a station's sound, analysed as it plays
+        player.liveBands.connect(self.visualizer.push_live)
 
     def _transport(
         self, glyph: str, tip: str, main: bool = False, checkable: bool = False, wide: bool = False
@@ -401,6 +403,7 @@ class PlayerBar(QFrame):
         # once the strip is hidden and no longer overwriting them itself.
         self._start_spectrum(None)
         self._set_live(False)
+        self.visualizer.set_live(False)
         self.visualizer.setVisible(False)
         already_bound = self._video is controller
         self._video = controller
@@ -473,6 +476,7 @@ class PlayerBar(QFrame):
     def on_track_changed(self, item: Optional[QueueItem]) -> None:
         self._set_live(item is not None and item.is_stream and self._video is None)
         if item is None:
+            self.visualizer.set_live(False)
             self.title.setText("Nothing playing")
             self.subtitle.setText("")
             self.cover.set_source(None, "")
@@ -487,8 +491,10 @@ class PlayerBar(QFrame):
             " — ".join(x for x in (item.artist, tracknum.with_side(item.album, item.position)) if x)
         )
         self.cover.set_source(item.cover_path, item.album or item.artist)
-        # an internet station never ends - nothing to decode up front
+        # an internet station never ends - nothing to decode up front; its
+        # bars come from the sound as it plays instead (PlayerController.liveBands)
         self._start_spectrum(None if item.is_stream else item.path)
+        self.visualizer.set_live(item.is_stream and self._video is None)
 
     def on_position(self, ms: int) -> None:
         duration = self._active().duration()

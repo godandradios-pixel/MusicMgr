@@ -43,6 +43,11 @@ from typing import Iterable, Optional, Sequence
 
 from PySide6.QtCore import QElapsedTimer, QObject, QThread, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+try:  # Qt 6.8+: the decoded audio as it plays - the visualizer's live mode
+    from PySide6.QtMultimedia import QAudioBufferOutput
+except ImportError:  # pragma: no cover - older PySide6
+    QAudioBufferOutput = None
 from sqlalchemy import select
 
 from ..db.models import MediaFile, PlayEvent, Track
@@ -226,6 +231,13 @@ class _Deck:
         self.gain_target = 1.0
         #: resume position to jump to once the media has loaded
         self.pending_seek = 0
+        #: the QAudioBufferOutput tapped on while a station plays here
+        self.tap = None
+
+    def set_tap(self, tap) -> None:
+        if tap is not self.tap:
+            self.tap = tap
+            self.player.setAudioBufferOutput(tap)
 
     def load(self, item: QueueItem, cursor: int) -> None:
         self.item = item
@@ -242,6 +254,8 @@ class _Deck:
         self.item = None
         self.cursor = -1
         self.fade = 1.0
+        if self.tap is not None:
+            self.set_tap(None)
 
     def is_playing(self) -> bool:
         return self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
@@ -268,6 +282,9 @@ class PlayerController(QObject):
     #: eye): "none" (not a stream), "connecting", "good", "buffering" or
     #: "lost" (the stream errored or ended - a station never ends by itself)
     signalChanged = Signal(str)
+    #: a live station's sound as it plays (2026-10-03, the visualizer):
+    #: five band levels 0..1 every BUCKET_MS, and whether the bass spiked
+    liveBands = Signal(list, bool)
 
     #: background measuring of unlevelled tracks; tests switch it off
     auto_measure = True
@@ -307,6 +324,14 @@ class PlayerController(QObject):
         self._measuring: set[int] = set()
         self._measure_tried: set[int] = set()
         self._signal = "none"
+        from .spectrum import LiveSpectrum
+
+        self._live = LiveSpectrum(parent=self)
+        self._live.bucketReady.connect(self.liveBands)
+        self._tap = None
+        if QAudioBufferOutput is not None:
+            self._tap = QAudioBufferOutput(self)
+            self._tap.audioBufferReceived.connect(self._on_live_buffer)
         self._apply_volume()
         self.reload_prefs()
 
@@ -315,6 +340,10 @@ class PlayerController(QObject):
     @property
     def signal(self) -> str:
         return self._signal
+
+    def _on_live_buffer(self, buf) -> None:
+        if self._active.tap is not None and self._active.is_playing():
+            self._live.feed_buffer(buf)
 
     def _set_signal(self, level: str) -> None:
         if level != self._signal:
@@ -794,6 +823,10 @@ class PlayerController(QObject):
             self._hydrate(item)
             deck.load(item, self._cursor)
         self._set_signal("connecting" if item.is_stream else "none")
+        # only a station is analysed as it plays - a track's spectrum is
+        # worked out up front from its file (services/spectrum.py)
+        self._live.reset()
+        deck.set_tap(self._tap if item.is_stream else None)
         deck.fade = 1.0
         deck.gain = deck.gain_target = self._gain_factor(item, self._cursor)
         self._apply_volume(deck)
