@@ -216,10 +216,12 @@ def stop_background_measuring(wait_ms: int = 3000) -> None:
 class _Deck:
     """One QMediaPlayer + QAudioOutput, and what it's loaded with."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, parent=None) -> None:
         self.name = name
-        self.audio = QAudioOutput()
-        self.player = QMediaPlayer()
+        # parented to the PlayerController (2026-10-04): Qt then deletes
+        # them in a fixed order after the live tap - see PlayerController
+        self.audio = QAudioOutput(parent)
+        self.player = QMediaPlayer(parent)
         self.player.setAudioOutput(self.audio)
         self.item: Optional[QueueItem] = None
         #: the play-order cursor `item` was loaded for
@@ -303,7 +305,19 @@ class PlayerController(QObject):
 
         self._volume = 0.8
         self._prefs = playback_prefs.PlaybackPrefs()
-        self._decks = (_Deck("A"), _Deck("B"))
+        # The live-radio tap (QAudioBufferOutput) is created before the
+        # decks, all three children of this controller. 2026-10-04: the
+        # 1.9.13 release run crashed (exit 139) after every test had passed.
+        # At shutdown Qt destroyed a deck's QMediaPlayer before the tap
+        # attached to it, and the tap's destructor then called back into
+        # the deleted player. Qt deletes children in the order they were
+        # added, so the tap now goes first and detaches from a live player;
+        # parented decks are no longer destroyed on their own in whatever
+        # order PySide happens to visit them at exit.
+        self._tap = None
+        if QAudioBufferOutput is not None:
+            self._tap = QAudioBufferOutput(self)
+        self._decks = (_Deck("A", self), _Deck("B", self))
         for deck in self._decks:
             p = deck.player
             p.positionChanged.connect(lambda ms, d=deck: self._on_position(d, ms))
@@ -331,9 +345,7 @@ class PlayerController(QObject):
 
         self._live = LiveSpectrum(parent=self)
         self._live.bucketReady.connect(self.liveBands)
-        self._tap = None
-        if QAudioBufferOutput is not None:
-            self._tap = QAudioBufferOutput(self)
+        if self._tap is not None:
             self._tap.audioBufferReceived.connect(self._on_live_buffer)
         self._apply_volume()
         self.reload_prefs()

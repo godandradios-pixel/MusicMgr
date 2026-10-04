@@ -273,3 +273,50 @@ class TestLevelling:
         bare = QueueItem(track_id=1, title="a", artist="", album="", path=path)
         player._hydrate(bare)
         assert bare.rg_track_gain == -3.0 and bare.media_file_id is not None
+
+
+class TestShutdownOrder:
+    """2026-10-04: the 1.9.13 release run crashed (exit 139) after every
+    test passed - at exit Qt destroyed a deck's QMediaPlayer before the
+    live-radio tap attached to it, and the tap's destructor called into the
+    deleted player. The tap is now created first and the decks are children
+    of the controller, so Qt deletes the tap first."""
+
+    def test_tap_is_deleted_before_the_decks(self, qapp):
+        from musicmgr.services.player import PlayerController
+
+        p = PlayerController()
+        if p._tap is None:
+            return                                   # no QAudioBufferOutput in this Qt
+        children = p.children()
+        assert all(d.player.parent() is p and d.audio.parent() is p for d in p._decks)
+        first_deck = min(children.index(d.player) for d in p._decks)
+        assert children.index(p._tap) < first_deck
+
+    def test_exits_cleanly_with_a_station_tapped(self, tmp_path):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        script = tmp_path / "exit.py"
+        script.write_text(
+            "import os\n"
+            "os.environ['QT_QPA_PLATFORM'] = 'offscreen'\n"
+            "from PySide6.QtWidgets import QApplication\n"
+            "app = QApplication([])\n"
+            "from musicmgr.services.player import PlayerController\n"
+            "keep = []\n"
+            "for _ in range(6):\n"
+            "    p = PlayerController()\n"
+            "    for d in p._decks:\n"
+            "        d.set_tap(p._tap)\n"
+            "        break\n"
+            "    keep.append(p)\n"
+            "import builtins; builtins._keep = keep\n")
+        root = Path(__file__).resolve().parents[1]
+        env = dict(os.environ, PYTHONPATH=str(root))
+        for _ in range(3):
+            done = subprocess.run([sys.executable, str(script)], env=env,
+                                  capture_output=True, timeout=60)
+            assert done.returncode == 0, done.stderr.decode(errors="replace")[-2000:]
