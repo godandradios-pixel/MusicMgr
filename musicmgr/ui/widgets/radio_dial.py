@@ -29,6 +29,14 @@ just past 1000), internet-only ones fill the empty stretches
 meter once a station is on: shadow closed on a good stream, flickering
 while it buffers, wide open and dim when the signal is lost. A station
 that's off the air has its name faded on the glass.
+
+2026-10-03 (James: "When you move the dial between stations, I would like
+it to be able to play static stations, coming in and out"): as the
+pointer leaves the station that's playing, it fades and flutters out
+under the static (`receptionChanged`, which the Radio page hands to the
+player's volume). Rest the pointer on another station mid-drag for
+DWELL_MS and it's tuned in there and then, coming up through the static
+as the pointer closes on it, rather than only once you let go.
 Interaction: tap a station name or anywhere on the lit band, drag the
 pointer, drag the TUNING knob or scroll; let go and it settles on the
 nearest station and tunes in. Between stations there's a little tuning
@@ -114,6 +122,13 @@ def _font(px: float, bold: bool = False, condensed: bool = True) -> QFont:
     return f
 
 
+#: rest on a station this long mid-drag and it starts playing through the static
+DWELL_MS = 400
+#: how much a half-tuned station's volume wavers (0 = steady)
+FLUTTER = 0.55
+#: reception/static refresh while the pointer moves
+RECEPTION_TICK_MS = 60
+
 #: what the magic eye shows once something's tuned in (PlayerController.signal)
 SIGNAL_NONE, SIGNAL_CONNECTING, SIGNAL_GOOD, SIGNAL_BUFFERING, SIGNAL_LOST = (
     "none", "connecting", "good", "buffering", "lost")
@@ -155,6 +170,9 @@ class RadioSet(QWidget):
     bandRequested = Signal(str)
     volumeRequested = Signal(float)
     contextRequested = Signal(object)  # global QPoint
+    #: how well the playing station comes in at the pointer, 0..1 (1 when
+    #: the pointer sits on it) - the Radio page sets the player's volume by it
+    receptionChanged = Signal(float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -202,6 +220,18 @@ class RadioSet(QWidget):
         self._static_off.setSingleShot(True)
         self._static_off.timeout.connect(self._silence)
 
+        self._reception = 1.0
+        self._flutter_phase = 0.0
+        self._flutter_rng = random.Random()
+        self._reception_timer = QTimer(self)
+        self._reception_timer.setInterval(RECEPTION_TICK_MS)
+        self._reception_timer.timeout.connect(self._update_reception)
+        self._dwell_idx = -1
+        self._dwell = QTimer(self)
+        self._dwell.setSingleShot(True)
+        self._dwell.setInterval(DWELL_MS)
+        self._dwell.timeout.connect(self._on_dwell)
+
     # -- public ------------------------------------------------------------
 
     @property
@@ -245,6 +275,8 @@ class RadioSet(QWidget):
         and moving the pointer) without asking for it to be played."""
         self._tuned[band] = index
         self._band = band
+        if not animate:
+            self._set_reception(1.0)
         if 0 <= index < len(self._positions[band]):
             self._move_to(self._positions[band][index], animate, tune=False)
         self.update()
@@ -405,7 +437,71 @@ class RadioSet(QWidget):
         if index >= 0:
             self._tuned[self._band] = index
             self.update()
+            self._set_reception(1.0)
             self.tuneRequested.emit(self._band, index)
+
+    # -- reception (stations coming in and out) --------------------------------
+
+    @property
+    def reception(self) -> float:
+        return self._reception
+
+    def _moving(self) -> bool:
+        return self._drag in ("dial", "tune") or self._anim.state() == QVariantAnimation.Running
+
+    def _closeness_to(self, index: int) -> float:
+        """0..1: how near the pointer is to station `index` of the lit band,
+        1 on it, 0 halfway to its nearest neighbour or beyond."""
+        positions = self._positions[self._band]
+        if not 0 <= index < len(positions):
+            return 0.0
+        others = [abs(positions[index] - t) for k, t in enumerate(positions) if k != index]
+        half = (min(others) if others else 0.4) / 2
+        return max(0.0, 1.0 - abs(self._pos - positions[index]) / max(1e-6, half))
+
+    def _flutter(self) -> float:
+        """0..1, wandering - the fading of a station not quite tuned in."""
+        self._flutter_phase += self._flutter_rng.uniform(0.25, 0.9)
+        return 0.5 + 0.5 * math.sin(self._flutter_phase) * math.sin(self._flutter_phase * 0.37)
+
+    def _set_reception(self, value: float) -> None:
+        value = max(0.0, min(1.0, value))
+        if abs(value - self._reception) > 1e-3 or value in (0.0, 1.0) and value != self._reception:
+            self._reception = value
+            self.receptionChanged.emit(value)
+
+    def _update_reception(self) -> None:
+        if not self._moving():
+            self._reception_timer.stop()
+            self._dwell.stop()
+            return
+        if not self._reception_timer.isActive():
+            self._reception_timer.start()
+        base = self._closeness_to(self._tuned.get(self._band, -1))
+        wobble = self._flutter() if 0.0 < base < 1.0 else 0.0
+        self._set_reception((base * (1.0 - FLUTTER * (1.0 - base) * wobble)) ** 1.5)
+        self._update_static(wobble)
+        # resting on another station mid-drag: bring it in
+        if self._drag in ("dial", "tune"):
+            near = self._nearest()
+            if near >= 0 and near != self._tuned.get(self._band, -1) \
+                    and self._closeness_to(near) > 0.55:
+                if near != self._dwell_idx or not self._dwell.isActive():
+                    if near != self._dwell_idx:
+                        self._dwell_idx = near
+                        self._dwell.start()
+            else:
+                self._dwell_idx = -1
+                self._dwell.stop()
+
+    def _on_dwell(self) -> None:
+        index = self._dwell_idx
+        if self._drag not in ("dial", "tune") or index < 0 or self._nearest() != index:
+            return
+        self._tuned[self._band] = index
+        self.update()
+        self.tuneRequested.emit(self._band, index)
+        self._update_reception()
 
     def _pos_from_x(self, x: float) -> float:
         return max(0.0, min(1.0, (x - self._geom["scale_left"]) / self._geom["scale_width"]))
@@ -429,15 +525,34 @@ class RadioSet(QWidget):
             self._static = None
         return self._static
 
-    def _update_static(self) -> None:
-        moving = self._drag in ("dial", "tune") or self._anim.state() == QVariantAnimation.Running
+    def _update_static(self, wobble: Optional[float] = None) -> None:
+        moving = self._moving()
+        if wobble is None:
+            # called on every pointer movement - reception follows it too
+            # (and calls back here with its flutter)
+            if moving:
+                self._update_reception()
+            else:
+                self._reception_timer.stop()
+                self._dwell.stop()
+                self._dwell_idx = -1
+                if self._drag is None and self._pending_tune < 0:
+                    # at rest (on a station, or after a band change): full
+                    # strength; while a new station's about to tune, stay faded
+                    self._set_reception(1.0)
+            if moving:
+                return
         if not self._static_enabled or not moving or not self._positions[self._band]:
             self._static_off.start(120)
             return
         effect = self._ensure_static()
         if effect is None:
             return
-        effect.setVolume((1.0 - self._closeness()) ** 0.8 * 0.35 * self._volume)
+        # the hiss rises as the playing station fades, and wavers against it
+        level = max((1.0 - self._closeness()) ** 0.8, 1.0 - self._reception) * 0.35
+        if wobble:
+            level *= 0.75 + 0.5 * wobble
+        effect.setVolume(min(0.5, level) * self._volume)
         if not effect.isPlaying():
             effect.play()
         self._static_off.stop()

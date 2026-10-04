@@ -576,6 +576,7 @@ class TunerView(BaseView):
         self.radio.bandRequested.connect(self.set_band)
         self.radio.volumeRequested.connect(ctx.player.set_volume)
         self.radio.contextRequested.connect(self._dial_menu)
+        self.radio.receptionChanged.connect(self._on_reception)
         self.radio.set_volume(ctx.player.volume)
         self.body().addWidget(self.radio, 1)
         #: "Reading your radio programs…" while a rescan runs
@@ -726,10 +727,17 @@ class TunerView(BaseView):
             self.ctx.tuner.tune_station(ident)
 
     def _on_tuned(self, kind: str, ident: int) -> None:
+        if not kind:
+            self.ctx.player.set_reception(1.0)   # something else took over
         if kind:
             self._point_at(kind, ident, animate=True)
         self._sync_signal()
         self._update_info()
+
+    def _on_reception(self, value: float) -> None:
+        """The station fades and flutters under the static as the pointer
+        leaves it (2026-10-03) - only while the radio is what's playing."""
+        self.ctx.player.set_reception(value if self.ctx.tuner.tuned[0] else 1.0)
 
     def _sync_signal(self) -> None:
         """The magic eye shows the stream's signal only while a station is

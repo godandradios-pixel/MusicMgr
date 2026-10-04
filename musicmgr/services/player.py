@@ -324,6 +324,9 @@ class PlayerController(QObject):
         self._measuring: set[int] = set()
         self._measure_tried: set[int] = set()
         self._signal = "none"
+        #: the radio dial's reception, 0..1 (2026-10-03) - a station fading
+        #: under the static as the pointer moves off it. 1 everywhere else.
+        self._reception = 1.0
         from .spectrum import LiveSpectrum
 
         self._live = LiveSpectrum(parent=self)
@@ -391,7 +394,8 @@ class PlayerController(QObject):
 
     def _apply_volume(self, deck: Optional[_Deck] = None) -> None:
         for d in (deck,) if deck is not None else self._decks:
-            d.audio.setVolume(max(0.0, min(1.0, self._volume * d.gain * d.fade)))
+            d.audio.setVolume(max(0.0, min(1.0, self._volume * d.gain * d.fade
+                                           * self._reception)))
 
     def _refresh_preload(self) -> None:
         """Make sure the idle deck holds whatever plays next. Skipped while a
@@ -938,6 +942,18 @@ class PlayerController(QObject):
         """The volume slider's value - levelling and fades are applied on
         top of it, per deck."""
         return self._volume
+
+    @property
+    def reception(self) -> float:
+        return self._reception
+
+    def set_reception(self, value: float) -> None:
+        """How well the radio station comes in while the dial moves -
+        scales the output without touching the volume setting."""
+        value = max(0.0, min(1.0, float(value)))
+        if abs(value - self._reception) > 1e-6:
+            self._reception = value
+            self._apply_volume()
 
     def set_volume(self, value: float) -> None:
         value = max(0.0, min(1.0, float(value)))
