@@ -265,6 +265,9 @@ class RadioSet(QWidget):
     #: how well the playing station comes in at the pointer, 0..1 (1 when
     #: the pointer sits on it) - the Radio page sets the player's volume by it
     receptionChanged = Signal(float)
+    #: the listener moved the pointer or chose a band themselves (by mouse,
+    #: wheel or keys) - the Radio page stops a station scan on it
+    userTuned = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -432,6 +435,27 @@ class RadioSet(QWidget):
         current = order.index(self._nearest())
         target = order[max(0, min(len(order) - 1, current + delta))]
         self._move_to(positions[target], True, tune=True, debounce=650)
+
+    def scan_to(self, index: int) -> None:
+        """Sweep the pointer to station `index` of the lit band and tune it
+        in when it gets there - the Scan button's move (2026-10-04). The
+        sweep passes through the static like a hand on the knob would."""
+        positions = self._positions[self._band]
+        if 0 <= index < len(positions):
+            self._move_to(positions[index], True, tune=True, debounce=150)
+
+    def next_in_dial_order(self, after: int, skip: Sequence[int] = ()) -> int:
+        """The station after index `after` along the lit band, left to right,
+        wrapping round at the end and passing over `skip`; -1 if none."""
+        order = [i for i in self._dial_order() if i not in skip]
+        if not order:
+            return -1
+        full = self._dial_order()
+        start = full.index(after) if after in full else -1
+        for i in full[start + 1:] + full[:start + 1]:
+            if i in order and i != after:
+                return i
+        return -1
 
     def sizeHint(self) -> QSize:  # noqa: D102
         return QSize(1150, 560)
@@ -673,6 +697,8 @@ class RadioSet(QWidget):
             return super().mousePressEvent(event)
         pt = event.position()
         hit = self._hit(pt) or ""
+        if hit and hit != "knob_vol":
+            self.userTuned.emit()
         if hit.startswith("key:"):
             self.bandRequested.emit(hit[4:])
         elif hit.startswith("strip:"):
@@ -738,10 +764,13 @@ class RadioSet(QWidget):
             self.volumeRequested.emit(self._volume)
             self.update()
         else:
+            self.userTuned.emit()
             self.step(1 if steps < 0 else -1)
         event.accept()
 
     def keyPressEvent(self, event) -> None:  # noqa: D102
+        if event.key() in (Qt.Key_Right, Qt.Key_Left, Qt.Key_Up, Qt.Key_Down):
+            self.userTuned.emit()
         if event.key() == Qt.Key_Right:
             self.step(1)
         elif event.key() == Qt.Key_Left:

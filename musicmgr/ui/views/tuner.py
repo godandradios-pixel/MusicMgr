@@ -41,7 +41,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -69,6 +69,12 @@ from .base import BaseView
 log = logging.getLogger(__name__)
 
 STATIC_KEY = "tuner_static"
+#: Scan (2026-10-04): how long each station plays once its stream is up,
+#: and how long to wait for one that won't come in before moving on
+SCAN_HOLD_MS = 8000
+SCAN_GIVE_UP_MS = 12000
+SCAN_LOST_MS = 1500
+SCAN_LABEL, SCAN_STOP_LABEL = "Scan ▸▸", "■ Stop scan"
 BAND_KEY = "tuner_band"
 ONAIR_LABEL = "On the Air"
 BAND_BLURBS = {
@@ -540,6 +546,17 @@ class TunerView(BaseView):
         self._initialised = False
         self._live = False
         self._off_air: set[int] = set()
+        # Scan (2026-10-04, from the radio ideas: "plays each station on the
+        # band for about 8 seconds, like the scan button on a car radio.
+        # Press it again to stay on the current station.")
+        self._scanning = False
+        #: the (kind, id) the scan last tuned; anything else tuned stops it
+        self._scan_expect: Optional[tuple[str, int]] = None
+        #: waiting for the scanned station's stream to come in
+        self._scan_waiting = False
+        self._scan_timer = QTimer(self)
+        self._scan_timer.setSingleShot(True)
+        self._scan_timer.timeout.connect(self._scan_next)
 
         self.find_btn = make_compact(TouchButton("Find stations…"))
         self.find_btn.clicked.connect(self.find_stations)
@@ -577,11 +594,16 @@ class TunerView(BaseView):
         self.radio.volumeRequested.connect(ctx.player.set_volume)
         self.radio.contextRequested.connect(self._dial_menu)
         self.radio.receptionChanged.connect(self._on_reception)
+        self.radio.userTuned.connect(self.stop_scan)
         self.radio.set_volume(ctx.player.volume)
         self.body().addWidget(self.radio, 1)
         #: "Reading your radio programs…" while a rescan runs
         self._scan_text = ""
 
+        self.btn_scan = make_compact(TouchButton(SCAN_LABEL))
+        self.btn_scan.setToolTip("Play each station on this band for a few seconds, "
+                                 "like a car radio's scan")
+        self.btn_scan.clicked.connect(self.toggle_scan)
         self.btn_listen = make_compact(TouchButton("Listen ▶", primary=True))
         self.btn_listen.clicked.connect(self._listen_pointed)
         self.btn_episodes = make_compact(TouchButton("Episodes…"))
@@ -623,6 +645,7 @@ class TunerView(BaseView):
         ctx.player.playbackStateChanged.connect(self._on_state)
         ctx.player.volumeChanged.connect(self.radio.set_volume)
         ctx.player.signalChanged.connect(lambda _l: self._sync_signal())
+        ctx.player.signalChanged.connect(self._scan_on_signal)
         ctx.tuner.stationAirChanged.connect(lambda _id, _off: self._changed())
 
     # -- setup -------------------------------------------------------------
@@ -664,6 +687,7 @@ class TunerView(BaseView):
     def set_band(self, band: str) -> None:
         if band == self.radio.band:
             return
+        self.stop_scan()
         self.radio.set_band(band)
         _set_setting(self.ctx, BAND_KEY, band)
         self._update_info()
@@ -727,6 +751,10 @@ class TunerView(BaseView):
             self.ctx.tuner.tune_station(ident)
 
     def _on_tuned(self, kind: str, ident: int) -> None:
+        if self._scanning and (kind, ident) != self._scan_expect:
+            # something else was tuned or played (Listen, the player bar's
+            # next station, a song) - the scan ends there
+            self.stop_scan()
         if not kind:
             self.ctx.player.set_reception(1.0)   # something else took over
         if kind:
@@ -751,16 +779,97 @@ class TunerView(BaseView):
 
     def _on_state(self, state: str) -> None:
         self.radio.set_playing(state == "playing" and bool(self.ctx.tuner.tuned[0]))
+        if state == "paused":
+            self.stop_scan()
+
+    # -- scan ----------------------------------------------------------------
+
+    def _scan_skip(self) -> set[int]:
+        """Indexes on the lit band the scan passes over: anything that isn't
+        an internet station, and stations that are off the air."""
+        return {i for i, (k, n, _) in enumerate(self._entries.get(self.radio.band, []))
+                if k != "station" or n in self._off_air}
+
+    def can_scan(self) -> bool:
+        band = self.radio.band
+        if band not in otr.STATION_BANDS:
+            return False
+        return len(self._entries.get(band, [])) - len(self._scan_skip()) >= 2
+
+    @property
+    def scanning(self) -> bool:
+        return self._scanning
+
+    def toggle_scan(self) -> None:
+        if self._scanning:
+            self.stop_scan()            # stay on the station that's playing
+        else:
+            self.start_scan()
+
+    def start_scan(self) -> None:
+        if self._scanning or not self.can_scan():
+            return
+        self._scanning = True
+        self.btn_scan.setText(SCAN_STOP_LABEL)
+        self.btn_scan.setToolTip("Stay on this station")
+        self._scan_next()
+
+    def stop_scan(self) -> None:
+        if not self._scanning:
+            return
+        self._scanning = False
+        self._scan_expect = None
+        self._scan_waiting = False
+        self._scan_timer.stop()
+        self.btn_scan.setText(SCAN_LABEL)
+        self.btn_scan.setToolTip("Play each station on this band for a few seconds, "
+                                 "like a car radio's scan")
+        self._update_info()
+
+    def _scan_next(self) -> None:
+        if not self._scanning:
+            return
+        band = self.radio.band
+        entries = self._entries.get(band, [])
+        kind, ident = self.ctx.tuner.tuned
+        loc_band, current = self._locate(kind, ident)
+        if loc_band != band:
+            current = self.radio.tuned_index
+        target = self.radio.next_in_dial_order(current, self._scan_skip())
+        if target < 0:
+            self.stop_scan()
+            return
+        k, n, _ = entries[target]
+        self._scan_expect = (k, n)
+        self._scan_waiting = True
+        # a station that won't come in is passed over (the sweep itself
+        # takes up to about a second)
+        self._scan_timer.start(SCAN_GIVE_UP_MS)
+        self.radio.scan_to(target)
+        self._update_info()
+
+    def _scan_on_signal(self, level: str) -> None:
+        if not (self._scanning and self._scan_waiting
+                and self.ctx.tuner.tuned == self._scan_expect):
+            return
+        if level == "good":
+            self._scan_waiting = False
+            self._scan_timer.start(SCAN_HOLD_MS)
+        elif level == "lost":
+            # the stream refused outright: don't sit in silence
+            self._scan_timer.start(SCAN_LOST_MS)
 
     # -- info card ---------------------------------------------------------
 
     def _all_buttons(self):
-        return (self.btn_listen, self.btn_episodes, self.btn_prev, self.btn_next,
+        return (self.btn_scan, self.btn_listen, self.btn_episodes, self.btn_prev, self.btn_next,
                 self.btn_new_evening, self.btn_band, self.btn_rename, self.btn_move_left,
                 self.btn_move_right, self.btn_remove, self.btn_relink, self.btn_folder,
                 self.btn_starters)
 
     def _show_buttons(self, *buttons) -> None:
+        if self._scanning or self.can_scan():
+            buttons = (self.btn_scan, *buttons)
         for b in self._all_buttons():
             b.setVisible(b in buttons)
 
@@ -785,6 +894,9 @@ class TunerView(BaseView):
 
     def _set_status(self, *parts: str, tip: str = "", warn: bool = False) -> None:
         text = " · ".join(p for p in parts if p)
+        if self._scanning:
+            text = f"Scanning — {text}" if text else "Scanning…"
+            tip = (tip or text) + "\nPress Stop scan to stay on this station."
         if self._scan_text:
             text = self._scan_text
         self.status.setText(text)
@@ -893,6 +1005,10 @@ class TunerView(BaseView):
         if off_air:
             self._set_status(name, "off the air — its stream stopped answering",
                              tip=tip, warn=True)
+        elif self._live and self._scanning:
+            # stations go by quickly while scanning: say which one this is
+            self._set_status(name, f"♪ {self._stream_title}" if self._stream_title else detail,
+                             tip=tip)
         elif self._live:
             # the player bar names the station; here, what it's playing
             self._set_status(f"♪ {self._stream_title}" if self._stream_title else detail, tip=tip)
@@ -1125,6 +1241,7 @@ class TunerView(BaseView):
         menu.exec(global_pos)
 
     def shutdown(self) -> None:
+        self.stop_scan()
         if self._scan_thread is not None and self._scan_thread.isRunning():
             self._scan_thread.requestInterruption()
             self._scan_thread.wait(5000)
