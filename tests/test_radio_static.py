@@ -192,3 +192,17 @@ class TestStaticSound:
         drag_to(w, w.positions()[1] + 0.002)
         assert w._static.volume < between / 2                 # almost gone on a station
         w._drag = None
+
+    def test_static_plays_through_the_media_player(self, qapp, tmp_path):
+        # QSoundEffect stayed silent on James's Windows PC; the static now
+        # goes through QMediaPlayer like the stations
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        path = radio_dial.make_static_wav(tmp_path / radio_dial.STATIC_FILE, seconds=0.5)
+        sp = radio_dial.StaticPlayer(path)
+        assert isinstance(sp._player, QMediaPlayer)
+        assert sp._player.loops() == QMediaPlayer.Loops.Infinite
+        sp.setVolume(0.6)
+        assert sp.volume() == pytest.approx(0.6)
+        sp.stop()
+        assert sp.volume() == 0.0 and not sp.isPlaying()

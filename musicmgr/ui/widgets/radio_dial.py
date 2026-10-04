@@ -46,6 +46,7 @@ and brighter since 2026-10-04). Everything is painted - no images shipped.
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 import wave
@@ -121,6 +122,8 @@ def _font(px: float, bold: bool = False, condensed: bool = True) -> QFont:
         f.setStretch(QFont.SemiCondensed)
     return f
 
+
+log = logging.getLogger(__name__)
 
 #: rest on a station this long mid-drag and it starts playing through the static
 DWELL_MS = 400
@@ -210,6 +213,47 @@ def make_static_wav(path: Path, seconds: float = 3.0, rate: int = STATIC_RATE) -
         w.setframerate(rate)
         w.writeframes(pcm.tobytes())
     return path
+
+
+class StaticPlayer:
+    """Plays the static loop through a QMediaPlayer, the same FFmpeg path
+    the stations use.
+
+    2026-10-04 (James, after the louder loop: "I can't hear the static
+    between stations"): QSoundEffect, used until then, can stay silent on
+    Windows without reporting anything, so the hiss never played. The media
+    player is proven on his PCs. It's paused rather than stopped when the
+    dial comes to rest, so it starts again without a delay.
+    """
+
+    def __init__(self, path: Path, parent=None) -> None:
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+
+        self._audio = QAudioOutput(parent)
+        self._audio.setVolume(0.0)
+        self._player = QMediaPlayer(parent)
+        self._player.setAudioOutput(self._audio)
+        self._player.setLoops(QMediaPlayer.Loops.Infinite)
+        self._player.errorOccurred.connect(
+            lambda _e, msg: log.warning("tuning static: %s", msg))
+        self._player.setSource(QUrl.fromLocalFile(str(path)))
+        self._playing_state = QMediaPlayer.PlaybackState.PlayingState
+
+    def setVolume(self, value: float) -> None:
+        self._audio.setVolume(max(0.0, min(1.0, value)))
+
+    def volume(self) -> float:
+        return self._audio.volume()
+
+    def isPlaying(self) -> bool:
+        return self._player.playbackState() == self._playing_state
+
+    def play(self) -> None:
+        self._player.play()
+
+    def stop(self) -> None:
+        self._audio.setVolume(0.0)
+        self._player.pause()
 
 
 class RadioSet(QWidget):
@@ -560,16 +604,11 @@ class RadioSet(QWidget):
         if self._static is not None or self._static_path is None:
             return self._static
         try:
-            from PySide6.QtMultimedia import QSoundEffect
-
             if not self._static_path.exists():
                 make_static_wav(self._static_path)
-            effect = QSoundEffect(self)
-            effect.setSource(QUrl.fromLocalFile(str(self._static_path)))
-            effect.setLoopCount(QSoundEffect.Infinite)
-            effect.setVolume(0.0)
-            self._static = effect
+            self._static = StaticPlayer(self._static_path, self)
         except Exception:  # pragma: no cover - no audio backend
+            log.warning("tuning static unavailable", exc_info=True)
             self._static = None
         return self._static
 
