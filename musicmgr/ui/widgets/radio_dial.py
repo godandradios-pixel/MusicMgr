@@ -42,6 +42,13 @@ pointer, drag the TUNING knob or scroll; let go and it settles on the
 nearest station and tunes in. Between stations there's tuning static,
 as loud as a station halfway between two (can be switched off; louder
 and brighter since 2026-10-04). Everything is painted - no images shipped.
+
+2026-10-06 (James: "For the stations that are near each other I would
+like them to be offset vertically one higher, one underneath"): stations
+too close to share one line without shrinking are staggered - one name
+hung high under the scale with its marker above it, the next set low
+with its marker along the bottom of the strip, alternating through the
+crowd - instead of being squeezed into tiny elided text.
 """
 
 from __future__ import annotations
@@ -936,84 +943,105 @@ class RadioSet(QWidget):
         order = sorted(range(len(labels)), key=lambda i: (positions[i], i))
         longest = max(len(label) for label in labels)
 
-        def room(rows: int) -> dict[int, float]:
-            """How wide each name may be: up to the next name along in its
-            own row (names alternate rows when there are two), so centred
-            names never overlap; an end name may also run to the glass
-            edge."""
-            out = {}
-            for k, i in enumerate(order):
-                prev = order[k - rows] if k - rows >= 0 else None
-                nxt = order[k + rows] if k + rows < len(order) else None
-                d_prev = xs[i] - xs[prev] if prev is not None else None
-                d_next = xs[nxt] - xs[i] if nxt is not None else None
-                if d_prev is None and d_next is None:
-                    out[i] = width * 0.96
-                elif d_prev is None:
-                    out[i] = min(d_next, (xs[i] - left) + d_next / 2)
-                elif d_next is None:
-                    out[i] = min(d_prev, (left + width - xs[i]) + d_prev / 2)
-                else:
-                    out[i] = min(d_prev, d_next)
-                out[i] = max(8.0, out[i] * 0.96)
-            return out
-
-        avail_one = room(1)
+        tuned = self._tuned.get(band.key, -1)
+        faded = self._faded.get(band.key, set())
         # the size the names would get spread evenly, so a crowded pair
         # doesn't shrink every name on the band
         typical = width * (0.84 / max(1, len(labels) - 1)) if len(labels) > 1 else width
         h = name_area.height()
         px = min(h * 0.62, max(8.0, typical * 0.95 / max(5, longest * 0.55)))
-        tuned = self._tuned.get(band.key, -1)
-        faded = self._faded.get(band.key, set())
 
-        # Most names print in one row at a common size, shrinking a little
-        # if they must. Only names too crowded for that (two stations a few
-        # notches apart) are stacked, half height, one above the other -
-        # rather than halving every name on the band.
-        sizes: dict[int, float] = {}
-        widths: dict[int, float] = {}
-        stacked: list[int] = []
-        for i in order:
-            font = _font(px, bold=i == tuned)
-            need = QFontMetricsF(font).horizontalAdvance(labels[i].upper())
-            if need <= avail_one[i]:
-                sizes[i] = px
-            elif need * 0.8 <= avail_one[i] or h <= 26 or px * 0.8 <= 9:
-                sizes[i] = max(9.0, math.floor(px * avail_one[i] / need))
-            else:
-                stacked.append(i)
-                continue
-            f = _font(sizes[i], bold=i == tuned)
-            widths[i] = min(avail_one[i], QFontMetricsF(f).horizontalAdvance(labels[i].upper()))
-        stack_room = room(2)
+        def need_at(i: int, size: float) -> float:
+            return QFontMetricsF(_font(size, bold=i == tuned)).horizontalAdvance(labels[i].upper())
+
+        # Staggered names. Stations close enough that their names would
+        # have to shrink to share one line are printed in two rows - one
+        # name hung high under the scale with its marker above it, the
+        # next set low with its marker below it, alternating along the
+        # crowd - like the staggered call letters on an old dial glass.
+        # Names with room keep the single centred row.
+        BAR, GAP = 2.6, 2.5
+        top_y = name_area.top() + 1
+        bottom_y = r.bottom() - 3
+        row_h = (bottom_y - top_y - 2) / 2
+        stack_px = px
+        def cap_h(size: float) -> float:
+            # true height of capitals and figures (names print in capitals)
+            return -QFontMetricsF(_font(size, bold=True)).tightBoundingRect("0HW").top()
+
+        while stack_px > 7 and cap_h(stack_px) + BAR + GAP > row_h:
+            stack_px -= 0.5
+        stack_px = max(7.0, stack_px)
+
+        def fitted(i: int, gap: float) -> float:
+            # the size name i could print at with only `gap` of room
+            return px * min(1.0, gap * 0.96 / max(1.0, need_at(i, px)))
+
+        # A pair is "crowded" when one row would print them smaller than
+        # staggering does. Each crowded pair is staggered; a name next to
+        # a staggered one joins the stagger too if it would have to shrink
+        # below full size to stay in the middle row beside it.
+        n_st = len(order)
+        gaps = [xs[order[k + 1]] - xs[order[k]] for k in range(n_st - 1)]
+        joined = [min(fitted(order[k], g), fitted(order[k + 1], g)) < stack_px * 0.95
+                  for k, g in enumerate(gaps)]
+        changed = True
+        while changed:
+            changed = False
+            for k, g in enumerate(gaps):
+                if joined[k]:
+                    continue
+                left_in = k > 0 and joined[k - 1]
+                right_in = k + 1 < len(gaps) and joined[k + 1]
+                if (left_in or right_in) and \
+                        min(fitted(order[k], g), fitted(order[k + 1], g)) < px * 0.95:
+                    joined[k] = changed = True
         row_of = {i: 0 for i in order}
-        for k, i in enumerate(stacked):
-            row_of[i] = 1 + (k % 2)
-            # stay clear of the full-height names either side
-            limit = stack_room[i]
-            pos_k = order.index(i)
-            for nb in (pos_k - 1, pos_k + 1):
-                if 0 <= nb < len(order) and order[nb] not in stacked:
-                    j = order[nb]
-                    limit = min(limit, 2 * max(4.0, abs(xs[i] - xs[j]) - widths[j] / 2 - 4))
-            stack_room[i] = limit
-            sizes[i] = min(h / 2 * 0.62, px)
+        k = 0
+        while k < n_st:
+            run = [order[k]]
+            while k < len(gaps) and joined[k]:
+                k += 1
+                run.append(order[k])
+            if len(run) > 1:
+                for n, i in enumerate(run):
+                    row_of[i] = 1 + (n % 2)
+            k += 1
+
+        def clash(i: int, j: int) -> bool:
+            # two names share vertical space unless one is high, one low
+            return row_of[i] == 0 or row_of[j] == 0 or row_of[i] == row_of[j]
+
+        avail: dict[int, float] = {}
+        for k, i in enumerate(order):
+            d_prev = next((xs[i] - xs[order[m]] for m in range(k - 1, -1, -1)
+                           if clash(i, order[m])), None)
+            d_next = next((xs[order[m]] - xs[i] for m in range(k + 1, len(order))
+                           if clash(i, order[m])), None)
+            if d_prev is None and d_next is None:
+                a = width * 0.96
+            elif d_prev is None:
+                a = min(d_next, (xs[i] - left) + d_next / 2)
+            elif d_next is None:
+                a = min(d_prev, (left + width - xs[i]) + d_prev / 2)
+            else:
+                a = min(d_prev, d_next)
+            avail[i] = max(8.0, a * 0.96)
 
         for i, label in enumerate(labels):
             row = row_of[i]
             is_tuned = i == tuned
-            avail = stack_room[i] if row else avail_one[i]
-            font = _font(sizes[i], bold=is_tuned)
+            size = stack_px if row else px
+            font = _font(size, bold=is_tuned)
             fm = QFontMetricsF(font)
             full = fm.horizontalAdvance(label.upper())
-            if full > avail and sizes[i] > 9:
-                font = _font(max(9.0, math.floor(sizes[i] * avail / full)), bold=is_tuned)
+            if full > avail[i] and size > 9:
+                font = _font(max(9.0 if not row else min(9.0, size),
+                                 math.floor(size * avail[i] / full)), bold=is_tuned)
                 fm = QFontMetricsF(font)
             p.setFont(font)
-            text = fm.elidedText(label.upper(), Qt.ElideRight, avail)
+            text = fm.elidedText(label.upper(), Qt.ElideRight, avail[i])
             tw = fm.horizontalAdvance(text)
-            cy = name_area.top() + (h * 0.5 if row == 0 else h * (0.25 if row == 1 else 0.75))
             x = xs[i]
             tx = max(left + 4, min(left + width - 4 - tw, x - tw / 2))
             colour = QColor("#ffb19a") if (is_tuned and active) else QColor(name_ink)
@@ -1023,11 +1051,21 @@ class RadioSet(QWidget):
                 colour.setAlpha(int(colour.alpha() * 0.38))
                 mark.setAlpha(int(mark.alpha() * 0.38))
             p.setPen(colour)
-            baseline = cy + (fm.ascent() - fm.descent()) / 2 - 1
+            if row == 1:
+                # high name: marker just under the scale, name hung below it
+                bar_y = top_y
+                baseline = bar_y + BAR + GAP - fm.tightBoundingRect("0HW").top()
+            elif row == 2:
+                # low name: name above, marker along the bottom of the strip
+                bar_y = bottom_y - BAR
+                baseline = bar_y - GAP
+            else:
+                cy = name_area.top() + h * 0.5
+                baseline = cy + (fm.ascent() - fm.descent()) / 2 - 1
+                bar_y = min(baseline + fm.descent() + 1.5, r.bottom() - 4)
             p.drawText(QPointF(tx, baseline), text)
-            # marker bar under the name, centred on the station's spot
-            bar = QRectF(x - 7, min(baseline + fm.descent() + 1.5, r.bottom() - 4), 14, 2.6)
-            p.fillRect(bar, mark)
+            # marker bar centred on the station's spot
+            p.fillRect(QRectF(x - 7, bar_y, 14, BAR), mark)
 
     def _paint_knob(self, p: QPainter, center: QPointF, radius: float, angle_deg: float, label: str) -> None:
         p.setPen(Qt.NoPen)
