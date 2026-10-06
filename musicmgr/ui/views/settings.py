@@ -1216,10 +1216,11 @@ class SettingsView(BaseView):
             data_row.addWidget(cb)
         data_row.addStretch(1)
         usb_layout.addLayout(data_row)
-        self.usb_progress = QProgressBar()
-        self.usb_progress.setObjectName("ProgressWarm")
-        self.usb_progress.setVisible(False)
-        usb_layout.addWidget(self.usb_progress)
+        # 2026-10-06 - James: "when doing a USB scan, why do I need 2
+        # progress bars?" The group used to have its own bar as well as the
+        # page's pinned one, both showing the same thing. Only the pinned
+        # bar is left - it stays in view wherever the page is scrolled and
+        # with this group folded (see _usb_show).
 
         usb_buttons = QHBoxLayout()
         self.usb_check_btn = TouchButton("Check USB now", primary=True)
@@ -1529,13 +1530,15 @@ class SettingsView(BaseView):
         None for a step with no count (a moving bar)."""
         self.usb_status.setText(text)
         self._usb_busy = True
-        for bar in (self.usb_progress, self.progress):
-            if value is None:
-                bar.setRange(0, 0)
-            else:
-                bar.setRange(0, 1000)
-                bar.setValue(value)
-            bar.setVisible(True)
+        # one bar: the page's pinned one (the group's own copy was dropped
+        # 2026-10-06 - two bars showing the same thing)
+        bar = self.progress
+        if value is None:
+            bar.setRange(0, 0)
+        else:
+            bar.setRange(0, 1000)
+            bar.setValue(value)
+        bar.setVisible(True)
         self.progress_label.setText(f"USB sync: {text}")
         sec = getattr(self, "_sections", {}).get("usb")
         if sec is not None:
@@ -1544,7 +1547,6 @@ class SettingsView(BaseView):
     def _usb_idle(self) -> None:
         """A USB check or sync finished: put the progress line away."""
         self._usb_busy = False
-        self.usb_progress.setVisible(False)
         self.progress.setVisible(False)
         self.progress_label.setText("")
 
