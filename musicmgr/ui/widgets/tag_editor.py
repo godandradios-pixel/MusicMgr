@@ -78,7 +78,8 @@ HEADERS = ["Disc", "#", "Title", "Artist", "Comment", "File"]
 
 MIXED = "Different on each song"
 
-CHANGED_BG = QColor(165, 107, 52, 70)  # jukebox_key_hi, faint
+CHANGED_BG = QColor(COLORS["jukebox_key_hi"])  # the skin's accent, faint
+CHANGED_BG.setAlpha(70)
 
 #: an always-visible box for the checkboxes (the platform's own indicator
 #: barely shows on the dark theme - the same fix as Title Details' "Videos
@@ -558,7 +559,8 @@ class TagEditorDialog(QDialog):
         for name, edit in self.album_edits.items():
             changed = self._album_value(name) is not None
             edit.setStyleSheet(
-                "QLineEdit { background: rgba(165, 107, 52, 70); }" if changed else "")
+                f"QLineEdit {{ background: rgba({CHANGED_BG.red()}, {CHANGED_BG.green()}, "
+                f"{CHANGED_BG.blue()}, 70); }}" if changed else "")
             self.album_labels[name].setStyleSheet(
                 f"color: {COLORS['jukebox_key_hi']}; font-weight: 600;" if changed else "")
         n = len(self.edits())
