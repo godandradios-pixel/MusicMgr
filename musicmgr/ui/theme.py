@@ -61,6 +61,19 @@ COLORS = {
     "jukebox_key_pressed": "#4a2e14",
 }
 
+# 2026-10-13 - skins (James: "I would like the ability for the users to
+# change 'skins'. Right now it's the brown pallete"). The values above are
+# the Walnut skin; the skin and jukebox finish chosen in Settings ›
+# Appearance replace them here, once, when this module is first imported -
+# before any screen is built or any module works out a colour from COLORS -
+# so a new choice shows after a restart. See ui/skins.py. The accent is
+# `accent` / `accent_hi` / `accent_pressed`; the jukebox_key names it has
+# gone by since the brown retint stay as the same values, so nothing that
+# reads them needs to change.
+from . import skins as _skins  # noqa: E402
+
+COLORS.update(_skins.colors_for(_skins.ACTIVE))
+
 #: 2026-09-07, an eighth same-day follow-up - James, looking at the board
 #: after the genre chips shipped: "Let's also change the red color on the
 #: Now Playing, Add to Jukebox and the Play button at the bottom to the
@@ -276,11 +289,11 @@ QPushButton[compact="true"] {{
    icon - where the darker `jukebox_key` reads as "muddy" per those
    earlier comments. */
 QPushButton:pressed {{ background: {c['jukebox_key_pressed']}; border-color: {c['jukebox_key']}; }}
-QPushButton:disabled {{ color: #5a6270; background: {c['surface']}; }}
+QPushButton:disabled {{ color: {c['text_disabled']}; background: {c['surface']}; }}
 QPushButton#Primary {{
     background: {c['jukebox_key']};
     border-color: {c['jukebox_key']};
-    color: #ffffff;
+    color: {c['on_accent']};
     font-weight: 600;
 }}
 QPushButton#Primary:hover {{ background: {c['jukebox_key_pressed']}; }}
@@ -295,7 +308,7 @@ QPushButton#Primary:hover {{ background: {c['jukebox_key_pressed']}; }}
 QPushButton#PrimaryWarm {{
     background: {c['jukebox_key']};
     border-color: {c['jukebox_key']};
-    color: #ffffff;
+    color: {c['on_accent']};
     font-weight: 600;
 }}
 QPushButton#PrimaryWarm:hover {{ background: {c['jukebox_key_pressed']}; }}
@@ -335,7 +348,7 @@ QPushButton#TransportMain {{
     max-height: 68px;
     padding: 0;
     font-size: 24px;
-    color: #ffffff;
+    color: {c['on_accent']};
 }}
 QPushButton#TransportMain:hover {{ background: {c['jukebox_key_pressed']}; }}
 QPushButton#Chip {{
@@ -356,7 +369,7 @@ QPushButton#Chip:checked {{
        separate carve-out. */
     background: {c['jukebox_key']};
     border-color: {c['jukebox_key']};
-    color: #fff;
+    color: {c['on_accent']};
 }}
 /* Originally the Jukebox page's own genre chips only (2026-09-07 follow-up
    - James: "make the pills not red but the brown color") - same pill
@@ -377,7 +390,7 @@ QPushButton#ChipWarm {{
 QPushButton#ChipWarm:checked {{
     background: {c['jukebox_key']};
     border-color: {c['jukebox_key']};
-    color: #fff;
+    color: {c['on_accent']};
 }}
 /* the text box a genre chip (or the trailing "+" chip) turns into
    mid-rename/add (2026-09-22 follow-up - see ui/views/jukebox.py's
@@ -701,7 +714,7 @@ QFrame#JukeboxStrip {{
         stop:0 {c['jukebox_chrome_light']},
         stop:0.5 {c['jukebox_chrome_dark']},
         stop:1 {c['jukebox_chrome_light']});
-    border: 2px solid #5b5f66;
+    border: 2px solid {c['jukebox_strip_border']};
     border-radius: 16px;
 }}
 /* 2026-09-18 follow-up (drag-and-drop reordering, ui/widgets/

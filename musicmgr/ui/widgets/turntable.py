@@ -61,6 +61,20 @@ LABEL_RATIO = 0.985
 #: how far in the arm travels by the end of a song, as a share of the radius
 RUN_OUT_RATIO = 0.42
 
+# 2026-10-13 - the console's cabinet, deck, felt and front panel come from
+# the turntable finish chosen in Settings › Appearance (ui/skins.py:
+# walnut, blonde oak, modern black, white). The record, tone arm and lamps
+# are the same in every finish.
+from ..skins import turntable_finish as _turntable_finish  # noqa: E402
+
+
+def _fc(value) -> QColor:
+    """A finish colour: "#rrggbb" or (r, g, b[, a])."""
+    return QColor(value) if isinstance(value, str) else QColor(*value)
+
+
+FINISH = _turntable_finish()
+
 
 class Turntable(QWidget):
     def __init__(self, size: int = 340, parent=None) -> None:
@@ -224,10 +238,11 @@ class Turntable(QWidget):
         # walnut cabinet, grain running across
         cab = QRectF(0.5, 0.5, s - 1, s - 1)
         wood = QLinearGradient(0, 0, 0, s)
-        wood.setColorAt(0.0, QColor("#6b3b1f"))
-        wood.setColorAt(0.5, QColor("#5a2f17"))
-        wood.setColorAt(1.0, QColor("#4a2512"))
-        p.setPen(QPen(QColor("#2a140a"), 1.5))
+        w0, w1, w2 = FINISH["cabinet"]
+        wood.setColorAt(0.0, _fc(w0))
+        wood.setColorAt(0.5, _fc(w1))
+        wood.setColorAt(1.0, _fc(w2))
+        p.setPen(QPen(_fc(FINISH["cabinet_edge"]), 1.5))
         p.setBrush(wood)
         p.drawRoundedRect(cab, 14, 14)
         rng = random.Random(7)
@@ -237,7 +252,7 @@ class Turntable(QWidget):
         p.setClipPath(cab_clip)
         for _ in range(int(s * 0.35)):
             y = rng.uniform(0, s)
-            p.setPen(QPen(QColor(30, 12, 4, rng.randint(18, 45)), rng.uniform(0.6, 1.6)))
+            p.setPen(QPen(QColor(*FINISH["grain"], rng.randint(18, 45)), rng.uniform(0.6, 1.6)))
             p.drawLine(QPointF(0, y), QPointF(s, y + rng.uniform(-6, 6)))
         p.restore()
 
@@ -247,23 +262,24 @@ class Turntable(QWidget):
         deck_clip = QPainterPath()
         deck_clip.addRoundedRect(deck, s * 0.07, s * 0.07)
         shade = QLinearGradient(deck.topLeft(), deck.bottomRight())
-        shade.setColorAt(0.0, QColor("#4a2a17"))
-        shade.setColorAt(0.55, QColor("#2e180c"))
-        shade.setColorAt(1.0, QColor("#1f1008"))
-        p.setPen(QPen(QColor("#140903"), 2))
+        d0, d1, d2 = FINISH["deck"]
+        shade.setColorAt(0.0, _fc(d0))
+        shade.setColorAt(0.55, _fc(d1))
+        shade.setColorAt(1.0, _fc(d2))
+        p.setPen(QPen(_fc(FINISH["deck_edge"]), 2))
         p.setBrush(shade)
         p.drawPath(deck_clip)
-        self._mottle(p, deck, deck_clip, 11, ("#6a3d22", "#170a04", "#553018"),
+        self._mottle(p, deck, deck_clip, 11, tuple(FINISH["deck_mottle"]),
                      int(s * 0.9), (s * 0.01, s * 0.05))
         # raised rim highlight along the top/left edge
-        p.setPen(QPen(QColor(255, 220, 180, 40), 2))
+        p.setPen(QPen(_fc(FINISH["rim_hi"]), 2))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(deck.adjusted(3, 3, -3, -3), s * 0.06, s * 0.06)
         # mounting holes
         for fx, fy in ((0.05, 0.05),):
             c = QPointF(s * fx, s * fy)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor("#120702"))
+            p.setBrush(_fc(FINISH["hole"]))
             p.drawEllipse(c, s * 0.014, s * 0.014)
             p.setBrush(QColor(255, 220, 180, 30))
             p.drawEllipse(c + QPointF(0.8, 0.8), s * 0.008, s * 0.008)
@@ -277,12 +293,12 @@ class Turntable(QWidget):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(0, 0, 0, 110))                   # shadow
         p.drawEllipse(c + QPointF(3, 4), felt_r, felt_r)
-        p.setBrush(QColor("#5b5249"))
+        p.setBrush(_fc(FINISH["felt"]))
         p.drawEllipse(c, felt_r, felt_r)
         felt_clip = QPainterPath()
         felt_clip.addEllipse(c, felt_r, felt_r)
         self._mottle(p, QRectF(c.x() - felt_r, c.y() - felt_r, 2 * felt_r, 2 * felt_r),
-                     felt_clip, 23, ("#7a7065", "#3a332c"), int(s * 1.4), (1.0, 3.0))
+                     felt_clip, 23, tuple(FINISH["felt_mottle"]), int(s * 1.4), (1.0, 3.0))
 
         # the record itself is all album art (drawn per frame, turning);
         # just its dark shellac edge here, under the art
@@ -291,8 +307,8 @@ class Turntable(QWidget):
 
         # front control panel: reject lever and two jewel lamps (lit in paint)
         panel = QRectF(s * 0.86, s * 0.905, s * 0.12, s * 0.075)
-        p.setPen(QPen(QColor("#110802"), 1))
-        p.setBrush(QColor("#3d2210"))
+        p.setPen(QPen(_fc(FINISH["panel_edge"]), 1))
+        p.setBrush(_fc(FINISH["panel"]))
         p.drawRoundedRect(panel, 4, 4)
         lever = QPainterPath()
         lx, ly = s * 0.07, s * 0.93
@@ -301,7 +317,7 @@ class Turntable(QWidget):
         lever.lineTo(lx + s * 0.005, ly + s * 0.028)
         lever.lineTo(lx - s * 0.005, ly + s * 0.028)
         lever.closeSubpath()
-        p.setBrush(QColor("#1a0d06"))
+        p.setBrush(_fc(FINISH["lever"]))
         p.drawPath(lever)
 
         # arm pivot base
@@ -434,7 +450,7 @@ class Turntable(QWidget):
                 p.setPen(QPen(QColor("#0d0602"), 1))
                 p.setBrush(QColor(on_color))
             else:
-                p.setBrush(QColor("#3a2a1e"))
+                p.setBrush(_fc(FINISH["lamp_off"]))
             p.drawEllipse(pos, s * 0.013, s * 0.013)
 
         # tone arm (2026-09-30: "back off that philco beam of light needle,

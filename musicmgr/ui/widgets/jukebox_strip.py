@@ -432,13 +432,13 @@ class _ChevronBanner(QAbstractButton):
             fill = QColor(COLORS["jukebox_key"])
             border = QColor(COLORS["jukebox_key_hi"])
             code_fill = QColor(COLORS["jukebox_key_pressed"])
-            code_text_color = QColor("#ffffff")
-            title_color = QColor("#ffffff")
+            code_text_color = QColor(COLORS["on_accent"])
+            title_color = QColor(COLORS["on_accent"])
         else:
             fill = QColor(COLORS["jukebox_paper"])
             border = QColor(COLORS["jukebox_key"])
             code_fill = QColor(COLORS["jukebox_key"])
-            code_text_color = QColor("#ffffff")
+            code_text_color = QColor(COLORS["on_accent"])
             title_color = QColor(COLORS["jukebox_ink"])
         if self.isDown():
             # both states are real tap targets now (2026-09-13 follow-up) -

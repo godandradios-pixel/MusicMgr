@@ -522,12 +522,16 @@ def cleanup_leftovers(exe: Optional[Path]) -> None:
 _CARRY_FLAGS = ("--fullscreen", "--kiosk", "--maximized")
 
 
-def relaunch_args(exe: Path, pid: int, argv: Iterable[str]) -> list[str]:
+def relaunch_args(exe: Path, pid: int, argv: Iterable[str], after_update: bool = True) -> list[str]:
+    """`after_update=False` (2026-10-13, Settings › Appearance's "Restart
+    now" for a new skin) restarts without the "Updated to MusicMgr x" note."""
     carried = [a for a in argv if a in _CARRY_FLAGS]
-    return [str(exe), *carried, "--after-update", "--wait-pid", str(pid)]
+    flags = ["--after-update"] if after_update else []
+    return [str(exe), *carried, *flags, "--wait-pid", str(pid)]
 
 
-def relaunch(exe: Path, argv: Iterable[str], pid: Optional[int] = None) -> subprocess.Popen:
+def relaunch(exe: Path, argv: Iterable[str], pid: Optional[int] = None,
+             after_update: bool = True) -> subprocess.Popen:
     """Start `exe` as a fully independent process. The caller then closes
     the current window normally; the new instance waits for this pid first.
 
@@ -536,7 +540,7 @@ def relaunch(exe: Path, argv: Iterable[str], pid: Optional[int] = None) -> subpr
     folder, which gets deleted the moment we exit."""
     env = os.environ.copy()
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-    args = relaunch_args(exe, pid if pid is not None else os.getpid(), argv)
+    args = relaunch_args(exe, pid if pid is not None else os.getpid(), argv, after_update)
     kwargs: dict = {"env": env, "close_fds": True, "cwd": str(exe.parent)}
     if os.name == "nt":
         kwargs["creationflags"] = (

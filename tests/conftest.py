@@ -34,6 +34,9 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# the default skin and finishes whatever this PC has chosen in Settings ›
+# Appearance (2026-10-13, ui/skins.py) - tests check colours by name
+os.environ.setdefault("MUSICMGR_DEFAULT_LOOK", "1")
 
 import pytest
 from PySide6.QtWidgets import QApplication

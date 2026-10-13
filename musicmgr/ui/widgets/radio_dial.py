@@ -119,6 +119,20 @@ POINTER = QColor("#d1281e")
 GLASS_DARK = QColor("#160e07")
 IVORY = QColor("#efe4c8")
 
+# 2026-10-13 - the cabinet, knobs, keys and trim come from the radio
+# finish chosen in Settings › Appearance (ui/skins.py: walnut, blonde oak,
+# black or ivory bakelite). The dial glass, its gold scale and cream names,
+# the red pointer and the magic eye are the same in every finish.
+from ..skins import radio_finish as _radio_finish  # noqa: E402
+
+
+def _fc(value) -> QColor:
+    """A finish colour: "#rrggbb" or (r, g, b[, a])."""
+    return QColor(value) if isinstance(value, str) else QColor(*value)
+
+
+FINISH = _radio_finish()
+
 
 def _font(px: float, bold: bool = False, condensed: bool = True) -> QFont:
     f = QFont("Arial Narrow" if condensed else "Georgia")
@@ -815,16 +829,17 @@ class RadioSet(QWidget):
         path = QPainterPath()
         path.addRoundedRect(r, 26, 26)
         wood = QLinearGradient(r.topLeft(), r.bottomRight())
-        wood.setColorAt(0.0, QColor("#6e3c1e"))
-        wood.setColorAt(0.45, QColor("#5a2f16"))
-        wood.setColorAt(1.0, QColor("#431f0d"))
+        w0, w1, w2 = FINISH["wood"]
+        wood.setColorAt(0.0, _fc(w0))
+        wood.setColorAt(0.45, _fc(w1))
+        wood.setColorAt(1.0, _fc(w2))
         p.fillPath(path, wood)
         rng = random.Random(42)
         p.save()
         p.setClipPath(path)
         for _ in range(int(r.height() / 3)):
             y = rng.uniform(r.top(), r.bottom())
-            p.setPen(QPen(QColor(25, 10, 3, rng.randint(14, 40)), rng.uniform(0.5, 1.6)))
+            p.setPen(QPen(QColor(*FINISH["grain"], rng.randint(14, 40)), rng.uniform(0.5, 1.6)))
             amp, wl, ph = rng.uniform(2, 9), rng.uniform(120, 420), rng.uniform(0, 6.28)
             grain = QPainterPath(QPointF(r.left(), y))
             x = r.left()
@@ -833,9 +848,9 @@ class RadioSet(QWidget):
                 grain.lineTo(x, y + amp * math.sin(x / wl * 6.28 + ph))
             p.drawPath(grain)
         p.restore()
-        p.setPen(QPen(QColor("#1d0c04"), 2))
+        p.setPen(QPen(_fc(FINISH["edge"]), 2))
         p.drawPath(path)
-        p.setPen(QPen(QColor(255, 220, 170, 38), 2))
+        p.setPen(QPen(_fc(FINISH["edge_hi"]), 2))
         p.drawRoundedRect(r.adjusted(7, 7, -7, -7), 21, 21)
         p.end()
         return pm
@@ -869,11 +884,11 @@ class RadioSet(QWidget):
         shine.setColorAt(0.23, QColor(255, 255, 255, 0))
         p.fillPath(path, shine)
         p.restore()
-        p.setPen(QPen(QColor("#2a1a0a"), 8))
+        p.setPen(QPen(_fc(FINISH["bezel"]), 8))
         p.drawPath(path)
-        p.setPen(QPen(QColor("#b08a4a"), 5))
+        p.setPen(QPen(_fc(FINISH["trim"]), 5))
         p.drawPath(path)
-        p.setPen(QPen(QColor(255, 236, 190, 110), 1))
+        p.setPen(QPen(_fc(FINISH["trim_hi"]), 1))
         p.drawPath(path)
 
     def _paint_strip(self, p: QPainter, band: Band) -> None:
@@ -1072,29 +1087,31 @@ class RadioSet(QWidget):
         p.setBrush(QColor(0, 0, 0, 90))
         p.drawEllipse(center + QPointF(3, 4), radius, radius)
         body = QRadialGradient(center - QPointF(radius * 0.35, radius * 0.4), radius * 1.3)
-        body.setColorAt(0, QColor("#6a3a1c"))
-        body.setColorAt(0.6, QColor("#2c1308"))
-        body.setColorAt(1, QColor("#120602"))
+        k0, k1, k2 = FINISH["knob"]
+        body.setColorAt(0, _fc(k0))
+        body.setColorAt(0.6, _fc(k1))
+        body.setColorAt(1, _fc(k2))
         p.setBrush(body)
-        p.setPen(QPen(QColor("#0a0301"), 1.5))
+        p.setPen(QPen(_fc(FINISH["knob_edge"]), 1.5))
         p.drawEllipse(center, radius, radius)
-        p.setPen(QPen(QColor(255, 210, 160, 45), 1.2))
+        p.setPen(QPen(_fc(FINISH["knob_hi"]), 1.2))
         for k in range(36):
             a = math.radians(k * 10)
             p.drawLine(center + QPointF(math.cos(a) * radius * 0.86, math.sin(a) * radius * 0.86),
                        center + QPointF(math.cos(a) * radius * 0.98, math.sin(a) * radius * 0.98))
         cap = QRadialGradient(center - QPointF(radius * 0.2, radius * 0.25), radius * 0.7)
-        cap.setColorAt(0, QColor("#7a4524"))
-        cap.setColorAt(1, QColor("#2a1207"))
+        c0, c1 = FINISH["knob_cap"]
+        cap.setColorAt(0, _fc(c0))
+        cap.setColorAt(1, _fc(c1))
         p.setBrush(cap)
         p.setPen(Qt.NoPen)
         p.drawEllipse(center, radius * 0.66, radius * 0.66)
         a = math.radians(angle_deg - 90)
-        p.setPen(QPen(CREAM, max(2.0, radius * 0.07), Qt.SolidLine, Qt.RoundCap))
+        p.setPen(QPen(_fc(FINISH["knob_mark"]), max(2.0, radius * 0.07), Qt.SolidLine, Qt.RoundCap))
         p.drawLine(center + QPointF(math.cos(a) * radius * 0.25, math.sin(a) * radius * 0.25),
                    center + QPointF(math.cos(a) * radius * 0.62, math.sin(a) * radius * 0.62))
         p.setFont(_font(radius * 0.30, bold=True, condensed=False))
-        p.setPen(CREAM)
+        p.setPen(_fc(FINISH["knob_label"]))  # VOLUME / TUNING, on the cabinet
         fm = QFontMetricsF(p.font())
         p.drawText(QPointF(center.x() - fm.horizontalAdvance(label) / 2,
                            center.y() + radius + fm.ascent() + 3), label)
@@ -1105,14 +1122,15 @@ class RadioSet(QWidget):
         p.setBrush(QColor(0, 0, 0, 100))
         p.drawRoundedRect(rect.translated(2, 6), 7, 7)
         face = QLinearGradient(r.topLeft(), r.bottomLeft())
-        top = IVORY if not down else IVORY.darker(112)
+        key = _fc(FINISH["key"])
+        top = key if not down else key.darker(112)
         face.setColorAt(0, top.lighter(105))
         face.setColorAt(1, top.darker(118))
         p.setBrush(face)
-        p.setPen(QPen(QColor("#5c4a2c"), 1.2))
+        p.setPen(QPen(_fc(FINISH["key_border"]), 1.2))
         p.drawRoundedRect(r, 7, 7)
         p.setFont(_font(min(r.height() * 0.32, r.width() / max(3, len(label)) * 1.35), bold=True))
-        p.setPen(QColor("#4a2a12") if not down else POINTER.darker(140))
+        p.setPen(_fc(FINISH["key_text"]) if not down else POINTER.darker(140))
         p.drawText(r, Qt.AlignCenter, label)
 
     def _eye_shadow(self) -> tuple[float, float]:

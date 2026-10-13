@@ -245,7 +245,7 @@ class PlayerBar(QFrame):
         self.live_badge.setObjectName("LiveBadge")
         self.live_badge.setAlignment(Qt.AlignCenter)
         self.live_badge.setStyleSheet(
-            f"QLabel#LiveBadge {{ background: {COLORS['jukebox_key']}; color: #fff3e0;"
+            f"QLabel#LiveBadge {{ background: {COLORS['jukebox_key']}; color: {COLORS['on_accent']};"
             " border-radius: 11px; padding: 0 16px; font-size: 12px; font-weight: 700;"
             " letter-spacing: 1px; }")
         self.live_badge.setFixedHeight(22)
