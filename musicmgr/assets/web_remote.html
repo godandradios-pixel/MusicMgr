@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b1410">
+<link rel="apple-touch-icon" href="/icon.png">
+<title>MusicMgr</title>
+<!-- MusicMgr phone remote (services/web_remote.py). One file, no outside
+     requests: it has to work on a home network with no internet. -->
+<style>
+:root {
+  --bg: #1b1410; --panel: #261c16; --panel2: #31241c; --line: #3d2e24;
+  --text: #f3e9df; --dim: #b7a493; --faint: #8a7767;
+  --accent: #d9944a; --accent2: #f0b46f; --danger: #d0675a;
+  --safe-b: env(safe-area-inset-bottom, 0px); --safe-t: env(safe-area-inset-top, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+body { display: flex; flex-direction: column; overscroll-behavior: none; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+header { padding: calc(10px + var(--safe-t)) 16px 8px; display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid var(--line); background: var(--bg); }
+header h1 { font-size: 17px; margin: 0; font-weight: 650; flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.ok { background: #7cc47f; } .dot.bad { background: var(--danger); }
+main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+section { display: none; padding: 12px 16px 24px; } section.on { display: block; }
+nav { display: flex; border-top: 1px solid var(--line); background: var(--panel);
+  padding-bottom: var(--safe-b); }
+nav button { flex: 1; padding: 9px 0 8px; font-size: 11px; color: var(--dim);
+  display: flex; flex-direction: column; align-items: center; gap: 3px; }
+nav button svg { width: 24px; height: 24px; }
+nav button.on { color: var(--accent2); }
+
+/* now playing */
+.np { display: flex; flex-direction: column; align-items: center; gap: 14px; padding-top: 6px; }
+.art { width: min(78vw, 340px); aspect-ratio: 1; border-radius: 14px; background: var(--panel2) center/cover no-repeat;
+  box-shadow: 0 12px 30px rgba(0,0,0,.45); display: grid; place-items: center; color: var(--faint); font-size: 56px; }
+.meta { text-align: center; width: 100%; }
+.meta .t { font-size: 21px; font-weight: 650; }
+.meta .a { color: var(--dim); margin-top: 2px; }
+.meta .b { color: var(--faint); font-size: 14px; margin-top: 2px; }
+.meta .live { display: inline-block; margin-top: 6px; font-size: 12px; letter-spacing: .08em; padding: 2px 8px;
+  border-radius: 99px; background: var(--danger); color: #fff; }
+.seek { width: 100%; max-width: 420px; }
+.times { display: flex; justify-content: space-between; color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 34px; background: transparent; }
+input[type=range]::-webkit-slider-runnable-track { height: 5px; border-radius: 3px;
+  background: linear-gradient(to right, var(--accent) var(--p,0%), var(--line) var(--p,0%)); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; margin-top: -8.5px;
+  border-radius: 50%; background: var(--accent2); box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+.transport { display: flex; align-items: center; justify-content: center; gap: 18px; }
+.transport button { width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; color: var(--text); }
+.transport button:active { background: var(--panel2); }
+.transport .main { width: 78px; height: 78px; background: var(--accent); color: #1b1410; }
+.transport .main:active { background: var(--accent2); }
+.transport svg { width: 30px; height: 30px; } .transport .main svg { width: 38px; height: 38px; }
+.transport .small svg { width: 24px; height: 24px; }
+.vol { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 420px; color: var(--dim); }
+.vol svg { width: 20px; height: 20px; flex: none; }
+
+/* lists */
+.row { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid var(--line); }
+.row:active { background: var(--panel); }
+.row .th { width: 46px; height: 46px; border-radius: 7px; flex: none; background: var(--panel2) center/cover no-repeat;
+  display: grid; place-items: center; color: var(--faint); font-size: 20px; }
+.row .tx { flex: 1; min-width: 0; }
+.row .p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .s { color: var(--dim); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .d { color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
+.row.cur .p { color: var(--accent2); font-weight: 600; }
+.row .act { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--dim); flex: none; }
+.row .act:active { background: var(--panel2); }
+.row .act svg { width: 22px; height: 22px; }
+.num { width: 26px; text-align: right; color: var(--faint); font-size: 14px; flex: none; font-variant-numeric: tabular-nums; }
+h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 18px 4px 6px; font-weight: 600; }
+h2:first-child { margin-top: 4px; }
+.crumbs { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; flex-wrap: wrap; color: var(--dim); font-size: 15px; }
+.crumbs button { color: var(--accent2); }
+.head { display: flex; gap: 14px; align-items: center; margin: 4px 0 10px; }
+.head .th { width: 92px; height: 92px; border-radius: 10px; background: var(--panel2) center/cover no-repeat; flex: none;
+  display: grid; place-items: center; font-size: 34px; color: var(--faint); }
+.head .t { font-size: 19px; font-weight: 650; } .head .a { color: var(--dim); }
+.btns { display: flex; gap: 10px; margin: 6px 0 8px; }
+.pill { padding: 10px 18px; border-radius: 99px; background: var(--panel2); font-weight: 600; font-size: 15px; }
+.pill.pri { background: var(--accent); color: #1b1410; }
+.pill:active { filter: brightness(1.15); }
+.search { position: sticky; top: -12px; background: var(--bg); padding: 12px 0 8px; margin-top: -12px; z-index: 2; }
+.search input { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--text); font: inherit; font-size: 17px; outline: none; }
+.search input:focus { border-color: var(--accent); }
+.empty { color: var(--faint); text-align: center; padding: 40px 10px; }
+.chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 8px; }
+.chip { padding: 7px 14px; border-radius: 99px; background: var(--panel2); color: var(--dim); font-size: 14px; white-space: nowrap; }
+.chip.on { background: var(--accent); color: #1b1410; font-weight: 600; }
+#toast { position: fixed; left: 50%; bottom: calc(84px + var(--safe-b)); transform: translateX(-50%);
+  background: #000c; color: #fff; padding: 9px 16px; border-radius: 99px; font-size: 14px; opacity: 0;
+  transition: opacity .2s; pointer-events: none; max-width: 90vw; text-align: center; }
+#toast.on { opacity: 1; }
+.offline { margin: 40px 10px; text-align: center; color: var(--dim); }
+</style>
+</head>
+<body>
+<header><span class="dot" id="dot"></span><h1 id="pc">MusicMgr</h1></header>
+<main id="main">
+  <section id="v-now" class="on">
+    <div class="np">
+      <div class="art" id="art">♪</div>
+      <div class="meta">
+        <div class="t" id="title">Nothing playing</div>
+        <div class="a" id="artist"></div>
+        <div class="b" id="album"></div>
+        <span class="live" id="live" hidden>LIVE</span>
+      </div>
+      <div class="seek" id="seekbox">
+        <input type="range" id="seek" min="0" max="1000" value="0">
+        <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+      </div>
+      <div class="transport">
+        <button class="small" id="back15" aria-label="Back 15 seconds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><text x="12" y="15.5" font-size="7.5" text-anchor="middle" fill="currentColor" stroke="none" font-family="sans-serif" font-weight="700">15</text></svg></button>
+        <button id="prev" aria-label="Previous"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+        <button class="main" id="play" aria-label="Play or pause"><svg viewBox="0 0 24 24" fill="currentColor" id="playicon"><path d="M8 5v14l11-7z"/></svg></button>
+        <button id="next" aria-label="Next"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+        <button class="small" id="fwd30" aria-label="Forward 30 seconds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/><text x="12" y="15.5" font-size="7.5" text-anchor="middle" fill="currentColor" stroke="none" font-family="sans-serif" font-weight="700">30</text></svg></button>
+      </div>
+      <div class="vol">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 9v6h4l5 4V5L8 9z"/></svg>
+        <input type="range" id="vol" min="0" max="100" value="50">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9v6h4l5 4V5L8 9z" fill="currentColor" stroke="none"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/></svg>
+      </div>
+    </div>
+  </section>
+  <section id="v-queue"><div id="queue"></div></section>
+  <section id="v-lists"><div id="lists"></div></section>
+  <section id="v-search">
+    <div class="search"><input id="q" type="search" placeholder="Albums, artists, songs" autocomplete="off" autocorrect="off" spellcheck="false"></div>
+    <div id="results"></div>
+  </section>
+  <section id="v-radio"><div id="radio"></div></section>
+</main>
+<nav id="tabs">
+  <button data-v="now" class="on"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/></svg>Playing</button>
+  <button data-v="queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Queue</button>
+  <button data-v="lists"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h11M4 11h11M4 16h7"/><circle cx="17" cy="17" r="2.5"/><path d="M19.5 17V8l2-1"/></svg>Playlists</button>
+  <button data-v="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>Search</button>
+  <button data-v="radio"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M7 8l10-5"/><circle cx="15.5" cy="14" r="2.5"/><path d="M6.5 12.5h4M6.5 15.5h4"/></svg>Radio</button>
+</nav>
+<div id="toast"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
+const ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
+const ICON_ADD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+let S = null, view = "now", queueRev = -1, seeking = false, volTouch = 0, failures = 0;
+
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function fmt(ms) { ms = Math.max(0, Math.floor((ms || 0) / 1000)); const h = Math.floor(ms / 3600), m = Math.floor(ms % 3600 / 60), s = ms % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0"); }
+function bg(url) { return url ? `style="background-image:url('${esc(url)}')"` : ""; }
+let toastT; function toast(msg) { if (!msg) return; const t = $("toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 2200); }
+
+async function get(path) { const r = await fetch(path, {cache: "no-store"}); const j = await r.json();
+  if (!r.ok) throw new Error(j.message || r.statusText); return j; }
+async function cmd(body) {
+  try {
+    const r = await fetch("/api/cmd", {method: "POST", headers: {"Content-Type": "application/json", "X-MusicMgr": "1"}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if (!r.ok) { toast(j.message || "That didn't work"); return; }
+    if (j.message) toast(j.message);
+    if (j.state) render(j.state);
+  } catch (e) { toast("Can't reach MusicMgr"); }
+}
+
+/* ---- tabs ---- */
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return; show(b.dataset.v);
+});
+function show(v) {
+  view = v;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+  document.querySelectorAll("main section").forEach(s => s.classList.toggle("on", s.id === "v-" + v));
+  $("main").scrollTop = 0;
+  if (v === "queue") loadQueue(true);
+  if (v === "lists" && !listsData) loadLists();
+  if (v === "radio") loadRadio();
+  if (v === "search") setTimeout(() => $("q").focus(), 50);
+}
+
+/* ---- now playing ---- */
+function render(s) {
+  S = s;
+  $("pc").textContent = s.name || "MusicMgr";
+  document.title = (s.name || "MusicMgr") + " · Remote";
+  const it = s.item;
+  $("playicon").innerHTML = s.state === "playing" ? ICON_PAUSE : ICON_PLAY;
+  if (!it) {
+    $("title").textContent = "Nothing playing"; $("artist").textContent = s.queue_len ? "Press play" : "Pick something from Playlists or Search";
+    $("album").textContent = ""; $("live").hidden = true; setArt(null); $("seekbox").style.visibility = "hidden";
+  } else {
+    $("title").textContent = it.live && it.stream_title ? it.stream_title : it.title;
+    $("artist").textContent = it.live ? it.title : it.artist;
+    $("album").textContent = it.live ? "" : it.album;
+    $("live").hidden = !it.live;
+    setArt(it.cover);
+    $("seekbox").style.visibility = it.live ? "hidden" : "visible";
+    if (!seeking) { const d = it.duration_ms || 0; $("seek").value = d ? Math.round(1000 * it.position_ms / d) : 0; paint($("seek")); }
+    $("pos").textContent = fmt(it.position_ms); $("dur").textContent = fmt(it.duration_ms);
+  }
+  ["back15", "fwd30"].forEach(id => $(id).style.visibility = it && !it.live ? "visible" : "hidden");
+  if (Date.now() - volTouch > 1500) { $("vol").value = Math.round(s.volume * 100); paint($("vol")); }
+  if (s.queue_rev !== queueRev && view === "queue") loadQueue(false);
+}
+let artNow = undefined;
+function setArt(url) { if (url === artNow) return; artNow = url; const a = $("art");
+  a.style.backgroundImage = url ? `url('${url}')` : ""; a.textContent = url ? "" : "♪"; }
+function paint(r) { r.style.setProperty("--p", (100 * (r.value - r.min) / (r.max - r.min)) + "%"); }
+
+$("play").onclick = () => cmd({cmd: "toggle"});
+$("next").onclick = () => cmd({cmd: "next"});
+$("prev").onclick = () => cmd({cmd: "previous"});
+$("back15").onclick = () => cmd({cmd: "skip", ms: -15000});
+$("fwd30").onclick = () => cmd({cmd: "skip", ms: 30000});
+const seek = $("seek");
+seek.addEventListener("input", () => { seeking = true; paint(seek);
+  if (S && S.item) $("pos").textContent = fmt(S.item.duration_ms * seek.value / 1000); });
+seek.addEventListener("change", () => { if (S && S.item) cmd({cmd: "seek", ms: Math.round(S.item.duration_ms * seek.value / 1000)});
+  setTimeout(() => seeking = false, 600); });
+const vol = $("vol"); let volT;
+vol.addEventListener("input", () => { volTouch = Date.now(); paint(vol); clearTimeout(volT);
+  volT = setTimeout(() => cmd({cmd: "volume", value: vol.value / 100}), 120); });
+
+async function poll() {
+  try { render(await get("/api/state")); failures = 0; $("dot").className = "dot ok"; }
+  catch (e) { failures++; if (failures > 1) $("dot").className = "dot bad"; }
+  setTimeout(poll, document.hidden ? 4000 : 1000);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) get("/api/state").then(render).catch(() => {}); });
+
+/* ---- queue ---- */
+async function loadQueue(force) {
+  try {
+    const q = await get("/api/queue"); queueRev = q.rev;
+    const box = $("queue");
+    if (!q.items.length) { box.innerHTML = '<div class="empty">The queue is empty</div>'; return; }
+    box.innerHTML = q.items.map(i => `<div class="row${i.index === q.current ? " cur" : ""}" data-i="${i.index}">
+      <span class="num">${i.index + 1}</span>
+      <div class="tx"><div class="p">${esc(i.title)}</div><div class="s">${esc(i.artist)}</div></div>
+      <span class="d">${i.duration_ms ? fmt(i.duration_ms) : ""}</span>
+      <button class="act" data-rm="${i.index}" aria-label="Remove">${ICON_X}</button></div>`).join("");
+    if (force) { const cur = box.querySelector(".cur"); if (cur) cur.scrollIntoView({block: "center"}); }
+  } catch (e) { $("queue").innerHTML = '<div class="empty">Couldn\'t load the queue</div>'; }
+}
+$("queue").addEventListener("click", (e) => {
+  const rm = e.target.closest("[data-rm]"); if (rm) { cmd({cmd: "remove", index: +rm.dataset.rm}); return; }
+  const row = e.target.closest(".row"); if (row) cmd({cmd: "jump", index: +row.dataset.i});
+});
+
+/* ---- playlists ---- */
+let listsData = null, folderStack = [];
+async function loadLists() {
+  try { listsData = await get("/api/playlists"); drawFolder(); }
+  catch (e) { $("lists").innerHTML = '<div class="empty">Couldn\'t load playlists</div>'; }
+}
+function drawFolder() {
+  const fid = folderStack.length ? folderStack[folderStack.length - 1] : null;
+  const folders = listsData.folders.filter(f => (f.parent_id ?? null) === fid);
+  const lists = listsData.playlists.filter(p => (p.folder_id ?? null) === fid);
+  const names = Object.fromEntries(listsData.folders.map(f => [f.id, f.name]));
+  let h = "";
+  if (folderStack.length) {
+    h += '<div class="crumbs"><button data-up="-1">Playlists</button>' +
+      folderStack.map((id, n) => ` › ${n === folderStack.length - 1 ? esc(names[id]) : `<button data-up="${n}">${esc(names[id])}</button>`}`).join("") + "</div>";
+  }
+  h += folders.map(f => `<div class="row" data-f="${f.id}"><div class="th" ${bg(f.cover)}>${f.cover ? "" : "📁"}</div>
+    <div class="tx"><div class="p">${esc(f.name)}</div></div><span class="d">›</span></div>`).join("");
+  h += lists.map(p => `<div class="row" data-p="${p.id}"><div class="th" ${bg(p.cover)}>${p.cover ? "" : "♫"}</div>
+    <div class="tx"><div class="p">${esc(p.name)}</div><div class="s">${p.kind === "manual" ? "" : esc(p.kind)}</div></div><span class="d">›</span></div>`).join("");
+  if (!folders.length && !lists.length) h += '<div class="empty">Nothing here</div>';
+  $("lists").innerHTML = h; $("main").scrollTop = 0;
+}
+async function openPlaylist(id) {
+  $("lists").innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const p = await get("/api/playlist?id=" + id);
+    let h = `<div class="crumbs"><button data-back="1">‹ Back</button></div>
+      <div class="head"><div class="tx"><div class="t">${esc(p.name)}</div><div class="a">${p.tracks.length} songs</div></div></div>
+      <div class="btns"><button class="pill pri" data-play="${id}">Play</button><button class="pill" data-shuffle="${id}">Shuffle</button></div>`;
+    h += p.tracks.map((t, n) => `<div class="row" data-pl="${id}" data-n="${n}"><span class="num">${n + 1}</span>
+      <div class="tx"><div class="p">${esc(t.title)}</div><div class="s">${esc(t.artist)}</div></div><span class="d">${fmt(t.duration_ms)}</span></div>`).join("");
+    $("lists").innerHTML = h; $("main").scrollTop = 0;
+  } catch (e) { toast(e.message); drawFolder(); }
+}
+$("lists").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-up],[data-f],[data-p],[data-back],[data-play],[data-shuffle],[data-pl]"); if (!t) return;
+  const d = t.dataset;
+  if (d.up !== undefined) { folderStack = folderStack.slice(0, +d.up + 1); drawFolder(); }
+  else if (d.f) { folderStack.push(+d.f); drawFolder(); }
+  else if (d.p) openPlaylist(+d.p);
+  else if (d.back) drawFolder();
+  else if (d.play) { cmd({cmd: "play_playlist", id: +d.play}); show("now"); }
+  else if (d.shuffle) { cmd({cmd: "play_playlist", id: +d.shuffle, shuffle: true}); show("now"); }
+  else if (d.pl) { cmd({cmd: "play_playlist", id: +d.pl, start: +d.n}); show("now"); }
+});
+
+/* ---- search ---- */
+let searchT, lastQ = "";
+$("q").addEventListener("input", () => { clearTimeout(searchT); searchT = setTimeout(runSearch, 300); });
+async function runSearch() {
+  const q = $("q").value.trim(); if (q === lastQ) return; lastQ = q;
+  if (q.length < 2) { $("results").innerHTML = ""; return; }
+  try {
+    const r = await get("/api/search?q=" + encodeURIComponent(q)); if (q !== lastQ) return;
+    let h = "";
+    if (r.albums.length) h += "<h2>Albums</h2>" + r.albums.map(a => `<div class="row" data-rel="${a.id}"><div class="th" ${bg(a.cover)}>${a.cover ? "" : "💿"}</div>
+      <div class="tx"><div class="p">${esc(a.title)}</div><div class="s">${esc(a.artist)}${a.year ? " · " + a.year : ""}</div></div><span class="d">›</span></div>`).join("");
+    if (r.tracks.length) h += "<h2>Songs</h2>" + r.tracks.map(t => `<div class="row" data-tr="${t.id}">
+      <div class="tx"><div class="p">${esc(t.title)}</div><div class="s">${esc(t.artist)} · ${esc(t.album)}</div></div>
+      <button class="act" data-q="${t.id}" aria-label="Add to queue">${ICON_ADD}</button></div>`).join("");
+    $("results").innerHTML = h || '<div class="empty">No matches</div>';
+  } catch (e) { $("results").innerHTML = '<div class="empty">Search failed</div>'; }
+}
+async function openRelease(id) {
+  try {
+    const r = await get("/api/release?id=" + id);
+    let h = `<div class="crumbs"><button data-sback="1">‹ Results</button></div>
+      <div class="head"><div class="th" ${bg(r.cover)}>${r.cover ? "" : "💿"}</div><div><div class="t">${esc(r.title)}</div>
+      <div class="a">${esc(r.artist)}${r.year ? " · " + r.year : ""}</div></div></div>
+      <div class="btns"><button class="pill pri" data-rplay="${id}">Play</button><button class="pill" data-rshuf="${id}">Shuffle</button><button class="pill" data-rq="${id}">Add to queue</button></div>`;
+    h += r.tracks.map((t, n) => `<div class="row" data-rt="${id}" data-n="${n}"><span class="num">${n + 1}</span>
+      <div class="tx"><div class="p">${esc(t.title)}</div>${t.artist !== r.artist ? `<div class="s">${esc(t.artist)}</div>` : ""}</div>
+      <span class="d">${fmt(t.duration_ms)}</span></div>`).join("");
+    $("results").innerHTML = h; $("main").scrollTop = 0;
+  } catch (e) { toast(e.message); }
+}
+$("results").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-q],[data-rel],[data-tr],[data-sback],[data-rplay],[data-rshuf],[data-rq],[data-rt]"); if (!t) return;
+  const d = t.dataset;
+  if (d.q) cmd({cmd: "enqueue_track", id: +d.q});
+  else if (d.rel) openRelease(+d.rel);
+  else if (d.tr) { cmd({cmd: "play_track", id: +d.tr}); show("now"); }
+  else if (d.sback) { lastQ = ""; runSearch(); }
+  else if (d.rplay) { cmd({cmd: "play_release", id: +d.rplay}); show("now"); }
+  else if (d.rshuf) { cmd({cmd: "play_release", id: +d.rshuf, shuffle: true}); show("now"); }
+  else if (d.rq) cmd({cmd: "enqueue_release", id: +d.rq});
+  else if (d.rt) { cmd({cmd: "play_release", id: +d.rt, start: +d.n}); show("now"); }
+});
+
+/* ---- radio ---- */
+const BANDS = {fm: "FM", am: "AM", police: "Police", sw1: "Shortwave 1", sw2: "Shortwave 2", lw: "Long wave"};
+let radioData = null, radioTab = "stations";
+async function loadRadio() {
+  try { radioData = await get("/api/radio"); drawRadio(); }
+  catch (e) { $("radio").innerHTML = '<div class="empty">Couldn\'t load the radio</div>'; }
+}
+function drawRadio() {
+  const r = radioData, tuned = S ? S.tuned : ["", 0];
+  let h = `<div class="chips"><button class="chip${radioTab === "stations" ? " on" : ""}" data-rt="stations">Stations</button>
+    <button class="chip${radioTab === "shows" ? " on" : ""}" data-rt="shows">Old-time radio</button></div>`;
+  if (radioTab === "stations") {
+    if (!r.stations.length) h += '<div class="empty">No stations on the dial yet</div>';
+    const bands = [...new Set(r.stations.map(s => s.band))];
+    for (const b of bands) {
+      h += `<h2>${esc(BANDS[b] || b)}</h2>` + r.stations.filter(s => s.band === b).map(s => `<div class="row${tuned[0] === "station" && tuned[1] === s.id ? " cur" : ""}" data-st="${s.id}">
+        <div class="th" ${bg(s.cover)}>${s.cover ? "" : "📻"}</div><div class="tx"><div class="p">${esc(s.name)}</div>${s.off_air ? '<div class="s">Off the air</div>' : ""}</div></div>`).join("");
+    }
+  } else {
+    h += `<div class="row${tuned[0] === "onair" ? " cur" : ""}" data-onair="1"><div class="th">🎙️</div><div class="tx"><div class="p">On the air</div><div class="s">An evening's broadcast, with news and commercials</div></div></div>`;
+    h += r.shows.map(s => `<div class="row${tuned[0] === "show" && tuned[1] === s.id ? " cur" : ""}" data-sh="${s.id}">
+      <div class="th" ${bg(s.cover)}>${s.cover ? "" : "📻"}</div><div class="tx"><div class="p">${esc(s.name)}</div></div></div>`).join("");
+    if (!r.shows.length) h += '<div class="empty">No shows scanned yet</div>';
+  }
+  $("radio").innerHTML = h;
+}
+$("radio").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-rt],[data-st],[data-sh],[data-onair]"); if (!t) return;
+  const d = t.dataset;
+  if (d.rt) { radioTab = d.rt; drawRadio(); }
+  else if (d.st) { cmd({cmd: "tune_station", id: +d.st}); show("now"); }
+  else if (d.sh) { cmd({cmd: "tune_show", id: +d.sh}); show("now"); }
+  else if (d.onair) { cmd({cmd: "tune_onair"}); show("now"); }
+});
+
+paint($("seek")); paint($("vol")); poll();
+</script>
+</body>
+</html>

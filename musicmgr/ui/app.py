@@ -173,6 +173,23 @@ class MainWindow(QMainWindow):
         # screen James saw before the sidebar was flattened); now it opens
         # straight to the jukebox board instead.
         self.navigate("jukebox")
+        self._start_web_remote()
+
+    def _start_web_remote(self) -> None:
+        """2026-10-13 phone remote (services/web_remote.py): back on at
+        launch if it was left on in Settings › Phone remote."""
+        from ..services import web_remote
+
+        try:
+            with self.ctx.session() as db:
+                prefs = web_remote.load_prefs(db)
+        except Exception:  # pragma: no cover - never block startup on it
+            logging.getLogger(__name__).exception("web remote: couldn't read its settings")
+            return
+        if prefs.enabled:
+            ok, message = self.ctx.web_remote.start(prefs.port, prefs.name)
+            if not ok:
+                self._show_toast(f"Phone remote: {message}")
 
     # -- chrome ---------------------------------------------------------------
 
@@ -428,6 +445,7 @@ class MainWindow(QMainWindow):
         self._toast_timer.start(3200)
 
     def closeEvent(self, event) -> None:
+        self.ctx.web_remote.stop()
         self.player.stop()
         # gives any in-flight background spectrum analysis (2026-09-06
         # follow-up - see ui/widgets/player_bar.py's module docstring) a

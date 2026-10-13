@@ -868,7 +868,7 @@ class TestCollapsibleGroups:
     """James: "The Settings page is now way to 'busy' how can we better
     organize the settings? Maybe collapsable groups"."""
 
-    KEYS = ["library", "playback", "appearance", "info", "files", "services", "updates", "usb"]
+    KEYS = ["library", "playback", "remote", "appearance", "info", "files", "services", "updates", "usb"]
 
     def test_groups_in_order_with_only_library_open_at_first(self, view):
         assert list(view._sections) == self.KEYS

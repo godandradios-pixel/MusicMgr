@@ -7,3 +7,5 @@ packaging>=23
 send2trash>=1.8
 # volume levelling loudness measurement (services/replaygain.py) - 2026-10-01
 numpy>=1.24
+# phone remote QR code in Settings (services/web_remote.py) - 2026-10-13
+qrcode>=7.4

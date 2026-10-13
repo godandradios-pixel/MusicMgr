@@ -107,6 +107,12 @@ class AppContext(QObject):
 
         self.tuner = TunerController(player, self)
         self.tuner.notified.connect(self.notify)
+        #: 2026-10-13 phone remote - services/web_remote.py. Created here
+        #: (not started): MainWindow starts it at launch when Settings ›
+        #: Phone remote is on, and Settings turns it on and off.
+        from ..services.web_remote import RemoteServer
+
+        self.web_remote = RemoteServer(self, self)
         #: the tracks behind whatever release/artist page is currently on
         #: screen, kept in sync by ReleaseDetailPanel.set_release and
         #: ArtistDetailPanel.set_artist via set_viewing() - never queued or

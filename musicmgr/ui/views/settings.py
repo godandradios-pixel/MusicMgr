@@ -151,9 +151,11 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QScrollArea,
+    QSpinBox,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
@@ -179,6 +181,7 @@ from ...services import updater
 from ...services import library_state
 from ...services import usb_sync
 from ...services import video_scanner
+from ...services import web_remote
 from ...services import videos as vid_svc
 from ...services.library import format_duration
 from ..context import AppContext
@@ -931,6 +934,52 @@ class SettingsView(BaseView):
         for box in (self.crossfade_combo, self.levelling_combo, self.preamp_combo):
             box.currentIndexChanged.connect(self._save_playback_prefs)
         self.crossfade_album_cb.toggled.connect(self._save_playback_prefs)
+
+        # ---- phone remote (2026-10-13) ----
+        # James: "Web Access remote to MusicMgr" - control this PC's
+        # MusicMgr from an iPhone's browser on the same network (remote
+        # control only, no login). See services/web_remote.py. Per PC, like
+        # every other setting here, so each machine is turned on - and gets
+        # its own address - separately.
+        body = section("Phone remote", "remote")
+        remote_card = QFrame()
+        remote_card.setObjectName("Card")
+        rgrid = QGridLayout(remote_card)
+        rgrid.setContentsMargins(20, 14, 20, 14)
+        rgrid.setHorizontalSpacing(18)
+        rgrid.setVerticalSpacing(10)
+        self.remote_cb = QCheckBox("Let a phone on this network control MusicMgr")
+        self.remote_name_edit = QLineEdit()
+        self.remote_name_edit.setPlaceholderText(web_remote.computer_name())
+        self.remote_name_edit.setToolTip("Shown at the top of the phone page, so you can tell your PCs apart")
+        self.remote_name_edit.setMaxLength(60)
+        self.remote_port_spin = QSpinBox()
+        self.remote_port_spin.setRange(1024, 65535)
+        self.remote_port_spin.setKeyboardTracking(False)
+        self.remote_port_spin.setMinimumWidth(130)
+        self.remote_port_spin.setToolTip(
+            f"Usually {web_remote.DEFAULT_PORT}. Change it only if another program already uses it."
+        )
+        self.remote_status = dim_label("")
+        self.remote_status.setWordWrap(True)
+        self.remote_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.remote_qr = QLabel()
+        self.remote_qr.setVisible(False)
+        rgrid.addWidget(self.remote_cb, 0, 0, 1, 3)
+        rgrid.addWidget(QLabel("Name on the phone"), 1, 0)
+        rgrid.addWidget(self.remote_name_edit, 1, 1)
+        rgrid.addWidget(QLabel("Port"), 2, 0)
+        rgrid.addWidget(self.remote_port_spin, 2, 1, alignment=Qt.AlignLeft)
+        rgrid.addWidget(self.remote_status, 3, 0, 1, 2)
+        rgrid.addWidget(self.remote_qr, 1, 2, 3, 1, alignment=Qt.AlignRight | Qt.AlignTop)
+        rgrid.setColumnStretch(1, 1)
+        body.addWidget(remote_card)
+        self._load_remote_prefs()
+        self.remote_cb.toggled.connect(lambda _on: self._save_remote_prefs())
+        self.remote_port_spin.valueChanged.connect(lambda _v: self._save_remote_prefs())
+        self.remote_name_edit.editingFinished.connect(self._save_remote_prefs)
+        ctx.web_remote.statusChanged.connect(lambda *_: self._refresh_remote_status())
+        self._refresh_remote_status()
 
         # ---- appearance (2026-10-13) ----
         # James: "I would like the ability for the users to change 'skins'.
@@ -1821,6 +1870,101 @@ class SettingsView(BaseView):
     # where "Restart now" hands off to.
     def _current_exe(self) -> Optional[Path]:
         return updater.current_executable()
+
+    # -- phone remote (2026-10-13) --------------------------------------------
+
+    def _remote_prefs_from_controls(self) -> web_remote.RemotePrefs:
+        return web_remote.RemotePrefs(
+            enabled=self.remote_cb.isChecked(),
+            port=self.remote_port_spin.value(),
+            name=self.remote_name_edit.text().strip(),
+        )
+
+    def _load_remote_prefs(self) -> None:
+        with self.ctx.session() as db:
+            prefs = web_remote.load_prefs(db)
+        for w in (self.remote_cb, self.remote_port_spin, self.remote_name_edit):
+            w.blockSignals(True)
+        self.remote_cb.setChecked(prefs.enabled)
+        self.remote_port_spin.setValue(prefs.port)
+        self.remote_name_edit.setText(prefs.name)
+        for w in (self.remote_cb, self.remote_port_spin, self.remote_name_edit):
+            w.blockSignals(False)
+
+    def _save_remote_prefs(self) -> None:
+        prefs = self._remote_prefs_from_controls()
+        with self.ctx.session() as db:
+            web_remote.save_prefs(db, prefs)
+            db.commit()
+        server = self.ctx.web_remote
+        self._remote_error = ""
+        if prefs.enabled:
+            ok, message = server.start(prefs.port, prefs.name)
+            if not ok:
+                self._remote_error = message
+        else:
+            server.set_name(prefs.name)
+            server.stop()
+        self._refresh_remote_status()
+
+    def _refresh_remote_status(self) -> None:
+        server = self.ctx.web_remote
+        error = getattr(self, "_remote_error", "")
+        if server.running:
+            urls = server.urls()
+            if urls:
+                links = "<br>".join(f"<b>{u}</b>" for u in urls)
+                text = (
+                    "On your phone, open Safari and go to<br>" + links + "<br>"
+                    "or point the Camera at the code. The phone has to be on the same "
+                    "network as this PC. In Safari, Share › Add to Home Screen makes it an icon."
+                )
+                if sys.platform.startswith("win"):
+                    text += ("<br>If the phone can't connect, allow MusicMgr through Windows "
+                             "Firewall for private networks.")
+                self._show_remote_qr(urls[0])
+            else:
+                text = ("Running, but this PC doesn't seem to be on a network right now - "
+                        f"connect to Wi-Fi or Ethernet, then use this PC's address with port {server.port}.")
+                self._show_remote_qr(None)
+            self.remote_status.setTextFormat(Qt.RichText)
+            self.remote_status.setText(text)
+        else:
+            self._show_remote_qr(None)
+            self.remote_status.setTextFormat(Qt.PlainText)
+            if error:
+                self.remote_status.setText(error)
+            elif self.remote_cb.isChecked():
+                self.remote_status.setText("Not running")
+            else:
+                self.remote_status.setText(
+                    "Off. Turn it on to play, pause, skip, change the volume and pick "
+                    "playlists, albums or radio stations from your phone."
+                )
+
+    def _show_remote_qr(self, url: Optional[str]) -> None:
+        matrix = web_remote.qr_matrix(url) if url else None
+        if not matrix:
+            self.remote_qr.clear()
+            self.remote_qr.setVisible(False)
+            return
+        from PySide6.QtGui import QColor, QPainter, QPixmap
+
+        n = len(matrix)
+        cell = max(3, 168 // n)
+        pix = QPixmap(n * cell, n * cell)
+        pix.fill(QColor("white"))
+        painter = QPainter(pix)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("black"))
+        for y, row in enumerate(matrix):
+            for x, dark in enumerate(row):
+                if dark:
+                    painter.drawRect(x * cell, y * cell, cell, cell)
+        painter.end()
+        self.remote_qr.setPixmap(pix)
+        self.remote_qr.setToolTip(url)
+        self.remote_qr.setVisible(True)
 
     def _load_update_prefs(self) -> None:
         with self.ctx.session() as db:
