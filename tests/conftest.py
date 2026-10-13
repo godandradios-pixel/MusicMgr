@@ -74,3 +74,27 @@ def ctx(qapp, db):
     the fresh in-memory database - what every view actually gets handed at
     runtime, just with no real audio device or window underneath it."""
     return AppContext(PlayerController())
+
+
+# -- exit straight after the run (2026-10-13) ---------------------------------
+#
+# The v2.0.0 release run: "1323 passed", then "QObject: shared QObject was
+# deleted directly" and a segmentation fault (exit 139) while Python tore
+# down Qt's multimedia objects - so the release failed although every test
+# passed (the same family as the 1.9.13 exit crash, which a re-run gets
+# past). Once pytest has printed its summary there's nothing left to check,
+# so the run ends there with pytest's own exit status, skipping that
+# teardown. A failing test still fails the run.
+
+def pytest_unconfigure(config):
+    status = getattr(config, "_musicmgr_exitstatus", None)
+    if status is None:
+        return
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(status))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    session.config._musicmgr_exitstatus = exitstatus
