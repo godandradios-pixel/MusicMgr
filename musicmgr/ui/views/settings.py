@@ -948,7 +948,20 @@ class SettingsView(BaseView):
         rgrid.setContentsMargins(20, 14, 20, 14)
         rgrid.setHorizontalSpacing(18)
         rgrid.setVerticalSpacing(10)
-        self.remote_cb = QCheckBox("Let a phone on this network control MusicMgr")
+        # an On/Off button, not a checkbox (2026-10-13 follow-up - James:
+        # "make that tick on more visible, I didn't know there was an option
+        # there"; the theme's checkbox square is nearly invisible on a Card).
+        # Still called remote_cb and still checkable, so isChecked/
+        # setChecked/toggled work as before - _sync_remote_toggle dresses it.
+        self.remote_state = QLabel("")
+        self.remote_cb = TouchButton("")
+        self.remote_cb.setCheckable(True)
+        self.remote_cb.setMinimumWidth(260)
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(16)
+        toggle_row.addWidget(self.remote_state)
+        toggle_row.addStretch(1)
+        toggle_row.addWidget(self.remote_cb)
         self.remote_name_edit = QLineEdit()
         self.remote_name_edit.setPlaceholderText(web_remote.computer_name())
         self.remote_name_edit.setToolTip("Shown at the top of the phone page, so you can tell your PCs apart")
@@ -965,7 +978,7 @@ class SettingsView(BaseView):
         self.remote_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.remote_qr = QLabel()
         self.remote_qr.setVisible(False)
-        rgrid.addWidget(self.remote_cb, 0, 0, 1, 3)
+        rgrid.addLayout(toggle_row, 0, 0, 1, 3)
         rgrid.addWidget(QLabel("Name on the phone"), 1, 0)
         rgrid.addWidget(self.remote_name_edit, 1, 1)
         rgrid.addWidget(QLabel("Port"), 2, 0)
@@ -975,6 +988,7 @@ class SettingsView(BaseView):
         rgrid.setColumnStretch(1, 1)
         body.addWidget(remote_card)
         self._load_remote_prefs()
+        self._sync_remote_toggle()
         self.remote_cb.toggled.connect(lambda _on: self._save_remote_prefs())
         self.remote_port_spin.valueChanged.connect(lambda _v: self._save_remote_prefs())
         self.remote_name_edit.editingFinished.connect(self._save_remote_prefs)
@@ -1377,6 +1391,7 @@ class SettingsView(BaseView):
             lambda: "Verify, purge, locate or move your library files")
         self._sections["services"].set_summary(lambda: "Last.fm and Discogs keys")
         self._sections["appearance"].set_summary(self._look_summary)
+        self._sections["remote"].set_summary(self._remote_summary)
         self._sections["updates"].set_summary(lambda: self.version_label.text())
         self._sections["usb"].set_summary(self._usb_summary)
 
@@ -1907,7 +1922,35 @@ class SettingsView(BaseView):
             server.stop()
         self._refresh_remote_status()
 
+    def _sync_remote_toggle(self) -> None:
+        """Dress the On/Off button and the big state line for whether the
+        phone remote is turned on: off -> a bright "Turn on" button, on ->
+        a green "ON" and a plain "Turn off" button."""
+        on = self.remote_cb.isChecked()
+        btn = self.remote_cb
+        btn.setText("Turn phone remote off" if on else "Turn phone remote on")
+        btn.setObjectName("" if on else "PrimaryWarm")
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+        if on:
+            self.remote_state.setText("Phone remote is ON")
+            self.remote_state.setStyleSheet("font-size: 18px; font-weight: 700; color: #7cc47f;")
+        else:
+            self.remote_state.setText("Phone remote is OFF")
+            self.remote_state.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {COLORS['text_dim']};")
+
+    def _remote_summary(self) -> str:
+        server = self.ctx.web_remote
+        if server.running:
+            urls = server.urls()
+            return f"On · {urls[0]}" if urls else "On"
+        return "Off"
+
     def _refresh_remote_status(self) -> None:
+        self._sync_remote_toggle()
+        sec = getattr(self, "_sections", {}).get("remote")
+        if sec is not None:
+            sec.refresh_summary()
         server = self.ctx.web_remote
         error = getattr(self, "_remote_error", "")
         if server.running:
@@ -1938,7 +1981,7 @@ class SettingsView(BaseView):
                 self.remote_status.setText("Not running")
             else:
                 self.remote_status.setText(
-                    "Off. Turn it on to play, pause, skip, change the volume and pick "
+                    "Turn it on to play, pause, skip, change the volume and pick "
                     "playlists, albums or radio stations from your phone."
                 )
 

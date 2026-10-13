@@ -257,6 +257,11 @@ def test_settings_section_turns_the_remote_on_and_off(ctx, qapp, monkeypatch):
     assert started[-1] == (web_remote.DEFAULT_PORT, "Basement")
     with ctx.session() as db:
         assert web_remote.load_prefs(db).enabled
+    assert view.remote_state.text() == "Phone remote is ON"
+    assert view.remote_cb.text() == "Turn phone remote off"
     view.remote_cb.setChecked(False)
     with ctx.session() as db:
         assert not web_remote.load_prefs(db).enabled
+    assert view.remote_state.text() == "Phone remote is OFF"
+    assert view.remote_cb.text() == "Turn phone remote on"
+    assert view.remote_cb.objectName() == "PrimaryWarm"
