@@ -379,6 +379,8 @@ class LibraryView(BaseView):
         self.details_table.ratingChanged.connect(self._on_rating_changed)
         self.details_table.videoActivated.connect(self._activate_video)
         self.details_table.trackActivated.connect(self._play_from_details)
+        # 2026-10-06 - the tag editor (ui/widgets/tag_editor.py)
+        self.details_table.editTagsRequested.connect(self.edit_tags)
         self.details_table.updated.connect(self._refresh_jump_bar)
         # There used to be a `jukeboxToggleRequested` connection here too,
         # wired to `_on_jukebox_toggle_requested`/`_open_jukebox_picker_for`
@@ -822,6 +824,25 @@ class LibraryView(BaseView):
         self.details_table.set_rows(details)
         self._loaded.add(BROWSE_DETAILS)
         self._apply_search()
+
+    #: tests swap the dialog out
+    tag_editor_class = None
+
+    def edit_tags(self, track_ids: list) -> None:
+        """Open the tag editor on songs picked in Title Details (2026-10-06).
+        Saving emits libraryChanged, which reloads the table."""
+        if not track_ids:
+            return
+        from ..widgets.tag_editor import MAX_SONGS, TagEditorDialog
+
+        if len(track_ids) > MAX_SONGS:
+            self.ctx.notify(f"Pick up to {MAX_SONGS} songs at a time to edit their tags")
+            return
+        cls = self.tag_editor_class or TagEditorDialog
+        dialog = cls(self.ctx, list(track_ids), parent=self)
+        dialog.exec()
+        if hasattr(dialog, "deleteLater"):
+            dialog.deleteLater()
 
     def _on_rating_changed(self, track_id: int, rating: int) -> None:
         with self.ctx.session() as session:

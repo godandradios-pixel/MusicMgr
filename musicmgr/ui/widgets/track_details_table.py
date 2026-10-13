@@ -158,6 +158,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QHeaderView,
+    QMenu,
     QScroller,
     QStyle,
     QStyledItemDelegate,
@@ -169,7 +170,7 @@ from PySide6.QtWidgets import (
 from ...config import TOUCH
 from ...services.player import QueueItem
 from ..theme import COLORS
-from .common import STAR_COUNT, STAR_EMPTY, STAR_FULL, ChipButton, dim_label
+from .common import STAR_COUNT, STAR_EMPTY, STAR_FULL, ChipButton, TouchButton, dim_label
 from .cover_grid import MIN_TILES_FOR_SORTING
 
 COL_GENRE = 0
@@ -827,6 +828,11 @@ class TrackDetailsTable(QWidget):
     #: a real (non-video) track row double-clicked (2026-09-06 follow-up) -
     #: see the class docstring and _on_double_clicked
     trackActivated = Signal(int)  # track_id
+    #: "Edit tags…" on the selected songs (2026-10-06 - James: "Tag editor
+    #: with MusicBrainz lookup. Fix tags in the files themselves") - from
+    #: the button beside Group by or a right-click. LibraryView opens the
+    #: editor (ui/widgets/tag_editor.py).
+    editTagsRequested = Signal(list)  # track ids
     updated = Signal()
 
     def __init__(self, parent=None) -> None:
@@ -920,6 +926,16 @@ class TrackDetailsTable(QWidget):
             lambda b: self._set_group(b.property("group"))
         )
         group_bar.addStretch(1)
+        # 2026-10-06 - the tag editor. Ctrl/Shift-click picks several
+        # songs (a whole album sorted by Album, say); a right-click on a
+        # row offers the same thing.
+        self.edit_tags_btn = TouchButton("Edit tags…")
+        self.edit_tags_btn.setToolTip(
+            "Fix the selected songs' tags in the music files (Ctrl- or Shift-click to "
+            "pick several)")
+        self.edit_tags_btn.setEnabled(False)
+        self.edit_tags_btn.clicked.connect(self._request_edit_tags)
+        group_bar.addWidget(self.edit_tags_btn)
         root.addLayout(group_bar)
 
         self.model = TrackDetailsModel(self)
@@ -942,7 +958,10 @@ class TrackDetailsTable(QWidget):
         # video row) - James asked to be able to select a title, and a
         # double click needs *something* to distinguish it from a plain
         # click on the same row anyway
-        self.view.setSelectionMode(QAbstractItemView.SingleSelection)
+        # several rows at once since 2026-10-06 (Ctrl/Shift-click), for
+        # editing a set of songs' tags together - a double click still
+        # plays the one row
+        self.view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.view.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.view.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.view.setSortingEnabled(True)
@@ -1001,6 +1020,10 @@ class TrackDetailsTable(QWidget):
         # a single click just selects it, matching ordinary desktop table
         # behaviour now that rows are selectable
         self.view.doubleClicked.connect(self._on_double_clicked)
+        self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._on_context_menu)
+        self.view.selectionModel().selectionChanged.connect(lambda *_: self._sync_edit_button())
+        self.model.modelReset.connect(self._sync_edit_button)
 
         self.view.sortByColumn(COL_TITLE, Qt.AscendingOrder)
 
@@ -1020,6 +1043,40 @@ class TrackDetailsTable(QWidget):
             # extra for a double click to do here
             return
         self.trackActivated.emit(row.track_id)
+
+    # -- tag editing (2026-10-06) -------------------------------------------
+
+    def selected_track_ids(self) -> list[int]:
+        """The real (non-video) songs selected, top to bottom."""
+        ids: list[int] = []
+        rows = sorted({i.row() for i in self.view.selectionModel().selectedRows()})
+        for r in rows:
+            row = self.model.row_at(r)
+            if row is not None and not row.is_video and row.track_id and row.track_id not in ids:
+                ids.append(row.track_id)
+        return ids
+
+    def _sync_edit_button(self) -> None:
+        n = len(self.selected_track_ids())
+        self.edit_tags_btn.setEnabled(n > 0)
+        self.edit_tags_btn.setText(f"Edit tags ({n})…" if n > 1 else "Edit tags…")
+
+    def _request_edit_tags(self) -> None:
+        ids = self.selected_track_ids()
+        if ids:
+            self.editTagsRequested.emit(ids)
+
+    def _on_context_menu(self, pos) -> None:  # pragma: no cover - menu
+        index = self.view.indexAt(pos)
+        if index.isValid() and not self.view.selectionModel().isRowSelected(index.row(), QModelIndex()):
+            self.view.selectRow(index.row())
+        ids = self.selected_track_ids()
+        if not ids:
+            return
+        menu = QMenu(self.view)
+        label = f"Edit tags of {len(ids)} songs…" if len(ids) > 1 else "Edit tags…"
+        menu.addAction(label).triggered.connect(lambda: self.editTagsRequested.emit(ids))
+        menu.exec(self.view.viewport().mapToGlobal(pos))
 
     # -- grouping (2026-09-16 follow-up - see class docstring) -----------------
 

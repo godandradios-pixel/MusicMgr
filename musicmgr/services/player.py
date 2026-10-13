@@ -703,6 +703,40 @@ class PlayerController(QObject):
 
     # -- queue ------------------------------------------------------------
 
+    def refresh_tracks(self, track_ids, moves: Optional[dict] = None) -> int:
+        """Bring queued songs up to date after their tags were edited
+        (2026-10-06, the tag editor - services/tag_editor.py). `moves` maps
+        an old track id to the one its file belongs to now (a song filed
+        under a new album gets a new track), so the play that's under way
+        is recorded against the right song. Returns how many items
+        changed."""
+        moves = dict(moves or {})
+        wanted = set(track_ids) | set(moves) | set(moves.values())
+        hits = [it for it in self._queue if it.is_track and it.track_id in wanted]
+        if not hits:
+            return 0
+        try:
+            with session_scope() as session:
+                for item in hits:
+                    tid = moves.get(item.track_id, item.track_id)
+                    track = session.get(Track, tid)
+                    if track is None:
+                        continue
+                    fresh = QueueItem.from_track(track)
+                    item.track_id = tid
+                    if fresh is None:
+                        continue
+                    item.title, item.artist, item.album = fresh.title, fresh.artist, fresh.album
+                    item.position, item.release_id = fresh.position, fresh.release_id
+                    item.cover_path = fresh.cover_path or item.cover_path
+        except Exception as exc:  # pragma: no cover
+            log.warning("could not refresh queued tracks: %s", exc)
+            return 0
+        self.queueChanged.emit()
+        if self.current in hits:
+            self.trackChanged.emit(self.current)
+        return len(hits)
+
     @property
     def queue(self) -> list[QueueItem]:
         return list(self._queue)
@@ -1095,9 +1129,17 @@ class PlayerController(QObject):
         self._current_scrobbled = True
         try:
             with session_scope() as session:
+                track_id = item.track_id
+                if session.get(Track, track_id) is None and item.path:
+                    # the song's tags were edited while it played and its
+                    # file now belongs to another track (2026-10-06)
+                    moved = session.scalar(select(MediaFile.track_id)
+                                           .where(MediaFile.path == item.path))
+                    if moved is not None:
+                        track_id = item.track_id = moved
                 session.add(
                     PlayEvent(
-                        track_id=item.track_id,
+                        track_id=track_id,
                         started_at=self._started_at,
                         ms_played=played,
                         completed=bool(completed),
@@ -1105,7 +1147,7 @@ class PlayerController(QObject):
                         source=self._source,
                     )
                 )
-                track = session.get(Track, item.track_id)
+                track = session.get(Track, track_id)
                 if track is not None:
                     if enough:
                         track.play_count = (track.play_count or 0) + 1

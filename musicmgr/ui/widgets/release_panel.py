@@ -158,10 +158,18 @@ class ReleaseDetailPanel(QWidget):
         # apply_local_image_to_release.
         self.artwork_file_btn = TouchButton("Choose from file…")
         self.artwork_file_btn.clicked.connect(self.choose_artwork_file)
+        # 2026-10-06 - James: "Tag editor with MusicBrainz lookup. Fix tags
+        # in the files themselves, plus a 'look up this album' button" -
+        # the whole album in the editor (ui/widgets/tag_editor.py), whose
+        # "Look up on MusicBrainz…" is that button
+        self.edit_tags_btn = TouchButton("Edit tags…")
+        self.edit_tags_btn.setToolTip("Fix this album's tags in the music files, or look it "
+                                      "up on MusicBrainz")
+        self.edit_tags_btn.clicked.connect(self.edit_tags)
         for b in (shuffle, queue, self.lyrics_btn):
             actions.addWidget(b)
         actions.addWidget(self.lyrics_synced_only)
-        for b in (self.artwork_btn, self.artwork_file_btn):
+        for b in (self.artwork_btn, self.artwork_file_btn, self.edit_tags_btn):
             actions.addWidget(b)
         actions.addStretch(1)
         self.track_count = dim_label("")
@@ -231,6 +239,7 @@ class ReleaseDetailPanel(QWidget):
             self.lyrics_btn.setEnabled(False)
             self.artwork_btn.setEnabled(False)
             self.artwork_file_btn.setEnabled(False)
+            self.edit_tags_btn.setEnabled(False)
             self._refresh_breadcrumb()
             return
 
@@ -282,6 +291,8 @@ class ReleaseDetailPanel(QWidget):
             self.lyrics_btn.setEnabled(playable > 0)
             self.artwork_btn.setEnabled(True)
             self.artwork_file_btn.setEnabled(True)
+            self.edit_tags_btn.setEnabled(bool(tracks))
+            self._has_cover = bool(release.cover_path)
         self.track_list.set_rows(rows)
         self._refresh_breadcrumb()
         # lets the persistent PlayerBar's play button start this release
@@ -433,6 +444,38 @@ class ReleaseDetailPanel(QWidget):
         if self._release_id == release_id:
             self.set_release(release_id)
         self.ctx.libraryChanged.emit()
+
+    def edit_tags(self) -> None:
+        """Open the tag editor on this album's songs (2026-10-06)."""
+        if self._release_id is None or not self._tracks:
+            return
+        release_id = self._release_id
+        dialog = self.tag_editor_class(
+            self.ctx, [t.id for t in self._tracks], parent=self,
+            has_cover=getattr(self, "_has_cover", True))
+        dialog.saved.connect(lambda result: self._after_tag_edit(release_id, result))
+        dialog.exec()
+        dialog.deleteLater()
+
+    #: tests swap the dialog out
+    @property
+    def tag_editor_class(self):
+        from .tag_editor import TagEditorDialog
+        return TagEditorDialog
+
+    def _after_tag_edit(self, release_id: int, result) -> None:
+        """Stay on the album the songs now belong to - a fixed album title
+        or album artist files them under a different album, and the old
+        one is gone."""
+        if self._release_id != release_id:
+            return
+        with self.ctx.session() as s:
+            still_there = s.get(Release, release_id) is not None
+        target = release_id
+        if not still_there:
+            others = sorted(r for r in result.release_ids if r != release_id)
+            target = others[0] if others else None
+        self.set_release(target)
 
     def choose_artwork_file(self) -> None:
         """Pick an image straight from disk and set it as this release's

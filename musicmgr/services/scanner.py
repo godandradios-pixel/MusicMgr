@@ -66,6 +66,12 @@ class ScanResult:
     separated: int = 0
     #: the tracks those files left - their chart matches get looked at again
     separated_from: set[int] = field(default_factory=set)
+    #: old track id -> new, for every re-read file that now belongs to a
+    #: different track (a retag changed its title or album) - 2026-10-06
+    retracked: dict[int, int] = field(default_factory=dict)
+    #: of those, songs whose history (rating, plays, playlists, jukebox,
+    #: chart matches) moved over because no file was left on the old track
+    history_moved: dict[int, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -142,6 +148,57 @@ def _first(mapping, *keys) -> str:
     return ""
 
 
+def _all_values(mapping, *keys) -> str:
+    """Every value of the first of `keys` the file has, joined with "; " -
+    for genre, which a file may hold as several values (2026-10-06)."""
+    for key in keys:
+        try:
+            val = mapping.get(key)
+        except Exception:
+            val = None
+        if not val:
+            continue
+        vals = val if isinstance(val, (list, tuple)) else [val]
+        parts = [_text_of(v) for v in vals]
+        parts = [p for p in parts if p]
+        if parts:
+            return "; ".join(parts)
+    return ""
+
+
+def _text_of(val) -> str:
+    if isinstance(val, bytes):  # an MP4 freeform atom
+        return val.decode("utf-8", errors="replace").strip()
+    text = getattr(val, "text", None)  # an ID3 frame
+    if text is not None:
+        return _text_of(text[0]) if text else ""
+    return str(val).strip() if val is not None else ""
+
+
+def _raw_first(raw, *keys) -> str:
+    """A tag the easy wrapper can't see, read from the raw tags (MP4
+    freeform atoms, ID3 TXXX frames in a .wav, ...)."""
+    tags = getattr(raw, "tags", None)
+    if tags is None:
+        return ""
+    for key in keys:
+        try:
+            val = tags.get(key)
+        except Exception:
+            val = None
+        if not val:
+            continue
+        if isinstance(val, (list, tuple)):
+            val = val[0] if val else None
+        text = _text_of(val)
+        if text:
+            return text
+    return ""
+
+
+_FF = "----:com.apple.iTunes:"
+
+
 def _first_id3_comment(raw) -> str:
     """Read a COMM (comment) frame straight off the raw ID3 tags.
 
@@ -164,9 +221,22 @@ def _first_id3_comment(raw) -> str:
         keys = list(id3_tags.keys())
     except Exception:
         return ""
-    for key in keys:
-        if not str(key).startswith("COMM"):
-            continue
+    # 2026-10-06: a plain comment (no description) first; iTunes' own
+    # "iTunNORM"/"iTunSMPB" comments hold volume and gapless figures, not
+    # anything a person wrote, so they're never taken as the comment
+    def desc(key) -> str:
+        return str(getattr(id3_tags[key], "desc", "") or "")
+
+    def lang(key) -> str:
+        return str(getattr(id3_tags[key], "lang", "") or "")
+
+    comm = [k for k in keys if str(k).startswith("COMM")]
+    comm = [k for k in comm if not desc(k).lower().startswith("itun")]
+    # the same order the tag editor reads in (tag_writer._id3_comment):
+    # plain comments first, English ones before other languages
+    comm.sort(key=lambda k: (0 if not desc(k) else 1,
+                             0 if lang(k) in ("eng", "XXX", "\x00\x00\x00", "") else 1))
+    for key in comm:
         try:
             text = id3_tags[key].text
         except Exception:
@@ -238,14 +308,18 @@ def read_tags(path: Path) -> TrackTags:
         tags.title = path.stem
         return tags
 
-    tags.title = _first(src, "title", "TIT2", "\xa9nam") or path.stem
-    tags.artist = _first(src, "artist", "TPE1", "\xa9ART")
+    # "Title", "Author" and the "WM/..." keys are Windows Media (.wma) -
+    # 2026-10-06: a .wma's tags were never read at all before (its keys
+    # are capitalised and namespaced, unlike every other format's), which
+    # mattered once the tag editor could write them
+    tags.title = _first(src, "title", "TIT2", "\xa9nam", "Title") or path.stem
+    tags.artist = _first(src, "artist", "TPE1", "\xa9ART", "Author")
     tags.album_artist = _first(
-        src, "albumartist", "album artist", "TPE2", "aART", "ALBUMARTIST"
+        src, "albumartist", "album artist", "TPE2", "aART", "ALBUMARTIST", "WM/AlbumArtist"
     )
     tags.had_explicit_album_artist = bool(tags.album_artist)
-    tags.album = _first(src, "album", "TALB", "\xa9alb")
-    raw_track = _first(src, "tracknumber", "TRCK", "trkn")
+    tags.album = _first(src, "album", "TALB", "\xa9alb", "WM/AlbumTitle")
+    raw_track = _first(src, "tracknumber", "TRCK", "trkn", "WM/TrackNumber")
     side = parse_side(raw_track)
     if side is not None:
         # a record side ("A", "B", "A1") - see services/tracknum.py
@@ -253,27 +327,38 @@ def read_tags(path: Path) -> TrackTags:
         tags.track_total = None
     else:
         tags.track_no, tags.track_total = _split_pair(raw_track)
-    disc, disc_total = _split_pair(_first(src, "discnumber", "TPOS", "disk"))
+    disc, disc_total = _split_pair(_first(src, "discnumber", "TPOS", "disk", "WM/PartOfSet"))
     tags.disc_no = disc or 1
     tags.disc_total = disc_total
-    date = _first(src, "date", "originaldate", "year", "TDRC", "TYER", "\xa9day")
+    date = _first(src, "date", "originaldate", "year", "TDRC", "TYER", "\xa9day", "WM/Year")
     tags.released = date or None
     tags.year = _int_of(date[:4]) if date else None
-    genre = _first(src, "genre", "TCON", "\xa9gen")
+    genre = _all_values(src, "genre", "TCON", "\xa9gen", "WM/Genre")
     tags.genres = [g.strip() for g in re.split(r"[;/,]", genre) if g.strip()] if genre else []
     style = _first(src, "style", "STYLE")
     tags.styles = [s.strip() for s in re.split(r"[;/,]", style) if s.strip()] if style else []
-    tags.label = _first(src, "organization", "label", "TPUB", "publisher", "LABEL")
-    tags.catalog_number = _first(src, "catalognumber", "CATALOGNUMBER", "TXXX:CATALOGNUMBER")
-    tags.barcode = _first(src, "barcode", "BARCODE")
-    tags.country = _first(src, "releasecountry", "RELEASECOUNTRY")
+    # the _raw_first fallbacks (2026-10-06) are the tags the easy wrappers
+    # don't map: an .m4a's freeform atoms, a .wav/.aiff's TXXX frames - all
+    # written by the tag editor and MusicBrainz Picard
+    tags.label = (_first(src, "organization", "label", "TPUB", "publisher", "LABEL", "WM/Publisher")
+                  or _raw_first(raw, _FF + "LABEL"))
+    tags.catalog_number = (_first(src, "catalognumber", "CATALOGNUMBER", "TXXX:CATALOGNUMBER",
+                                  "WM/CatalogNo")
+                           or _raw_first(raw, _FF + "CATALOGNUMBER"))
+    tags.barcode = (_first(src, "barcode", "BARCODE", "WM/Barcode")
+                    or _raw_first(raw, "TXXX:BARCODE", _FF + "BARCODE"))
+    tags.country = (_first(src, "releasecountry", "RELEASECOUNTRY")
+                    or _raw_first(raw, "TXXX:MusicBrainz Album Release Country",
+                                  _FF + "MusicBrainz Album Release Country",
+                                  "MusicBrainz/Album Release Country"))
     tags.media_format = _first(src, "media", "MEDIA") or "File"
-    tags.isrc = _first(src, "isrc", "TSRC", "ISRC")
+    tags.isrc = _first(src, "isrc", "TSRC", "ISRC", "WM/ISRC") or _raw_first(raw, _FF + "ISRC")
     bpm = _first(src, "bpm", "TBPM")
     tags.bpm = float(_int_of(bpm)) if _int_of(bpm) else None
     tags.musical_key = _first(src, "initialkey", "TKEY", "KEY")
-    tags.comment = _first(src, "comment", "COMM::eng", "\xa9cmt") or _first_id3_comment(raw)
-    comp = _first(src, "compilation", "TCMP", "cpil")
+    tags.comment = _first(src, "comment", "COMM::eng", "\xa9cmt", "Description") or _first_id3_comment(raw)
+    comp = (_first(src, "compilation", "TCMP", "cpil", "WM/IsCompilation")
+            or _raw_first(raw, "cpil"))
     tags.compilation = comp in ("1", "True", "true", "yes")
 
     tags.cover = _extract_cover(raw, path)
@@ -524,6 +609,7 @@ def import_file(
     """
     stat = path.stat()
     existing = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+    before_track_id = existing.track_id if existing is not None else None
     if existing is not None:
         if not force and existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size:
             existing.is_missing = False
@@ -626,6 +712,11 @@ def import_file(
         track = Track(release_id=release.id, title=tags.title, title_key=title_key)
         session.add(track)
         session.flush()
+    # the file's own spelling of the title (2026-10-06): a case-only or
+    # "(Remastered)" fix keeps the same title key, so it used to never
+    # reach the library
+    if tags.title and track.title != tags.title and existing is not None and existing.track is track:
+        track.title = tags.title
     track.track_no = tags.track_no
     track.disc_no = tags.disc_no
     track.position = tags.side or (
@@ -672,7 +763,141 @@ def import_file(
         replaygain.apply_tags(mf, tags.gain)
     if existing is None:
         session.add(mf)
+    if before_track_id is not None and before_track_id != track.id:
+        # the first file to leave a track decides where its history goes
+        result.retracked.setdefault(before_track_id, track.id)
     return track
+
+
+# --------------------------------------------------------------------------
+# retagged files: keep each song's history with its file (2026-10-06)
+# --------------------------------------------------------------------------
+#
+# A retag that changes a song's title or album files it under a different
+# track. Two things used to go wrong:
+#
+# - songs swapping titles (an album whose titles were off by one, fixed in
+#   the tag editor, Mp3tag or Picard) could land on each other's old
+#   tracks, since a track is found by its title - so ratings and plays
+#   went to the wrong song;
+# - the old track kept the rating, plays, playlist places, jukebox card
+#   and chart matches with no file behind it, and USB sync (keyed by file
+#   path) then saw the path's rating as deleted and passed that on.
+#
+# `hide_retitled` keeps the edited songs' old tracks out of the title
+# lookup while the files are read; `carry_history` moves everything from a
+# track its last file left onto the track the file went to.
+
+_HIDDEN = "\x00retitled:"
+
+
+def hide_retitled(session: Session, items: Iterable[tuple[Path, "TrackTags"]]) -> dict[int, str]:
+    """Hide from title lookups each track all of whose files are being
+    read again with a different title. A track keeping a file under its
+    old title (only the MP3 of an MP3 + FLAC pair was retitled) stays
+    findable, so that file stays on it, history and all. Returns what to
+    restore."""
+    by_track: dict[int, list[str]] = {}
+    tracks: dict[int, Track] = {}
+    for path, tags in items:
+        mf = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+        if mf is None or mf.track is None:
+            continue
+        tracks[mf.track_id] = mf.track
+        by_track.setdefault(mf.track_id, []).append(
+            str(path) if normalize(tags.title) != mf.track.title_key else "")
+    hidden: dict[int, str] = {}
+    for tid, retitled in by_track.items():
+        track = tracks[tid]
+        present = {f.path for f in track.files if not f.is_missing}
+        if "" in retitled or not present <= set(retitled):
+            continue
+        hidden[tid] = track.title_key
+        track.title_key = f"{_HIDDEN}{tid}"
+    if hidden:
+        session.flush()
+    return hidden
+
+
+def restore_hidden(session: Session, hidden: dict[int, str]) -> None:
+    for tid, key in hidden.items():
+        track = session.get(Track, tid)
+        if track is not None and (track.title_key or "").startswith(_HIDDEN):
+            track.title_key = key
+    if hidden:
+        session.flush()
+
+
+def carry_history(session: Session, moves: dict[int, int]) -> dict[int, int]:
+    """Move rating, plays, playlist places, jukebox sides and chart matches
+    from each old track whose last present file left it onto the track
+    the file went to, and remove the old track. Returns the moves made."""
+    from sqlalchemy import update
+
+    done: dict[int, int] = {}
+    for old_id, new_id in moves.items():
+        if old_id == new_id:
+            continue
+        old = session.get(Track, old_id)
+        new = session.get(Track, new_id)
+        if old is None or new is None:
+            continue
+        if any(not f.is_missing for f in old.files):
+            continue  # another file still holds it
+        if new.rating is None and old.rating is not None:
+            new.rating = old.rating
+        new.play_count = (new.play_count or 0) + (old.play_count or 0)
+        new.skip_count = (new.skip_count or 0) + (old.skip_count or 0)
+        if old.last_played_at and (new.last_played_at is None
+                                   or _naive(old.last_played_at) > _naive(new.last_played_at)):
+            new.last_played_at = old.last_played_at
+        if old.added_at and (new.added_at is None or _naive(old.added_at) < _naive(new.added_at)):
+            new.added_at = old.added_at
+        session.execute(update(PlayEvent).where(PlayEvent.track_id == old_id)
+                        .values(track_id=new_id))
+        # a playlist holding both: the old place goes rather than doubling up
+        both = set(session.scalars(select(PlaylistItem.playlist_id)
+                                   .where(PlaylistItem.track_id == new_id)))
+        for item in list(session.scalars(select(PlaylistItem).where(PlaylistItem.track_id == old_id))):
+            if item.playlist_id in both:
+                session.delete(item)
+            else:
+                item.track_id = new_id
+        session.execute(update(ChartEntry).where(ChartEntry.track_id == old_id)
+                        .values(track_id=new_id))
+        for slot in list(session.scalars(select(JukeboxSlot).where(
+            or_(JukeboxSlot.side_a_track_id == old_id, JukeboxSlot.side_b_track_id == old_id)
+        ))):
+            if slot.side_a_track_id == old_id:
+                slot.side_a_track_id = new_id
+            if slot.side_b_track_id == old_id:
+                slot.side_b_track_id = new_id
+            # a card belongs to its record's artist; follow a changed one
+            # when the other side doesn't say otherwise
+            artist_id = lib.album_artist_id_for_track(session, new)
+            other = slot.side_b_track_id if slot.side_a_track_id == new_id else slot.side_a_track_id
+            other_artist = (lib.album_artist_id_for_track(session, session.get(Track, other))
+                            if other and session.get(Track, other) is not None else None)
+            if artist_id and other_artist in (None, artist_id):
+                slot.artist_id = artist_id
+        session.flush()
+        session.expire(old)
+        old = session.get(Track, old_id)
+        if old is not None:
+            session.delete(old)
+        session.flush()
+        done[old_id] = new_id
+    # a chain (A's file went to B, B's to C) ends on the last track
+    for old_id in list(done):
+        seen = {old_id}
+        while done[old_id] in done and done[old_id] not in seen:
+            seen.add(done[old_id])
+            done[old_id] = done[done[old_id]]
+    return done
+
+
+def _naive(value):
+    return value.replace(tzinfo=None) if getattr(value, "tzinfo", None) else value
 
 
 def scan_folder(
@@ -778,6 +1003,8 @@ def _import_files(
         for p in folder_files:
             overrides[p] = decision
 
+    hidden = hide_retitled(session, tags_cache.items())
+
     regroup_set = set(regroup)
     for idx, path in enumerate(files, start=1):
         if should_stop and should_stop():
@@ -822,11 +1049,20 @@ def _import_files(
             # just gets re-detected as needing import and picked back up
             # cleanly on the next scan, same as if it had never run.
             session.rollback()
+            # the rollback undid this scan's hiding and moves too - hide
+            # again for the files still to come, and forget moves that
+            # no longer happened
+            result.retracked.clear()
+            hidden = hide_retitled(session, [(p, tags_cache[p]) for p in files[idx:]
+                                             if p in tags_cache])
         result.scanned += 1
         if progress and (idx % 5 == 0 or idx == total):
             progress(idx, total, path.name)
         if idx % 200 == 0:
             session.flush()
+    restore_hidden(session, hidden)
+    if result.retracked:
+        result.history_moved.update(carry_history(session, result.retracked))
     if result.separated_from and not (should_stop and should_stop()):
         _rematch_separated(session, result, progress)
 
