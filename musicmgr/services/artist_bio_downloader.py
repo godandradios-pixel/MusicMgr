@@ -75,8 +75,30 @@ _HEADERS = {
 
 #: tried in order against the exact artist name before falling back to a
 #: real search - covers the common "the plain name is a disambiguation
-#: page" case without a network round trip for every candidate
-_DISAMBIGUATION_SUFFIXES = ["", " (band)", " (musician)", " (singer)", " (rapper)"]
+#: page" case without a network round trip for every candidate.
+#:
+#: 2026-10-13 - James: "please include (band) to get a better match. For
+#: example, the profile return on Boston was the city and not the band.
+#: Similarly the search on the band .38 Special returned, the pistol." The
+#: plain name used to be tried first, and "Boston" and ".38 Special" are
+#: real articles (a city, a cartridge), not disambiguation pages - so they
+#: were taken. Now the music-specific titles come first, and the plain
+#: name (and any search hit) is only taken when the article is about a
+#: musical act - see _is_music.
+_MUSIC_SUFFIXES = [" (band)", " (musician)", " (singer)", " (rapper)", " (group)"]
+
+#: words a music article's short description or opening uses ("American
+#: rock band", "English singer-songwriter", "hip hop duo") - a city,
+#: a cartridge or a ship has none of them
+_MUSIC_WORDS = re.compile(
+    r"\b(band|bands|singer|singers|singer-songwriter|songwriter|musician|musicians|"
+    r"rapper|vocalist|guitarist|bassist|drummer|pianist|keyboardist|organist|"
+    r"fiddler|composer|bandleader|crooner|yodeler|duo|trio|quartet|quintet|"
+    r"orchestra|choir|musical|music|album|albums|recording artist|record producer|"
+    r"(?:vocal|musical|girl|boy|gospel|rock|pop|doo-wop) group|rock and roll|"
+    r"hip hop|rhythm and blues)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -181,21 +203,48 @@ def _search_titles(session: requests.Session, query: str, limit: int = 5) -> lis
     return [h["title"] for h in hits if h.get("title")]
 
 
+def _is_music(summary: Optional[dict]) -> bool:
+    """True when a Wikipedia summary is about a musical act - judged by its
+    short description ("American rock band") and the start of its text."""
+    if not summary:
+        return False
+    text = " ".join([summary.get("description") or "",
+                     (summary.get("extract") or "")[:400]])
+    return bool(_MUSIC_WORDS.search(text))
+
+
 def _find_summary(session: requests.Session, artist_name: str) -> Optional[dict]:
-    """Exact-title candidates first (cheap, usually right), then a real
-    search as fallback - see the module docstring for why plain artist
-    names collide with disambiguation pages so often."""
-    for suffix in _DISAMBIGUATION_SUFFIXES:
+    """"Boston (band)", "Prince (musician)" and the like first - a page
+    with one of those titles is about a musical act by its name alone.
+    Then the plain name, and then a search, both only if the article is
+    about music (2026-10-13 - see _MUSIC_SUFFIXES)."""
+    for suffix in _MUSIC_SUFFIXES:
         summary = _fetch_summary(session, artist_name + suffix)
         if _is_usable(summary):
             return summary
 
+    summary = _fetch_summary(session, artist_name)
+    if _is_usable(summary) and _is_music(summary):
+        return summary
+
     for title in _search_titles(session, f"{artist_name} band musician"):
         summary = _fetch_summary(session, title)
-        if _is_usable(summary):
+        if _is_usable(summary) and _is_music(summary):
             return summary
 
     return None
+
+
+def is_doubtful(artist: Artist) -> bool:
+    """A biography fetched from Wikipedia (its page is in Artist.urls) that
+    says nothing about music - the city of Boston for the band Boston,
+    the cartridge for .38 Special. These are looked up again by the next
+    "Download artist profiles…" run; a new lookup that finds nothing
+    leaves the old text where it is."""
+    text = (artist.profile or "").strip()
+    if not text or "wikipedia.org/wiki/" not in (artist.urls or ""):
+        return False
+    return not _MUSIC_WORDS.search(text[:600])
 
 
 def _clean_extract(text: str) -> str:
@@ -204,6 +253,14 @@ def _clean_extract(text: str) -> str:
     # summary - strip them rather than showing them in BioPanel.
     text = re.sub(r"\[[^\]]*\]", "", text)
     return " ".join(text.split()).strip()
+
+
+def _drop_wrong_sources(artist: Artist) -> None:
+    """Forget the Wikipedia page a replaced biography came from (the
+    city's page for the band Boston) - the new one is cited instead."""
+    lines = [line for line in (artist.urls or "").splitlines()
+             if line.strip() and "wikipedia.org/wiki/" not in line]
+    artist.urls = "\n".join(lines) or None
 
 
 def _add_source_url(artist: Artist, url: str) -> None:
@@ -222,7 +279,7 @@ def download_bio_for_artist(
     """Look up and save one artist's biography. `db` is an open SQLAlchemy
     session the caller commits (or rolls back) - this function only sets
     attributes on the given `artist`, already attached to that session."""
-    if artist.profile and not overwrite:
+    if artist.profile and not overwrite and not is_doubtful(artist):
         return ArtistBioOutcome(artist.id, artist.name, "already_exists")
 
     try:
@@ -240,6 +297,7 @@ def download_bio_for_artist(
 
     artist.profile = extract
     source_url = (summary.get("content_urls") or {}).get("desktop", {}).get("page")
+    _drop_wrong_sources(artist)
     if source_url:
         _add_source_url(artist, source_url)
 
@@ -334,11 +392,19 @@ def artists_missing_bio(limit: Optional[int] = None) -> list[int]:
     """Every artist id with no biography saved yet - what Settings' bulk
     "Download artist profiles…" button targets by default (overwrite=False
     would just skip these same rows one network round trip at a time
-    otherwise, so filtering up front here saves the wasted lookups)."""
+    otherwise, so filtering up front here saves the wasted lookups).
+
+    2026-10-13: plus every artist whose fetched biography isn't about
+    music (`is_doubtful` - the city for Boston), so one run puts those
+    right."""
     with session_scope() as db:
         stmt = select(Artist.id).where(
             (Artist.profile.is_(None)) | (Artist.profile == "")
         )
-        if limit:
-            stmt = stmt.limit(limit)
-        return [row[0] for row in db.execute(stmt).all()]
+        ids = [row[0] for row in db.execute(stmt).all()]
+        doubtful = db.scalars(select(Artist).where(
+            Artist.profile.is_not(None), Artist.profile != "",
+            Artist.urls.like("%wikipedia.org/wiki/%"),
+        ))
+        ids.extend(a.id for a in doubtful if is_doubtful(a))
+        return ids[:limit] if limit else ids

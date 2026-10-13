@@ -62,3 +62,125 @@ class TestDownloadBiosForArtistsShouldStop:
         session.refresh(second)
         assert first.profile == "bio for AC/DC"
         assert second.profile is None
+
+
+# -- 2026-10-13: "(band)" first, and only music articles from a plain name ----
+#
+# James: "please include (band) to get a better match. For example, the
+# profile return on Boston was the city and not the band. Similarly the
+# search on the band .38 special returned, the pistol."
+
+import pytest
+
+WIKI = {
+    "Boston": {"type": "standard", "description": "Capital city of Massachusetts",
+               "extract": "Boston is the capital and most populous city of Massachusetts.",
+               "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Boston"}}},
+    "Boston_(band)": {"type": "standard", "description": "American rock band",
+                      "extract": "Boston is an American rock band from Boston, Massachusetts.",
+                      "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Boston_(band)"}}},
+    ".38_Special": {"type": "standard", "description": "Rimmed revolver cartridge",
+                    "extract": "The .38 Special is a rimmed, centerfire cartridge designed by Smith & Wesson.",
+                    "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/.38_Special"}}},
+    ".38_Special_(band)": {"type": "standard", "description": "American rock band",
+                           "extract": ".38 Special is an American rock band formed in 1974.",
+                           "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/.38_Special_(band)"}}},
+    "Elvis_Presley": {"type": "standard", "description": "American singer and actor (1935–1977)",
+                      "extract": "Elvis Aaron Presley was an American singer and actor.",
+                      "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Elvis_Presley"}}},
+    "Kansas": {"type": "standard", "description": "U.S. state",
+               "extract": "Kansas is a landlocked state in the Midwestern United States.",
+               "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Kansas"}}},
+    "Kansas_City_Rockers": {"type": "standard", "description": "American rock band",
+                            "extract": "Kansas City Rockers were an American band.",
+                            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/x"}}},
+}
+
+
+class _Resp:
+    def __init__(self, status, payload=None):
+        self.status_code, self._payload, self.headers = status, payload, {}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        pass
+
+
+class FakeWiki:
+    def __init__(self, search=()):
+        self.asked, self.search = [], list(search)
+
+    def get(self, url, params=None, timeout=None):
+        if params and params.get("list") == "search":
+            return _Resp(200, {"query": {"search": [{"title": t} for t in self.search]}})
+        from urllib.parse import unquote
+        title = unquote(url.rsplit("/", 1)[1])
+        self.asked.append(title)
+        return _Resp(200, WIKI[title]) if title in WIKI else _Resp(404)
+
+
+def bio_for(name, search=()):
+    return bio_dl._find_summary(FakeWiki(search), name)
+
+
+class TestBandFirst:
+    def test_boston_is_the_band_not_the_city(self):
+        http = FakeWiki()
+        summary = bio_dl._find_summary(http, "Boston")
+        assert summary["description"] == "American rock band"
+        assert http.asked[0] == "Boston_(band)"
+
+    def test_38_special_is_the_band_not_the_cartridge(self):
+        assert bio_for(".38 Special")["description"] == "American rock band"
+
+    def test_a_solo_singer_still_comes_from_the_plain_name(self):
+        assert bio_for("Elvis Presley")["description"].startswith("American singer")
+
+    def test_a_plain_name_that_isnt_music_is_passed_over(self):
+        # no "Kansas (band)" page here: the state is skipped for a search hit
+        assert bio_for("Kansas", search=["Kansas", "Kansas_City_Rockers"])["extract"] \
+            == "Kansas City Rockers were an American band."
+        assert bio_for("Kansas") is None
+
+
+class TestWrongBiosAreFixed:
+    def test_a_city_bio_is_doubtful_and_gets_replaced(self, session, monkeypatch):
+        artist = make_artist(session, "Boston")
+        artist.profile = WIKI["Boston"]["extract"]
+        artist.urls = "https://www.bostonband.com\nhttps://en.wikipedia.org/wiki/Boston"
+        session.flush()
+        assert bio_dl.is_doubtful(artist)
+        assert artist.id in bio_dl.artists_missing_bio()
+
+        outcome = bio_dl.download_bio_for_artist(FakeWiki(), session, artist)
+
+        assert outcome.status == "downloaded"
+        assert artist.profile.startswith("Boston is an American rock band")
+        assert artist.urls.splitlines() == ["https://www.bostonband.com",
+                                            "https://en.wikipedia.org/wiki/Boston_(band)"]
+
+    def test_a_good_bio_is_left_alone(self, session):
+        artist = make_artist(session, "Boston")
+        artist.profile = WIKI["Boston_(band)"]["extract"]
+        artist.urls = "https://en.wikipedia.org/wiki/Boston_(band)"
+        session.flush()
+        assert not bio_dl.is_doubtful(artist)
+        assert bio_dl.download_bio_for_artist(FakeWiki(), session, artist).status == "already_exists"
+
+    def test_a_hand_written_bio_is_never_doubtful(self, session):
+        artist = make_artist(session, "Boston")
+        artist.profile = "Saw them at the Civic Arena in 1979."
+        session.flush()
+        assert not bio_dl.is_doubtful(artist)
+
+    def test_no_better_page_keeps_the_old_text(self, session):
+        artist = make_artist(session, "Kansas")
+        artist.profile = WIKI["Kansas"]["extract"]
+        artist.urls = "https://en.wikipedia.org/wiki/Kansas"
+        session.flush()
+        outcome = bio_dl.download_bio_for_artist(FakeWiki(), session, artist)
+        assert outcome.status == "not_found"
+        assert artist.profile == WIKI["Kansas"]["extract"]
+
