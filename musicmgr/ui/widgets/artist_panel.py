@@ -3,13 +3,15 @@ biography, and a short "top tracks" taste of their most-played songs."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QScrollArea,
@@ -24,6 +26,7 @@ from ...db.models import Artist, ArtistTopTrack, Release, Track
 from ...services import library as lib
 from ...services.library import format_duration
 from ...services import lastfm_popularity as popularity_dl
+from ...services import top_songs
 from .bio_panel import BioPanel
 from .common import (
     Breadcrumb,
@@ -75,14 +78,11 @@ def _normalize_title(text: str) -> str:
     40th-anniversary remaster, a live recording, and a compilation cut all
     separately "matched" the same Last.fm entry and all carried the same
     score)."""
-    text = (text or "").lower()
-    text = re.sub(
-        r"\([^)]*(remaster|remastered|edition|version|live|mono|stereo|deluxe|anniversary)[^)]*\)",
-        "",
-        text,
-    )
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return " ".join(text.split())
+    # 2026-10-13 - now services/top_songs.song_key, which also folds
+    # " - Remastered 2011" / "[Live at ...]" / "(Single Version)" style
+    # versions together (James: "Some are repeated and I want 5 different
+    # songs, even if that song has a variation")
+    return top_songs.song_key(text)
 
 
 @dataclass
@@ -276,6 +276,9 @@ class ArtistDetailPanel(QWidget):
         #: ever run for this artist, in which case _refresh_top_tracks
         #: falls back to ranking locally-owned tracks by play_count alone.
         self._lastfm_top_tracks: list[ArtistTopTrack] = []
+        #: the songs James chose for this artist (services/top_songs.py,
+        #: 2026-10-13) - shown instead of Last.fm's chart when there are any
+        self._picks: list[str] = []
         #: the TOP_TRACKS_COUNT rows the Top Tracks list is currently
         #: showing (some may have no owned pressing at all - see
         #: _TopTrackRow) - `self.top_tracks`'s displayed order.
@@ -436,6 +439,12 @@ class ArtistDetailPanel(QWidget):
         # content to show, so there's no empty state to hang this button on.
         self.fetch_popularity_btn = make_compact(TouchButton("Fetch popularity"))
         self.fetch_popularity_btn.clicked.connect(self._on_fetch_popularity_clicked)
+        # 2026-10-13 - James: "I would like the ability to change most
+        # popular songs" - see TopSongsDialog below
+        self.choose_top_btn = make_compact(TouchButton("Choose…"))
+        self.choose_top_btn.setToolTip("Pick the songs shown here yourself")
+        self.choose_top_btn.clicked.connect(self.choose_top_songs)
+        top_row.addWidget(self.choose_top_btn)
         top_row.addWidget(self.fetch_popularity_btn)
         top_tracks_layout.addLayout(top_row)
 
@@ -509,6 +518,7 @@ class ArtistDetailPanel(QWidget):
         self._artist_name = ""
         self._tracks = []
         self._lastfm_top_tracks = []
+        self._picks = []
         self._top_tracks = []
         self._playable_top_tracks = []
         # a "Fetch popularity" started for the *previous* artist page has
@@ -598,6 +608,7 @@ class ArtistDetailPanel(QWidget):
                     .order_by(func.coalesce(ArtistTopTrack.playcount, -1).desc(), ArtistTopTrack.rank)
                 )
             )
+            self._picks = top_songs.get_picks(session, artist_id)
             total_ms = sum(t.duration_ms or 0 for t in self._tracks)
             self.portrait.set_source(
                 artist.image_path or (tiles[0].cover_path if tiles else None),
@@ -732,16 +743,25 @@ class ArtistDetailPanel(QWidget):
         several pressings can't fill multiple slots.
         """
         owned_by_title = self._owned_by_title()
+        # one row per song, every version's plays together (2026-10-13 -
+        # see services/top_songs.py)
+        chart = top_songs.distinct_chart(self._lastfm_top_tracks)
 
-        if self._lastfm_top_tracks:
-            self.top_label.setText("Popular on Last.fm")
-            chart = self._lastfm_top_tracks[:TOP_TRACKS_COUNT]
+        if self._picks or chart:
+            plays_by_key = {song.key: song.playcount for song in chart}
+            if self._picks:
+                self.top_label.setText("Top Songs · your picks")
+                entries = [(title, plays_by_key.get(top_songs.song_key(title)))
+                           for title in self._picks[:TOP_TRACKS_COUNT]]
+            else:
+                self.top_label.setText("Popular on Last.fm")
+                entries = [(song.title, song.playcount) for song in chart[:TOP_TRACKS_COUNT]]
 
             self._top_tracks = []
             self._playable_top_tracks = []
             rows = []
-            for i, entry in enumerate(chart):
-                owned_track = owned_by_title.get(_normalize_title(entry.title))
+            for i, (title, playcount) in enumerate(entries):
+                owned_track = owned_by_title.get(_normalize_title(title))
                 if owned_track is not None:
                     track_index = len(self._playable_top_tracks)
                     self._playable_top_tracks.append(owned_track)
@@ -750,13 +770,13 @@ class ArtistDetailPanel(QWidget):
                     track_index = None
                     secondary = "Not in your library"
                 self._top_tracks.append(
-                    _TopTrackRow(title=entry.title, track=owned_track, playcount=entry.playcount)
+                    _TopTrackRow(title=title, track=owned_track, playcount=playcount)
                 )
                 rows.append({
                     "lead": str(i + 1),
-                    "primary": entry.title,
+                    "primary": title,
                     "secondary": secondary,
-                    "trail": _format_playcount(entry.playcount),
+                    "trail": _format_playcount(playcount),
                     "track_index": track_index,
                 })
 
@@ -794,6 +814,34 @@ class ArtistDetailPanel(QWidget):
         ])
         self.top_tracks_stack.setCurrentWidget(self.top_tracks)
 
+    # -- choosing the top songs (2026-10-13) ------------------------------
+
+    #: tests swap the dialog out
+    top_songs_dialog_class = None
+
+    def choose_top_songs(self) -> None:
+        """Let James pick the five songs himself - from Last.fm's chart
+        (one entry per song) and the songs he owns, or typed in."""
+        if self._artist_id is None:
+            return
+        chart = top_songs.distinct_chart(self._lastfm_top_tracks)
+        current = [row.title for row in self._top_tracks]
+        owned = sorted({t.title for t in self._owned_by_title().values() if t.title},
+                       key=str.lower)
+        cls = self.top_songs_dialog_class or TopSongsDialog
+        dialog = cls(self._artist_name, current, chart, owned, has_picks=bool(self._picks),
+                     parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            if hasattr(dialog, "deleteLater"):
+                dialog.deleteLater()
+            return
+        titles = dialog.titles()
+        if hasattr(dialog, "deleteLater"):
+            dialog.deleteLater()
+        with self.ctx.session() as session:
+            self._picks = top_songs.set_picks(session, self._artist_id, titles)
+        self._refresh_top_tracks()
+
     def _play_top_track(self, payload: dict) -> None:
         idx = payload.get("track_index")
         if idx is None:
@@ -823,3 +871,102 @@ def _release_caption(track: Track) -> str:
     if release is None:
         return ""
     return f"{release.title} ({release.year})" if release.year else release.title
+
+
+class TopSongsDialog(QDialog):
+    """Choose an artist's five top songs (2026-10-13). Each place is a box
+    to pick from - Last.fm's songs first (one entry per song, with plays),
+    then the songs in the library - or to type into. "Use Last.fm's list"
+    drops the picks and goes back to the chart. After Ok, `titles()` holds
+    the five in order (an empty list for "use Last.fm's")."""
+
+    def __init__(self, artist_name: str, current: list[str], chart, owned: list[str],
+                 has_picks: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Top songs — {artist_name}")
+        self.setMinimumWidth(560)
+        self._use_lastfm = False
+        layout = QVBoxLayout(self)
+        head = QLabel(f"Top songs for {artist_name}")
+        head.setObjectName("Title")
+        layout.addWidget(head)
+        note = dim_label("Pick a song for each place from Last.fm's list and your library, "
+                         "or type one in. Versions of the same song (live, remastered) count "
+                         "as one song. Leave a place empty to show fewer.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        options: list[str] = []
+        seen: set[str] = set()
+        labels: dict[str, str] = {}
+        for song in chart:
+            if song.key not in seen:
+                seen.add(song.key)
+                options.append(song.title)
+                plays = _format_playcount(song.playcount)
+                labels[song.title] = f"{song.title}  ·  {plays}" if plays else song.title
+        for title in owned:
+            key = top_songs.song_key(title)
+            if key and key not in seen:
+                seen.add(key)
+                options.append(title)
+                labels[title] = f"{title}  ·  in your library"
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        self.boxes: list[QComboBox] = []
+        for i in range(TOP_TRACKS_COUNT):
+            box = QComboBox()
+            box.setEditable(True)
+            box.setInsertPolicy(QComboBox.NoInsert)
+            box.addItem("", "")
+            for title in options:
+                box.addItem(labels.get(title, title), title)
+            text = current[i] if i < len(current) else ""
+            idx = box.findData(text)
+            if idx >= 0:
+                box.setCurrentIndex(idx)
+            box.setEditText(text)
+            box.activated.connect(lambda idx, b=box: b.setEditText(b.itemData(idx) or ""))
+            # the app's combo boxes draw no arrow, so a button opens the list
+            pick = make_compact(TouchButton("Pick ▾"))
+            pick.clicked.connect(box.showPopup)
+            grid.addWidget(QLabel(str(i + 1)), i, 0)
+            grid.addWidget(box, i, 1)
+            grid.addWidget(pick, i, 2)
+            self.boxes.append(box)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+
+        buttons = QHBoxLayout()
+        self.lastfm_btn = TouchButton("Use Last.fm's list")
+        self.lastfm_btn.setEnabled(has_picks)
+        self.lastfm_btn.clicked.connect(self._use_lastfm_list)
+        cancel = TouchButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        save = TouchButton("Save", primary=True)
+        save.setObjectName("PrimaryWarm")
+        save.clicked.connect(self.accept)
+        buttons.addWidget(self.lastfm_btn)
+        buttons.addStretch(1)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+
+    def _use_lastfm_list(self) -> None:
+        self._use_lastfm = True
+        self.accept()
+
+    def titles(self) -> list[str]:
+        if self._use_lastfm:
+            return []
+        out = []
+        for box in self.boxes:
+            text = box.currentText().strip()
+            data = box.itemData(box.currentIndex()) if box.currentIndex() >= 0 else None
+            # a picked entry's label carries its plays - keep the title only
+            if data and box.itemText(box.currentIndex()) == text:
+                text = data
+            out.append(text)
+        return [t for t in out if t]
+

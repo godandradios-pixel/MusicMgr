@@ -201,6 +201,25 @@ class ArtistTopTrack(Base):
     )
 
 
+class ArtistTopPick(Base):
+    """One of the songs James chose to show as an artist's top songs, in
+    order (2026-10-13 - James: "I would like the ability to change most
+    popular songs. Some are repeated and I want 5 different songs"). When an
+    artist has picks, the artist page shows them instead of Last.fm's
+    chart; a Last.fm fetch never touches them (see services/top_songs.py).
+    Matched to the library by title at display time, like ArtistTopTrack."""
+
+    __tablename__ = "artist_top_picks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artist_id: Mapped[int] = mapped_column(
+        ForeignKey("artists.id", ondelete="CASCADE"), index=True
+    )
+    #: 1-based place in the list
+    position: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(500))
+
+
 # --------------------------------------------------------------------------
 # labels & companies
 # --------------------------------------------------------------------------
