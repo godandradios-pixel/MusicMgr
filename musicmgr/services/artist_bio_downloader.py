@@ -607,6 +607,66 @@ def download_bios_for_artists(
     return result
 
 
+# -- the Radio folder (2026-10-13) ------------------------------------------
+#
+# James: "I don't want it checking profiles for files that are part of the
+# \Radio directory". Old-time radio shows (D:\Radio on PC1 - the Radio
+# page's folder, services/otr.py) aren't music acts: where that folder ends
+# up inside a watched music folder, its shows and announcers turn into
+# "artists" that Wikipedia either doesn't have or matches to the wrong
+# thing. An artist whose files all sit in a Radio folder is left out.
+
+_DRIVE_RADIO = re.compile(r"^[a-z]:/radio/")
+
+
+def _norm(path: str) -> str:
+    return path.replace("\\", "/").rstrip("/").lower() + "/"
+
+
+def _radio_roots(db) -> list[str]:
+    """The Radio page's own folder, plus ~/Radio (where the Mint PCs keep
+    it). <drive>:\Radio is matched separately by _DRIVE_RADIO."""
+    from pathlib import Path
+
+    from .otr import get_root
+
+    roots = [_norm(str(Path.home() / "Radio"))]
+    otr_root = get_root(db)
+    if otr_root:
+        roots.append(_norm(otr_root))
+    return roots
+
+
+def _is_radio_file(path: str, roots: Sequence[str]) -> bool:
+    p = _norm(path)
+    return bool(_DRIVE_RADIO.match(p)) or any(p.startswith(r) for r in roots)
+
+
+def radio_only_artists(db) -> set[int]:
+    """Artists all of whose files are in a Radio folder (see above) - as
+    album artist, or credited on a track or a release."""
+    from sqlalchemy import text
+
+    roots = _radio_roots(db)
+    any_file: set[int] = set()
+    non_radio: set[int] = set()
+    queries = (
+        "SELECT r.album_artist_id, mf.path FROM releases r "
+        "JOIN tracks t ON t.release_id = r.id JOIN media_files mf ON mf.track_id = t.id "
+        "WHERE r.album_artist_id IS NOT NULL",
+        "SELECT c.artist_id, mf.path FROM credits c "
+        "JOIN media_files mf ON mf.track_id = c.track_id WHERE c.track_id IS NOT NULL",
+        "SELECT c.artist_id, mf.path FROM credits c JOIN tracks t ON t.release_id = c.release_id "
+        "JOIN media_files mf ON mf.track_id = t.id WHERE c.release_id IS NOT NULL",
+    )
+    for sql in queries:
+        for artist_id, path in db.execute(text(sql)):
+            any_file.add(artist_id)
+            if artist_id not in non_radio and not _is_radio_file(path or "", roots):
+                non_radio.add(artist_id)
+    return any_file - non_radio
+
+
 def artists_missing_bio(limit: Optional[int] = None) -> list[int]:
     """Every artist id with no biography saved yet - what Settings' bulk
     "Download artist profiles…" button targets by default (overwrite=False
@@ -615,7 +675,8 @@ def artists_missing_bio(limit: Optional[int] = None) -> list[int]:
 
     2026-10-13: plus every artist whose fetched biography isn't about
     music (`is_doubtful` - the city for Boston), so one run puts those
-    right."""
+    right; and never an artist whose files are all in the Radio folder
+    (`radio_only_artists`)."""
     with session_scope() as db:
         stmt = select(Artist.id).where(
             (Artist.profile.is_(None)) | (Artist.profile == "")
@@ -626,4 +687,8 @@ def artists_missing_bio(limit: Optional[int] = None) -> list[int]:
             Artist.urls.like("%wikipedia.org/wiki/%"),
         ))
         ids.extend(a.id for a in doubtful if is_doubtful(a))
+        # 2026-10-13: not the Radio folder's shows (radio_only_artists)
+        radio = radio_only_artists(db)
+        if radio:
+            ids = [i for i in ids if i not in radio]
         return ids[:limit] if limit else ids

@@ -282,3 +282,59 @@ class TestBatchedBulkRun:
         # fell back to the one-artist lookup, which found the band
         assert result.downloaded == 1
         assert artist.profile.startswith("Boston is an American rock band")
+
+
+# -- 2026-10-13: not the Radio folder ----------------------------------------
+#
+# James: "I don't want it checking profiles for files that are part of the
+# \Radio directory".
+
+from pathlib import Path
+
+from musicmgr.db.models import Credit, MediaFile, Track
+from musicmgr.services import library as lib
+from musicmgr.services import otr
+
+
+def _artist_with_files(session, name, *paths, credited=False):
+    artist = lib.get_or_create_artist(session, name)
+    release = lib.get_or_create_release(session, f"{name} album", name)
+    if not credited:
+        release.album_artist_id = artist.id
+    for i, p in enumerate(paths):
+        t = Track(release_id=release.id, title=f"t{i}", title_key=f"t{i}", artist_display=name)
+        session.add(t)
+        session.flush()
+        session.add(MediaFile(track_id=t.id, path=p))
+        if credited:
+            session.add(Credit(artist_id=artist.id, track_id=t.id))
+    session.flush()
+    return artist
+
+
+class TestRadioFolderSkipped:
+    def test_radio_only_artists_are_left_out(self, session):
+        show = _artist_with_files(session, "The Shadow", r"D:\Radio\The Shadow\1937-09-26.mp3")
+        mint = _artist_with_files(session, "Paul Harvey", str(Path.home() / "Radio" / "Paul Harvey" / "a.mp3"))
+        credited = _artist_with_files(session, "Orson Welles", "D:/Radio/Orson Welles/x.mp3", credited=True)
+        band = _artist_with_files(session, "Rush", r"D:\MusicFLAC\Rush\Permanent Waves\01 The Spirit of Radio.flac")
+        both = _artist_with_files(session, "Bing Crosby", r"D:\Music\Bing Crosby\White Christmas.mp3",
+                                  r"D:\Radio\Kraft Music Hall\1945-12-20.mp3")
+        no_files = make_artist(session, "Someone")
+        session.commit()
+
+        ids = set(bio_dl.artists_missing_bio())
+
+        assert show.id not in ids and mint.id not in ids and credited.id not in ids
+        assert {band.id, both.id, no_files.id} <= ids
+
+    def test_the_radio_pages_own_folder_counts_wherever_it_is(self, session):
+        otr.set_root(session, r"E:\Old Time Radio")
+        show = _artist_with_files(session, "The Whistler", r"E:\Old Time Radio\The Whistler\ep1.mp3")
+        session.commit()
+        assert show.id not in bio_dl.artists_missing_bio()
+
+    def test_a_radio_song_title_isnt_the_radio_folder(self, session):
+        queen = _artist_with_files(session, "Queen", r"D:\MusicFLAC\Queen\Radio\07 Radio Ga Ga.flac")
+        session.commit()
+        assert queen.id in bio_dl.artists_missing_bio()
