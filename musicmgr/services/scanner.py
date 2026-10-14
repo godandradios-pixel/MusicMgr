@@ -52,6 +52,31 @@ ProgressFn = Callable[[int, int, str], None]
 COMPILATION_ARTIST_KEYS = {"various artists", "various", "va", "various performers"}
 
 
+def is_various_artists(album_artist: Optional[str], performers: Iterable[Optional[str]] = (),
+                       flagged: bool = False) -> bool:
+    """Is this album a various-artists compilation - one that belongs to no
+    single artist's page?
+
+    2026-10-14 - James: "After a scan on D:\\Music why doesn't it pick up the
+    added album Da Doo Ron Ron for the Crystals". Its files carry the
+    Compilation flag (TCMP=1): MusicBrainz types a single-artist "Very Best
+    of" as "Album, Compilation" and Picard writes the flag for it. MusicMgr
+    read the flag as "various artists", so the album was hidden from the
+    Crystals' page and its cover saved as "Various Artists - <title>" (where
+    unrelated "Greatest Hits" albums then shared one picture).
+
+    Now the flag only counts when the album artist isn't the one performing
+    the tracks. An album artist of "Various Artists" (or the like) is always
+    a compilation."""
+    key = normalize(album_artist)
+    if key in COMPILATION_ARTIST_KEYS:
+        return True
+    if not flagged:
+        return False
+    keys = {normalize(p) for p in performers if p}
+    return bool(keys) and keys != {key}
+
+
 @dataclass
 class ScanResult:
     scanned: int = 0
@@ -486,15 +511,16 @@ def _folder_album_artist(tags_by_path: dict[Path, TrackTags]) -> tuple[str, bool
     ]
     if explicit:
         winner = Counter(explicit).most_common(1)[0][0]
-        is_compilation = any(t.compilation for t in tags_by_path.values()) or (
-            normalize(winner) in COMPILATION_ARTIST_KEYS
-        )
+        is_compilation = is_various_artists(
+            winner, (t.artist for t in tags_by_path.values()),
+            flagged=any(t.compilation for t in tags_by_path.values()))
         return winner, is_compilation
 
     performers = {normalize(t.artist): t.artist for t in tags_by_path.values() if t.artist}
     if len(performers) <= 1:
+        # one performer throughout: their album, whatever the flag says
         shared = next(iter(performers.values()), "Unknown Artist")
-        return shared, any(t.compilation for t in tags_by_path.values())
+        return shared, normalize(shared) in COMPILATION_ARTIST_KEYS
     return "Various Artists", True
 
 
@@ -643,8 +669,9 @@ def import_file(
         # a lot of taggers never set the ID3/Vorbis "compilation" flag at all,
         # so the album artist itself is the more reliable tell - a release
         # explicitly credited to "Various Artists" is a compilation whether or
-        # not the flag made it into the file
-        is_compilation = tags.compilation or normalize(album_artist) in COMPILATION_ARTIST_KEYS
+        # not the flag made it into the file (and a flagged "Best of" by the
+        # artist performing it isn't one - 2026-10-14, is_various_artists)
+        is_compilation = is_various_artists(album_artist, [tags.artist], flagged=tags.compilation)
     master = lib.get_or_create_master(session, tags.album, album_artist, tags.year)
     release = lib.get_or_create_release(
         session,

@@ -260,6 +260,56 @@ def backfill_album_artists(session: Session) -> int:
     return updated
 
 
+def fix_single_artist_compilations(session: Session) -> int:
+    """Un-mark albums that were filed as various-artists compilations only
+    because their files carry the Compilation flag (2026-10-14 - James's
+    "Da Doo Ron Ron: The Very Best of The Crystals" didn't appear on the
+    Crystals' page; see scanner.is_various_artists). An unchanged file is
+    never re-read by a scan, so the existing rows are put right here.
+
+    A release still counts as a compilation when its album artist is
+    "Various Artists" or someone else performs its tracks. A cover saved
+    under the old "Various Artists - <title>" name is copied to the album's
+    own name (copied, not moved - another album may share that file).
+
+    Cheap (only flagged releases are looked at) and idempotent, so it runs
+    on every start. Returns how many releases were fixed."""
+    from .. import config
+    from . import artwork_names
+    from .scanner import is_various_artists
+
+    fixed = 0
+    flagged = list(session.scalars(
+        select(Release).where(Release.is_compilation.is_(True),
+                              Release.album_artist_id.is_not(None))))
+    for release in flagged:
+        performers = list(session.scalars(
+            select(Track.artist_display).where(Track.release_id == release.id).distinct()))
+        if not performers or is_various_artists(release.artist_display, performers, flagged=True):
+            continue
+        old_stem = artwork_names.release_stem(release)
+        release.is_compilation = False
+        fixed += 1
+        cover = Path(release.cover_path) if release.cover_path else None
+        if cover is None or not cover.is_file():
+            continue
+        if artwork_names.lookup_key(cover.stem) != artwork_names.lookup_key(old_stem):
+            continue        # a picture with a name of its own - leave it be
+        own = artwork_names.find_image(config.ART_DIR, artwork_names.release_stem(release))
+        if own is None:
+            try:
+                saved = artwork_names.save_release_cover(
+                    release, cover.read_bytes(), ext_hint=cover.suffix, overwrite=False)
+            except OSError:
+                saved = None
+            own = Path(saved) if saved else None
+        if own is not None:
+            release.cover_path = str(own)
+    if fixed:
+        session.flush()
+    return fixed
+
+
 def merge_compilation_duplicates(session: Session) -> int:
     """One-time cleanup for a database scanned before
     `services/scanner.py:_folder_album_artist` existed: an untagged

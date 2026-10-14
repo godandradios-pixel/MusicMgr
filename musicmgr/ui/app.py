@@ -484,6 +484,9 @@ def bootstrap_database() -> None:
         chart_svc.remove_orphaned_playback_charts(session)
         lib_svc.fix_artist_sort_keys(session)
         lib_svc.backfill_album_artists(session)
+        # 2026-10-14: single-artist "Best of"s the Compilation flag hid
+        # from their artist's page (cheap; nothing to do after the first run)
+        lib_svc.fix_single_artist_compilations(session)
         # 3.5 s on the real library (reads every file path) - a one-time
         # clean-up for databases scanned before the scanner learned about
         # compilations, so it runs once per data folder, not every start
