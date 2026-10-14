@@ -47,6 +47,8 @@ nav button.on { color: var(--accent2); }
 .meta .t { font-size: 21px; font-weight: 650; }
 .meta .a { color: var(--dim); margin-top: 2px; }
 .meta .b { color: var(--faint); font-size: 14px; margin-top: 2px; }
+.meta .qual { display: inline-block; margin-top: 6px; font-size: 12px; padding: 2px 10px; border-radius: 99px;
+  border: 1px solid var(--faint); color: var(--dim); }
 .meta .live { display: inline-block; margin-top: 6px; font-size: 12px; letter-spacing: .08em; padding: 2px 8px;
   border-radius: 99px; background: var(--danger); color: #fff; }
 .seek { width: 100%; max-width: 420px; }
@@ -118,6 +120,7 @@ h2:first-child { margin-top: 4px; }
         <div class="a" id="artist"></div>
         <div class="b" id="album"></div>
         <span class="live" id="live" hidden>LIVE</span>
+        <span class="qual" id="qual" hidden></span>
       </div>
       <div class="seek" id="seekbox">
         <input type="range" id="seek" min="0" max="1000" value="0">
@@ -205,12 +208,13 @@ function render(s) {
   $("playicon").innerHTML = s.state === "playing" ? ICON_PAUSE : ICON_PLAY;
   if (!it) {
     $("title").textContent = "Nothing playing"; $("artist").textContent = s.queue_len ? "Press play" : "Pick something from Playlists or Search";
-    $("album").textContent = ""; $("live").hidden = true; setArt(null); $("seekbox").style.visibility = "hidden";
+    $("album").textContent = ""; $("live").hidden = true; $("qual").hidden = true; setArt(null); $("seekbox").style.visibility = "hidden";
   } else {
     $("title").textContent = it.live && it.stream_title ? it.stream_title : it.title;
     $("artist").textContent = it.live ? it.title : it.artist;
     $("album").textContent = it.live ? "" : it.album;
     $("live").hidden = !it.live;
+    $("qual").hidden = it.live || !it.quality; $("qual").textContent = it.quality || "";
     setArt(it.cover);
     $("seekbox").style.visibility = it.live ? "hidden" : "visible";
     if (!seeking) { const d = it.duration_ms || 0; $("seek").value = d ? Math.round(1000 * it.position_ms / d) : 0; paint($("seek")); }

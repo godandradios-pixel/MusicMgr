@@ -53,7 +53,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...services import tracknum
+from ...services import audio_quality, tracknum
 from ...services.library import format_duration
 from ...services.player import REPEAT_ALL, REPEAT_ONE, PlayerController, QueueItem
 from ...services.spectrum import BUCKET_MS, SpectrumThread, detect_beats
@@ -252,10 +252,22 @@ class PlayerBar(QFrame):
         self.live_badge.setToolTip("Live internet radio")
         self.live_badge.setVisible(False)
         self._live = False
+        # 2026-10-13 - James: "For other songs, can we have a Mono Stereo or
+        # bit rate or some other indicator that can be used to describe the
+        # quality of the file" - the file's format, bit depth/sample rate
+        # (lossless) or bitrate (compressed) and channels, in a pill at the
+        # end of the seek row (services/audio_quality.py). Outlined rather
+        # than filled like LIVE, warm for lossless, dim for compressed.
+        self.quality_badge = QLabel("")
+        self.quality_badge.setObjectName("QualityBadge")
+        self.quality_badge.setAlignment(Qt.AlignCenter)
+        self.quality_badge.setFixedHeight(22)
+        self.quality_badge.setVisible(False)
         seek_row.addWidget(self.elapsed)
         seek_row.addWidget(self.seek, 1)
         seek_row.addWidget(self.live_badge, 0, Qt.AlignCenter)
         seek_row.addWidget(self.remaining)
+        seek_row.addWidget(self.quality_badge, 0, Qt.AlignVCenter)
         centre.addLayout(seek_row)
         root.addLayout(centre, 1)
 
@@ -403,6 +415,7 @@ class PlayerBar(QFrame):
         # once the strip is hidden and no longer overwriting them itself.
         self._start_spectrum(None)
         self._set_live(False)
+        self.quality_badge.setVisible(False)
         self.visualizer.set_live(False)
         self.visualizer.setVisible(False)
         already_bound = self._video is controller
@@ -473,8 +486,25 @@ class PlayerBar(QFrame):
             self.volume.setValue(target)
             self.volume.blockSignals(False)
 
+    def _show_quality(self, item: Optional[QueueItem]) -> None:
+        """The quality pill - files only (not a station, not a video)."""
+        quality = None
+        if item is not None and not item.is_stream and self._video is None:
+            quality = audio_quality.describe(item.path)
+        if quality is None:
+            self.quality_badge.setVisible(False)
+            return
+        color = COLORS["jukebox_key_hi"] if quality.lossless else COLORS["text_dim"]
+        self.quality_badge.setStyleSheet(
+            f"QLabel#QualityBadge {{ color: {color}; border: 1px solid {color};"
+            " border-radius: 11px; padding: 0 12px; font-size: 12px; font-weight: 600; }")
+        self.quality_badge.setText(quality.label)
+        self.quality_badge.setToolTip(quality.detail)
+        self.quality_badge.setVisible(True)
+
     def on_track_changed(self, item: Optional[QueueItem]) -> None:
         self._set_live(item is not None and item.is_stream and self._video is None)
+        self._show_quality(item)
         if item is None:
             self.visualizer.set_live(False)
             self.title.setText("Nothing playing")

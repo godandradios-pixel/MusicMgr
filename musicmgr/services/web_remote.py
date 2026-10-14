@@ -245,6 +245,8 @@ class RemoteApi:
                 "station_id": item.station_id,
                 "live": live,
                 "stream_title": self.stream_title if live else "",
+                # 2026-10-13 - the player bar's quality pill (FLAC · 16/44.1 · Stereo)
+                "quality": "" if live else _quality_label(item.path),
                 "cover": _art_url("current", item.track_id or item.station_id or 0, item.cover_path),
                 "position_ms": 0 if live else int(player.position() or 0),
                 "duration_ms": 0 if live else int(player.duration() or 0),
@@ -477,6 +479,13 @@ class RemoteApi:
     def _cmd_tune_onair(self, _b) -> str:
         ok = self.ctx.tuner.tune_onair()
         return "On the air" if ok else "Nothing to broadcast yet"
+
+
+def _quality_label(path: str) -> str:
+    from .audio_quality import describe
+
+    q = describe(path)
+    return q.label if q else ""
 
 
 def _version() -> str:
