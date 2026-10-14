@@ -33,6 +33,7 @@ def cmd_scan(args) -> int:
                 progress=lambda d, t, n: print(f"\r  {d}/{t} {n[:60]:<60}", end=""),
                 result=result,
             )
+        result.radio_removed = scanner.remove_radio_files(session)
         result.missing = scanner.mark_missing_files(session)
         result.removed = scanner.purge_orphaned_tracks(session)
     print("\n" + result.summary())

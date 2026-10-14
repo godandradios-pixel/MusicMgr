@@ -14,14 +14,14 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional, Sequence
 
 import mutagen
 from mutagen.flac import FLAC, Picture
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from mutagen.oggvorbis import OggVorbis
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import config
@@ -38,6 +38,7 @@ from ..db.models import (
     WatchedFolder,
 )
 from . import library as lib
+from . import radio_folder
 from . import replaygain
 from .tracknum import parse_side
 from .matching import normalize, split_artists
@@ -72,16 +73,21 @@ class ScanResult:
     #: of those, songs whose history (rating, plays, playlists, jukebox,
     #: chart matches) moved over because no file was left on the old track
     history_moved: dict[int, int] = field(default_factory=dict)
+    #: old-time radio files taken back out of the music library - they
+    #: belong to the Radio page (2026-10-13, see remove_radio_files)
+    radio_removed: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         separated = (f", {self.separated} recordings separated from another artist's"
                      if self.separated else "")
+        radio = (f", {self.radio_removed} old-time radio files left to the Radio page"
+                 if self.radio_removed else "")
         return (
             f"{self.scanned} files scanned - {self.added} added, "
             f"{self.updated} updated, {self.unchanged} unchanged, "
             f"{self.missing} missing, {self.removed} removed, "
-            f"{len(self.errors)} errors{separated}"
+            f"{len(self.errors)} errors{separated}{radio}"
         )
 
 
@@ -437,9 +443,16 @@ def _save_cover(data: bytes, release: "Release") -> Optional[str]:
 # --------------------------------------------------------------------------
 
 
-def iter_audio_files(root: Path) -> Iterable[Path]:
+def iter_audio_files(root: Path, skip: Sequence[str] = ()) -> Iterable[Path]:
+    """Every audio file under `root`. `skip` - normalised folders from
+    services/radio_folder.roots - leaves the old-time radio folder out
+    (2026-10-13: James, "Keep the Radio folder out of the music scan")."""
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".")
+            and not (skip and radio_folder.is_radio_path(os.path.join(dirpath, d), skip))
+        ]
         for name in sorted(filenames):
             if name.startswith("."):
                 continue
@@ -914,7 +927,13 @@ def scan_folder(
         result.errors.append(f"{root} does not exist")
         return result
 
-    files = list(iter_audio_files(root))
+    radio = radio_folder.roots(session)
+    if radio_folder.is_radio_path(str(root), radio):
+        # the watched folder *is* the old-time radio folder - its shows
+        # belong to the Radio page, not the music library
+        result.errors.append(f"{root} is the old-time radio folder - not scanned as music")
+        return result
+    files = list(iter_audio_files(root, skip=radio))
     _import_files(session, files, result, progress=progress, force=force, should_stop=should_stop)
 
     folder = session.scalar(select(WatchedFolder).where(WatchedFolder.path == str(root)))
@@ -954,9 +973,11 @@ def import_paths(
     the same unchanged-file shortcut, so passing an already-imported file
     is harmless. Non-audio paths are ignored."""
     result = result or ScanResult()
+    radio = radio_folder.roots(session)
     files = [
         Path(p) for p in paths
         if Path(p).suffix.lower() in config.AUDIO_EXTENSIONS and Path(p).exists()
+        and not radio_folder.is_radio_path(str(p), radio)
     ]
     _import_files(session, files, result, progress=progress, should_stop=should_stop)
     session.flush()
@@ -1126,6 +1147,7 @@ def rescan_all(
     )
     for folder in folders:
         scan_folder(session, folder.path, progress, result, force=force)
+    result.radio_removed = remove_radio_files(session)
     result.missing = mark_missing_files(session)
     result.removed = purge_orphaned_tracks(session)
     return result
@@ -1137,6 +1159,26 @@ def rescan_all(
 #: coarser - same reasoning and same value as metadata_health.py's own
 #: _LYRICS_PROGRESS_EVERY, which walks a comparable per-track stat call.
 _MISSING_FILES_PROGRESS_EVERY = 250
+
+
+def remove_radio_files(session: Session) -> int:
+    """Take files in the old-time radio folder back out of the music
+    library (2026-10-13). A scan no longer adds them, but a library
+    scanned before that - a watched folder with Radio inside it - still
+    has them. Only the file rows go here; purge_orphaned_tracks, which
+    every scan runs next, then removes the tracks left with no file
+    unless they have history (a playlist, plays, a chart, the jukebox)."""
+    radio = radio_folder.roots(session)
+    doomed = [
+        mf_id for mf_id, path in session.execute(select(MediaFile.id, MediaFile.path))
+        if radio_folder.is_radio_path(path or "", radio)
+    ]
+    for start in range(0, len(doomed), 500):
+        session.execute(delete(MediaFile).where(MediaFile.id.in_(doomed[start:start + 500])))
+    if doomed:
+        session.flush()
+        session.expire_all()
+    return len(doomed)
 
 
 def mark_missing_files(
