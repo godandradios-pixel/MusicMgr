@@ -54,12 +54,14 @@ def _where(f: dup.FileInfo) -> str:
 
 
 class DuplicatesDialog(QDialog):
-    """Two tabs: playlist songs to move off chart copies (with the switch
-    button), and sets of identical files (a list to act on - nothing is
-    deleted from here)."""
+    """Three tabs: playlist songs and chart songs to move off chart-folder
+    copies (each with its switch button), and sets of identical files (a
+    list to act on - nothing is deleted from here)."""
 
     #: emitted after playlists were switched, with how many entries changed
     switched = Signal(int)
+    #: emitted after chart rows were switched, with how many rows changed
+    charts_switched = Signal(int)
 
     def __init__(self, report: dup.DuplicateReport, parent=None) -> None:
         super().__init__(parent)
@@ -75,9 +77,26 @@ class DuplicatesDialog(QDialog):
         if report.cancelled:
             layout.addWidget(dim_label("Stopped early - these are partial results."))
 
+        # one length setting for both playlists and charts
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Lengths may differ by up to"))
+        self.length_combo = QComboBox()
+        for ms in dup.LENGTH_STEPS_MS:
+            label = f"{ms // 1000} seconds"
+            if ms == dup.SAME_SONG_MAX_DIFF_MS:
+                label += " (recommended)"
+            self.length_combo.addItem(label, ms)
+        self.length_combo.setCurrentIndex(
+            max(0, self.length_combo.findData(dup.SAME_SONG_MAX_DIFF_MS)))
+        self.length_combo.currentIndexChanged.connect(self._refresh_all)
+        row.addWidget(self.length_combo)
+        row.addStretch(1)
+        layout.addLayout(row)
+
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
         self.tabs.addTab(self._build_switch_tab(), "Playlist songs")
+        self.tabs.addTab(self._build_chart_tab(), "Charts")
         self.tabs.addTab(self._build_groups_tab(), "Identical files")
 
         close_row = QHBoxLayout()
@@ -86,7 +105,7 @@ class DuplicatesDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         close_row.addWidget(close_btn)
         layout.addLayout(close_row)
-        self._refresh_switches()
+        self._refresh_all()
 
     # -- playlist songs ---------------------------------------------------
 
@@ -103,17 +122,6 @@ class DuplicatesDialog(QDialog):
         v.addWidget(intro)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("Lengths may differ by up to"))
-        self.length_combo = QComboBox()
-        for ms in dup.LENGTH_STEPS_MS:
-            label = f"{ms // 1000} seconds"
-            if ms == dup.SAME_SONG_MAX_DIFF_MS:
-                label += " (recommended)"
-            self.length_combo.addItem(label, ms)
-        self.length_combo.setCurrentIndex(
-            max(0, self.length_combo.findData(dup.SAME_SONG_MAX_DIFF_MS)))
-        self.length_combo.currentIndexChanged.connect(self._refresh_switches)
-        row.addWidget(self.length_combo)
         row.addStretch(1)
         self.switch_btn = TouchButton("")
         self.switch_btn.setObjectName("PrimaryWarm")
@@ -133,6 +141,10 @@ class DuplicatesDialog(QDialog):
             header.setSectionResizeMode(col, mode)
         v.addWidget(self.table, 1)
         return page
+
+    def _refresh_all(self) -> None:
+        self._refresh_switches()
+        self._refresh_charts()
 
     def _max_diff(self) -> int:
         return int(self.length_combo.currentData() or dup.SAME_SONG_MAX_DIFF_MS)
@@ -180,8 +192,92 @@ class DuplicatesDialog(QDialog):
             session.commit()
         done = {s.item_id for s in switches}
         self.report.switches = [s for s in self.report.switches if s.item_id not in done]
-        self._refresh_switches()
+        self._refresh_all()
         self.switched.emit(changed)
+
+    # -- charts -----------------------------------------------------------
+
+    def _build_chart_tab(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        intro = dim_label(
+            "Songs the Charts page matches to a copy in the Billboard, Hot Country or Oldies "
+            "folder, and the album copy they'd move to - the same song by the same artist with "
+            "about the same length. Every week a song was on a chart moves together. Matches "
+            "you fixed by hand stay fixed, on the album copy. Re-matching charts now picks "
+            "album copies by itself, so these won't drift back."
+        )
+        intro.setWordWrap(True)
+        v.addWidget(intro)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.chart_btn = TouchButton("")
+        self.chart_btn.setObjectName("PrimaryWarm")
+        self.chart_btn.clicked.connect(self._switch_charts)
+        row.addWidget(self.chart_btn)
+        v.addLayout(row)
+        self.chart_table = QTableWidget(0, 5)
+        self.chart_table.setHorizontalHeaderLabels(
+            ["Song", "Now from", "Moves to", "Chart rows", "Match"])
+        self.chart_table.verticalHeader().setVisible(False)
+        self.chart_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.chart_table.setSelectionBehavior(QTableWidget.SelectRows)
+        header = self.chart_table.horizontalHeader()
+        for col, mode in enumerate((QHeaderView.Stretch, QHeaderView.ResizeToContents,
+                                    QHeaderView.Stretch, QHeaderView.ResizeToContents,
+                                    QHeaderView.ResizeToContents)):
+            header.setSectionResizeMode(col, mode)
+        v.addWidget(self.chart_table, 1)
+        return page
+
+    def _current_charts(self) -> list[dup.ChartSwitch]:
+        return self.report.chart_switches_within(self._max_diff())
+
+    def _refresh_charts(self) -> None:
+        switches = self._current_charts()
+        self.chart_table.setRowCount(len(switches))
+        for r, s in enumerate(switches):
+            match = "Same song" if s.diff_ms < 1000 else f"Same song, {s.diff_ms / 1000:.0f}s apart"
+            cells = (
+                f"{s.old.artist} - {s.old.title}",
+                _where(s.old),
+                f"{s.new.album}  ({s.new.artist})",
+                f"{s.entries:,}",
+                match,
+            )
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                tip = {1: s.old.path, 2: s.new.path, 3: ", ".join(s.charts)}.get(c, text)
+                item.setToolTip(tip)
+                if c == 3:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.chart_table.setItem(r, c, item)
+        rows = sum(s.entries for s in switches)
+        self.chart_btn.setText(
+            f"Switch {len(switches):,} song{'s' if len(switches) != 1 else ''} "
+            f"({rows:,} chart rows) to album copies")
+        self.chart_btn.setEnabled(bool(switches))
+
+    def _switch_charts(self) -> None:
+        switches = self._current_charts()
+        if not switches:
+            return
+        rows = sum(s.entries for s in switches)
+        answer = QMessageBox.question(
+            self, "Switch charts to album copies",
+            f"Point {rows:,} chart rows ({len(switches):,} songs) at their album copies?\n\n"
+            "The chart-folder files themselves aren't touched.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        with session_scope() as session:
+            changed = dup.switch_charts(session, switches)
+            session.commit()
+        done = {s.old.track_id for s in switches}
+        self.report.chart_switches = [s for s in self.report.chart_switches
+                                      if s.old.track_id not in done]
+        self._refresh_all()
+        self.charts_switched.emit(changed)
 
     # -- identical files --------------------------------------------------
 

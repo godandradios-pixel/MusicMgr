@@ -1153,8 +1153,8 @@ class SettingsView(BaseView):
         # folders" - see services/duplicates.py
         add_tool_row(
             "Duplicates",
-            "Move playlist songs off Billboard, Hot Country and Oldies copies onto album "
-            "copies, and list files that hold the identical recording.",
+            "Move playlist and chart songs off Billboard, Hot Country and Oldies copies onto "
+            "album copies, and list files that hold the identical recording.",
             "Find…",
             self.find_duplicates,
         )
@@ -3247,7 +3247,12 @@ class SettingsView(BaseView):
         self._hide_cancel(self._duplicates_thread)
         dialog = DuplicatesDialog(report, self)
         dialog.switched.connect(self._on_duplicates_switched)
+        dialog.charts_switched.connect(self._on_duplicate_charts_switched)
         dialog.exec()
+
+    def _on_duplicate_charts_switched(self, changed: int) -> None:
+        self.ctx.notify(f"{changed:,} chart rows now use album copies")
+        self.ctx.libraryChanged.emit()
 
     def _on_duplicates_switched(self, changed: int) -> None:
         self.ctx.notify(f"{changed} playlist song{'s' if changed != 1 else ''} now use album copies")

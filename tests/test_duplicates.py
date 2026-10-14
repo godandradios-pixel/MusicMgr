@@ -216,3 +216,91 @@ def test_settings_has_the_tool(ctx):
 
     view = SettingsView(ctx)
     assert hasattr(view, "find_duplicates")
+
+
+# -- 2026-10-13: the Charts page too ("proceed with option 1") ----------------
+
+from musicmgr.db.models import ChartEntry
+from musicmgr.services import charts as chart_svc
+
+
+def _chart_with(session, songs, name="Billboard Hot 100"):
+    chart = chart_svc.create_chart(session, name)
+    from musicmgr.db.models import ChartIssue
+    import datetime as dt
+
+    entries = []
+    for week in range(3):
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(2001, 1, 1 + week * 7))
+        session.add(issue)
+        session.flush()
+        for rank, (title, artist) in enumerate(songs, start=1):
+            e = ChartEntry(issue_id=issue.id, rank=rank, title=title, artist_name=artist,
+                           title_key=normalize(title), artist_key=normalize(artist))
+            session.add(e)
+            entries.append(e)
+    session.flush()
+    return chart, entries
+
+
+def test_album_copy_for(session, library):
+    assert dup.album_copy_for(session, library["bb_boogaloo"].id) == library["album_boogaloo"].id
+    # the identical rip: same length - album copy
+    assert dup.album_copy_for(session, library["bb_jaded"].id) == library["album_jaded"].id
+    # already an album song, or no album copy within 2 s
+    assert dup.album_copy_for(session, library["album_jaded"].id) is None
+    assert dup.album_copy_for(session, library["bb_night"].id) is None
+    assert dup.album_copy_for(session, library["bb_only"].id) is None
+
+
+def test_chart_matching_prefers_the_album_copy(session, library):
+    _chart, entries = _chart_with(session, [("Back Off Boogaloo", "Ringo Starr"),
+                                            ("Here Comes The Night", "Them")])
+    for e in entries:
+        chart_svc.match_entry(session, e)
+    by_title = {e.title: e.track_id for e in entries}
+    assert by_title["Back Off Boogaloo"] == library["album_boogaloo"].id
+    # 4 s apart: not the same recording - left on whatever matched best
+    assert by_title["Here Comes The Night"] in (library["bb_night"].id, library["album_night"].id)
+
+
+def test_chart_switches(session, library):
+    _chart, entries = _chart_with(session, [("Back Off Boogaloo", "Ringo Starr"),
+                                            ("Cement Mixer", "Alvino Rey")])
+    # matched to the Billboard copies the way older matching did, one by hand
+    for e in entries:
+        e.track_id = library["bb_boogaloo"].id if e.title.startswith("Back") else library["bb_only"].id
+    entries[0].match_locked = True
+    session.commit()
+
+    report = dup.find_duplicates(session, identical_files=False)
+    (cs,) = report.chart_switches_within()
+    assert cs.old.track_id == library["bb_boogaloo"].id and cs.new.track_id == library["album_boogaloo"].id
+    assert cs.entries == 3 and cs.charts == ["Billboard Hot 100"]
+    assert report.chart_unmatched == 3
+    assert "3 chart rows (1 song) can move" in report.summary()
+
+    assert dup.switch_charts(session, [cs]) == 3
+    session.commit()
+    moved = [e for e in session.scalars(select(ChartEntry)) if e.title.startswith("Back")]
+    assert {e.track_id for e in moved} == {library["album_boogaloo"].id}
+    assert entries[0].match_locked  # a hand-fixed match stays fixed
+
+
+def test_dialog_charts_tab(session, library, qapp, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from musicmgr.ui.widgets.duplicates import DuplicatesDialog
+
+    _chart, entries = _chart_with(session, [("Back Off Boogaloo", "Ringo Starr")])
+    for e in entries:
+        e.track_id = library["bb_boogaloo"].id
+    session.commit()
+    dialog = DuplicatesDialog(dup.find_duplicates(session, identical_files=False))
+    assert dialog.chart_table.rowCount() == 1
+    assert "3 chart rows" in dialog.chart_btn.text()
+    got = []
+    dialog.charts_switched.connect(got.append)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    dialog._switch_charts()
+    assert got == [3] and dialog.chart_table.rowCount() == 0

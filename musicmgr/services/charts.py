@@ -196,7 +196,13 @@ def match_entry(session: Session, entry: ChartEntry, threshold: float = 0.72) ->
     candidates = _candidate_tracks(session, entry.title_key)
     hit = best_match(entry.title, entry.artist_name, candidates, threshold)
     if hit:
-        entry.track_id, entry.match_score = hit[0], hit[1]
+        # 2026-10-13 - James: playlists and charts should "point to the
+        # album songs" rather than the Billboard/Hot Country/Oldies chart
+        # folders: when the match is a chart-folder copy and the library
+        # has the same song on an album, use that (services/duplicates.py)
+        from .duplicates import album_copy_for
+
+        entry.track_id, entry.match_score = album_copy_for(session, hit[0]) or hit[0], hit[1]
         return True
     entry.track_id, entry.match_score = None, None
     return False

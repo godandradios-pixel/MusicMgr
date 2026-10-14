@@ -510,7 +510,11 @@ class MediaFile(Base):
     __tablename__ = "media_files"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    track_id: Mapped[int] = mapped_column(ForeignKey("tracks.id", ondelete="CASCADE"))
+    #: indexed 2026-10-13 - every "this song's files" lookup used to scan
+    #: all ~100k rows (see session._ensure_indexes for existing libraries)
+    track_id: Mapped[int] = mapped_column(
+        ForeignKey("tracks.id", ondelete="CASCADE"), index=True
+    )
     path: Mapped[str] = mapped_column(Text, unique=True, index=True)
     size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
     mtime: Mapped[Optional[float]] = mapped_column(Float)

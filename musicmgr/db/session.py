@@ -105,6 +105,22 @@ def _ensure_columns(engine: Engine) -> None:
         conn.commit()
 
 
+#: indexes added after a table first shipped - create_all() only makes the
+#: indexes of tables it creates, so an existing library gets these here
+_INDEX_ADDITIONS = [
+    # 2026-10-13: "this song's files" (duplicates.album_copy_for during
+    # chart matching, purge_orphaned_tracks, ...) scanned every row
+    ("ix_media_files_track_id", "media_files", "track_id"),
+]
+
+
+def _ensure_indexes(engine: Engine) -> None:
+    with engine.connect() as conn:
+        for name, table, column in _INDEX_ADDITIONS:
+            conn.exec_driver_sql(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({column})")
+        conn.commit()
+
+
 def _table_exists(engine: Engine, name: str) -> bool:
     with engine.connect() as conn:
         row = conn.exec_driver_sql(
@@ -171,6 +187,7 @@ def init_engine(db_path: Optional[Path] = None, echo: bool = False) -> Engine:
     watched_folders_existed = _table_exists(_engine, "watched_folders")
     Base.metadata.create_all(_engine)
     _ensure_columns(_engine)
+    _ensure_indexes(_engine)
     if not watched_folders_existed:
         _migrate_watched_folders(_engine)
     _Session = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
