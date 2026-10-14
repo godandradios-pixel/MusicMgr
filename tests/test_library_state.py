@@ -836,3 +836,108 @@ class TestRadioShowProgress:
         with db_session.session_scope() as s:
             w = self._show(s, "The Whistler")
             assert otr.episodes(s, w.id)[0].played
+
+
+class TestFolderPathNamedCopies:
+    """2026-10-14 - James: "The playlist folders are getting messed up with
+    duplicate empty folders when syncing between Linux and Windows PCs".
+    A pre-1.7.1 MusicMgr read the key "Billboard Hot 100/1950-59/1951" as a
+    playlist name and wrote the drive back without the `playlist_keys`
+    marker; current builds then filed an empty "Billboard Hot 100/1950-59/1951"
+    next to the real "1951" in every folder."""
+
+    def _setup(self, pc1):
+        from musicmgr.services import playlists as pl_svc
+
+        pc1.use()
+        with db_session.session_scope() as s:
+            hot = pl_svc.create_folder(s, "Billboard Hot 100")
+            fifties = pl_svc.create_folder(s, "1950-59", hot.id)
+            records = pl_svc.create_folder(s, "78 Records")
+            _chart(s, pc1, fifties.id, "1951", [SONGS[0], SONGS[1]])
+            s.add(Playlist(name="RCA Victor", kind=Playlist.KIND_MANUAL, folder_id=records.id))
+            s.add(Playlist(name="Top level", kind=Playlist.KIND_MANUAL))
+            return _tree(s)
+
+    @staticmethod
+    def _names(s) -> list[str]:
+        return sorted(pl.name for pl in s.scalars(select(Playlist)))
+
+    def test_drive_written_by_an_old_build_makes_no_copies(self, two_pcs):
+        pc1, pc2, drive = two_pcs
+        want = self._setup(pc1)
+        pc1.sync()
+        # what a pre-1.7.1 build writes back after reading the drive: the
+        # current keys kept, but no "name" fields and no marker
+        path = ls.usb_state_path(drive)
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+        data.pop("playlist_keys")
+        data["saved_by"] = "mint-old"
+        for value in data["playlists"].values():
+            value.pop("name")
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            json.dump(data, fh)
+
+        notes = pc2.sync()
+        assert notes.old_build_pc == "mint-old"
+        assert "older MusicMgr" in notes.summary()
+        with db_session.session_scope() as s:
+            assert _tree(s) == want
+            assert self._names(s) == ["1951", "RCA Victor", "Top level"]
+        notes = pc1.sync()
+        assert notes.playlists_in == [] and notes.playlists_removed == []
+        assert notes.old_build_pc is None          # PC2 has rewritten it since
+        with db_session.session_scope() as s:
+            assert _tree(s) == want
+
+    def test_copies_already_made_are_cleaned_up_on_every_pc(self, two_pcs, monkeypatch):
+        pc1, pc2, drive = two_pcs
+        self._setup(pc1)
+        pc1.use()
+        with db_session.session_scope() as s:
+            fifties = ls._folders_by_path(s)["Billboard Hot 100/1950-59"]
+            records = ls._folders_by_path(s)["78 Records"]
+            # an empty copy next to its real playlist, a copy with songs next
+            # to its real one, and a copy whose real one is gone
+            s.add(Playlist(name="Billboard Hot 100/1950-59/1951", kind=Playlist.KIND_CHART,
+                           folder_id=fifties.id))
+            copy_ = Playlist(name="78 Records/RCA Victor", kind=Playlist.KIND_MANUAL,
+                             folder_id=records.id)
+            s.add(copy_)
+            s.flush()
+            s.add(PlaylistItem(playlist_id=copy_.id, track_id=pc1.track(s, SONGS[2]).id,
+                               position=0))
+            _chart(s, pc1, fifties.id, "Billboard Hot 100/1950-59/1952", [SONGS[1]])
+        # spread them the way the old code did: to the drive, PC1's base, PC2
+        with monkeypatch.context() as mp:
+            mp.setattr(ls, "repair_nested_playlists", lambda db: 0)
+            mp.setattr(ls, "repair_nested_names", lambda pls: (pls, 0))
+            pc1.sync()
+            pc2.sync()
+        with db_session.session_scope() as s:
+            assert len(self._names(s)) == 6
+
+        notes = pc2.sync()
+        assert notes.nested_cleaned == 3
+        assert "3 mixed-up playlist copies cleaned up" in notes.summary()
+        assert notes.playlists_removed == [] and notes.playlists_in == []
+        with db_session.session_scope() as s:
+            assert self._names(s) == ["1951", "1952", "RCA Victor", "Top level"]
+            want = _tree(s)
+        # the lone copy kept its songs under its real name
+        kind, titles = want["Billboard Hot 100/1950-59/1952"]
+        assert kind == "chart" and len(titles) == 1
+        notes = pc1.sync()
+        assert notes.nested_cleaned == 3
+        assert notes.playlists_removed == [] and notes.playlists_in == []
+        with db_session.session_scope() as s:
+            assert _tree(s) == want
+        assert pc1.sync().summary() == "Library data already in sync"
+        assert pc2.sync().summary() == "Library data already in sync"
+
+    def test_a_name_with_a_slash_of_its_own_is_left_alone(self):
+        assert ls._unnest_name("Rock", "AC/DC Hits") == "AC/DC Hits"
+        assert ls._unnest_name("", "Billboard/1951") == "Billboard/1951"
+        assert ls._unnest_name("A/B", "A/B/A/B/1951") == "1951"
+        assert ls._unnest_name("A/B", "A/B/") == "A/B/"

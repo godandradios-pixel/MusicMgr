@@ -77,7 +77,7 @@ from typing import Callable, Optional
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import __version__, config
 from ..db.models import (
     Artist,
     JukeboxSlot,
@@ -131,6 +131,8 @@ ITEM_KINDS = (Playlist.KIND_MANUAL, Playlist.KIND_CHART)
 FOLDERS = "folders"
 #: states from before 2026-09-28 keyed playlists by name alone
 PLAYLIST_KEYS = 2
+#: set on a loaded state that a pre-1.7.1 MusicMgr wrote (its pc id); never saved
+OLD_BUILD = "old_build_pc"
 _DUP_SUFFIX = re.compile(r" #\d+$")
 
 #: playlist/folder tile images (2026-09-28) - not a checkbox of its own:
@@ -262,13 +264,109 @@ def _folders_by_path(db: Session) -> dict[str, PlaylistFolder]:
 
 def _rekey_playlists(old: dict) -> dict:
     """A pre-2026-09-28 state's playlists (keyed by name, " #2" for
-    duplicates) keyed the current way."""
+    duplicates) keyed the current way.
+
+    2026-10-14: a state written by such an older build can already hold
+    current keys (`<folder>/<name>`) it took from the drive - with no
+    "name" field. The name is then the key minus its folder path, not the
+    whole key (see repair_nested_names)."""
     new: dict[str, dict] = {}
     for key, value in old.items():
         value = dict(value)
-        value.setdefault("name", _DUP_SUFFIX.sub("", key))
-        new[_dedupe(_pl_key(value.get("folder") or "", value["name"]), new)] = value
+        folder = value.get("folder") or ""
+        value["name"] = _unnest_name(folder, value.get("name") or _DUP_SUFFIX.sub("", key))
+        new[_dedupe(_pl_key(folder, value["name"]), new)] = value
     return new
+
+
+# --------------------------------------------------------------------------
+# playlists named after their own folder path (2026-10-14)
+# --------------------------------------------------------------------------
+# James: "The playlist folders are getting messed up with duplicate empty
+# folders when syncing between Linux and Windows PCs" - each folder showed a
+# second, mostly empty copy of every playlist, named e.g.
+# "Billboard Hot 100/1950-59/1951" next to the real "1951" (170 of them on
+# PC1 after its 2026-10-14 sync; all made on another PC on 2026-10-13 at
+# 21:00 UTC). How: a MusicMgr from before 1.7.1 (playlists keyed by name
+# alone) syncs. It reads the key "Billboard Hot 100/1950-59/1951" as a
+# playlist *name*, creates that playlist in the folder (a chart one with no
+# songs - those builds didn't carry chart track lists) and writes the drive
+# back with no `playlist_keys` marker and no "name" fields. The next current
+# build re-keyed that state taking the whole key as the name, so every PC
+# that synced afterwards got the copies too.
+#
+# Now: a name that starts with its own folder path is cut back to the real
+# name wherever a state is read, a copy whose real playlist is there is
+# dropped, this library's own copies are cleaned up at the start of each
+# sync (repair_nested_playlists), and the sync says when the drive was last
+# written by such an old build, so the PC that needs updating can be found.
+
+
+def _unnest_name(folder: str, name: str) -> str:
+    """'Billboard Hot 100/1950-59/1951' filed in 'Billboard Hot 100/1950-59'
+    is really '1951' (repeatedly, for a copy of a copy). A name that doesn't
+    start with its folder path is left alone."""
+    if folder and name:
+        prefix = folder + "/"
+        while name.startswith(prefix) and len(name) > len(prefix):
+            name = name[len(prefix):]
+    return name
+
+
+def repair_nested_names(playlists: dict) -> tuple[dict, int]:
+    """A state's playlists with the folder-path-named copies sorted out: a
+    copy whose real playlist (same folder, real name) is there is dropped;
+    one on its own is renamed and re-keyed. Returns (playlists, how many
+    were dropped or renamed)."""
+    clean: dict[str, dict] = {}
+    nested: list[dict] = []
+    for key, value in playlists.items():
+        name = value.get("name") or ""
+        if _unnest_name(value.get("folder") or "", name) != name:
+            nested.append(value)
+        else:
+            clean[key] = value
+    for value in nested:
+        folder = value.get("folder") or ""
+        fixed = _unnest_name(folder, value["name"])
+        key = _pl_key(folder, fixed)
+        if key in clean:
+            continue          # the real one wins; the copy goes
+        value = dict(value)
+        value["name"] = fixed
+        clean[key] = value
+    return clean, len(nested)
+
+
+def repair_nested_playlists(db: Session) -> int:
+    """This library's own folder-path-named playlists: deleted when the real
+    one is in the same folder, renamed to the real name otherwise. Returns
+    how many were cleaned up."""
+    count = 0
+    for pl in list(db.scalars(
+            select(Playlist).where(Playlist.kind.in_(SYNCED_PLAYLIST_KINDS)).order_by(Playlist.id))):
+        folder = _folder_path(pl.folder)
+        fixed = _unnest_name(folder, pl.name or "")
+        if fixed == pl.name:
+            continue
+        real = db.scalar(
+            select(Playlist.id).where(
+                Playlist.id != pl.id,
+                Playlist.name == fixed,
+                Playlist.kind.in_(SYNCED_PLAYLIST_KINDS),
+                Playlist.folder_id.is_(None) if pl.folder_id is None
+                else Playlist.folder_id == pl.folder_id,
+            ).limit(1)
+        )
+        if real is not None:
+            db.delete(pl)
+        else:
+            pl.name = fixed
+        count += 1
+    if count:
+        db.flush()
+        log.info("cleaned up %d playlist(s) named after their own folder path", count)
+    return count
 
 
 def _board_value(db: Session, idx: TrackIndex) -> dict:
@@ -542,7 +640,13 @@ def load_state(path: Path) -> Optional[dict]:
     if OTR not in data:
         state[OTR] = None
     if data.get("playlist_keys") != PLAYLIST_KEYS:
+        if state["playlists"]:
+            # written by a MusicMgr from before 1.7.1 (2026-10-14): which PC,
+            # if it said, so the sync can say which one needs updating
+            state[OLD_BUILD] = str(data.get("saved_by") or "unknown")
         state["playlists"] = _rekey_playlists(state["playlists"] or {})
+    # copies named after their own folder path (2026-10-14)
+    state["playlists"], _ = repair_nested_names(state["playlists"] or {})
     state["images_placed"] = bool(data.get("images_placed"))
     return state
 
@@ -550,6 +654,7 @@ def load_state(path: Path) -> Optional[dict]:
 def save_state(path: Path, state: dict, pc_id: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = dict(state)
+    data.pop(OLD_BUILD, None)
     for key in ("unresolved", "images_unplaced"):
         if key in data and not data[key]:
             data.pop(key)
@@ -560,6 +665,9 @@ def save_state(path: Path, state: dict, pc_id: str) -> None:
         data["images_placed"] = 1
     data["saved"] = _iso(_now())
     data["saved_by"] = pc_id
+    # which MusicMgr wrote it (2026-10-14), for tracking down a PC that
+    # needs updating
+    data["saved_by_version"] = __version__
     tmp = path.with_name(path.name + ".mmsync-tmp")
     with gzip.open(tmp, "wt", encoding="utf-8") as fh:
         json.dump(data, fh)
@@ -614,6 +722,12 @@ class MergeNotes:
     #: old-time radio progress (2026-10-01): changes taken / sent
     otr_in: int = 0
     otr_out: int = 0
+    #: 2026-10-14: copies of playlists named after their own folder path
+    #: ("Billboard Hot 100/1950-59/1951") cleaned out of this library
+    nested_cleaned: int = 0
+    #: the drive was last written by a MusicMgr from before 1.7.1 - that
+    #: PC's id, or "unknown"; it makes those copies and needs updating
+    old_build_pc: Optional[str] = None
 
     def received(self) -> bool:
         """Did anything change in this library? (Views refresh if so.)"""
@@ -621,6 +735,7 @@ class MergeNotes:
                     or self.playlists_removed or self.images_in or self.folders_in
                     or self.folders_removed or self.board_in
                     or self.stations_in or self.stations_removed or self.otr_in
+                    or self.nested_cleaned
                     or (self.charts is not None
                         and (self.charts.charts_in or self.charts.charts_removed)))
 
@@ -681,6 +796,12 @@ class MergeNotes:
             parts.append(f"kept {n} folder{'s' if n != 1 else ''} the drive didn't have")
         if self.board_conflict:
             parts.append(f"Jukebox changed on both — kept {self.board_conflict}")
+        if self.nested_cleaned:
+            n = self.nested_cleaned
+            parts.append(f"{n} mixed-up playlist cop{'ies' if n != 1 else 'y'} cleaned up")
+        if self.old_build_pc:
+            parts.append("the drive was last synced by an older MusicMgr — update that PC "
+                         "before it syncs again")
         sent = []
         if self.playlists_out:
             n = self.playlists_out
@@ -1246,6 +1367,9 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         include = enabled_categories(db)
     if pairs is None:
         pairs = list(db.scalars(select(SyncPair).where(SyncPair.drive_id == drive.drive_id)))
+    # playlists named after their own folder path (2026-10-14) - before
+    # this library is read, so the copies never reach the merge
+    nested = repair_nested_playlists(db) if PLAYLISTS in include else 0
     idx = TrackIndex(db, pairs)
     local = read_local(db, idx)
     usb = load_state(usb_state_path(drive)) or empty_state()
@@ -1284,6 +1408,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     targets = _image_targets(db)
     carried = carry_images(local, base, targets) if PLAYLISTS in include else set()
     merged, notes = merge(local, usb, base, otr_prefer_usb=otr_idx.prefer_usb)
+    notes.nested_cleaned = nested
+    notes.old_build_pc = usb.get(OLD_BUILD)
+    if notes.old_build_pc:
+        log.warning("the drive's library state was written by a MusicMgr from before 1.7.1 "
+                    "(pc %s) - update that PC", notes.old_build_pc)
     revive(merged, base, idx, notes)
     if confirm_removals is not None and PLAYLISTS in include:
         # 2026-09-30: never empty a whole folder of playlists without asking
