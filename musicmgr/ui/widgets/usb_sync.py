@@ -529,8 +529,8 @@ class UsbPairsDialog(QDialog):
         layout = QVBoxLayout(self)
         intro = dim_label(
             f"Folders kept in two-way sync with {drive.describe()}. Watched folders are paired "
-            "automatically with the USB folder of the same name. Artwork pairs always use this "
-            "library's own data folder."
+            "automatically with the USB folder of the same name, and the Radio page's old-time "
+            "radio folder with Radio. Artwork pairs always use this library's own data folder."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)

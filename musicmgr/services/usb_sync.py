@@ -235,6 +235,13 @@ def _norm_rel(rel: str) -> str:
 
 REMOVED_PREFIX = "removed:"
 
+#: 2026-10-13 - James: "I would like to add D:\Radio as a Sync settings".
+#: The Radio page's old-time radio folder (services/otr.py) isn't a watched
+#: music folder, so it never got a pair of its own; it now pairs with a
+#: "Radio" folder on the drive, like D:\Music <-> Music.
+RADIO_KIND = "radio"
+RADIO_USB_FOLDER = "Radio"
+
 
 def is_removed(pair: SyncPair) -> bool:
     return (pair.kind or "").startswith(REMOVED_PREFIX)
@@ -290,10 +297,66 @@ def ensure_default_pairs(db: Session, drive: Drive) -> list[SyncPair]:
             db.add(pair)
             pairs.append(pair)
             existing[_fold(local)] = pair
+    _ensure_radio_pair(db, drive, pairs, existing)
     db.flush()
     return list(
         db.scalars(select(SyncPair).where(SyncPair.drive_id == drive.drive_id).order_by(SyncPair.id))
     )
+
+
+def _ensure_radio_pair(db: Session, drive: Drive, pairs: list[SyncPair], existing: dict) -> None:
+    """Pair the Radio page's folder with <drive>\\Radio (2026-10-13).
+
+    * This PC has a radio folder (D:\\Radio): paired, and an empty Radio
+      folder is made on the drive if there isn't one yet, so the first
+      sync carries the shows across.
+    * This PC has none yet but the drive has a Radio folder (a new Mint
+      PC): ~/Radio is made, becomes the Radio page's folder, and the
+      shows come down to it.
+    * The pair follows the Radio page's folder if that's changed later,
+      and a pair James removed stays removed ("Add pair…" brings it back).
+    """
+    from . import otr
+
+    try:
+        root = otr.get_root(db)
+    except Exception:  # pragma: no cover - no radio tables in an old library
+        return
+    local = _norm_local(root) if root else None
+    match = next((p for p in pairs if p.kind in (RADIO_KIND, REMOVED_PREFIX + RADIO_KIND)), None)
+    if match is not None:
+        if (local and not is_removed(match)
+                and _fold(_norm_local(match.local_path)) != _fold(local)):
+            match.local_path = local
+            _clear_baseline(db, match.id)
+        return
+    usb_dir = drive.root / RADIO_USB_FOLDER
+    if local is None:
+        if not usb_dir.is_dir():
+            return
+        home_radio = Path.home() / "Radio"
+        try:
+            home_radio.mkdir(exist_ok=True)
+        except OSError:
+            log.warning("couldn't make %s for the radio shows", home_radio)
+            return
+        local = _norm_local(home_radio)
+        otr.set_root(db, local)
+    elif not Path(local).is_dir():
+        return
+    if _fold(local) in existing:
+        return  # already paired by hand
+    if not usb_dir.is_dir():
+        try:
+            usb_dir.mkdir()
+        except OSError:
+            log.warning("couldn't make %s on the drive", usb_dir)
+            return
+    pair = SyncPair(drive_id=drive.drive_id, local_path=local,
+                    usb_rel_path=RADIO_USB_FOLDER, kind=RADIO_KIND)
+    db.add(pair)
+    pairs.append(pair)
+    existing[_fold(local)] = pair
 
 
 def add_pair(db: Session, drive: Drive, local_path: str | Path, usb_rel_path: str) -> SyncPair:
@@ -355,7 +418,7 @@ def remove_pair(db: Session, pair_id: int) -> None:
     if pair is None:
         return
     _clear_baseline(db, pair.id)
-    auto = pair.kind == "artwork" or db.scalar(
+    auto = pair.kind in ("artwork", RADIO_KIND) or db.scalar(
         select(WatchedFolder.id).where(WatchedFolder.path == pair.local_path)
     ) is not None
     if auto:
@@ -1181,6 +1244,8 @@ def update_library(
     audio = scanner.import_paths(db, new_paths, should_stop=should_stop)
     video = video_scanner.import_video_paths(db, new_paths, should_stop=should_stop)
 
+    radio_note = _rescan_radio(db, result, should_stop)
+
     gone = {str(p) for p in result.removed_local_paths if not p.exists()}
     missing = 0
     if gone:
@@ -1217,7 +1282,41 @@ def update_library(
         parts.append(f"{missing:,} marked missing")
     if relinked is not None and (relinked.covers or relinked.artist_images):
         parts.append(relinked.summary())
+    if radio_note:
+        parts.append(radio_note)
     errors = len(audio.errors) + len(video.errors)
     if errors:
         parts.append(f"{errors:,} couldn't be read")
     return " · ".join(parts) if parts else "Library already up to date"
+
+
+def _rescan_radio(db: Session, result: SyncResult, should_stop: Optional[StopFn]) -> str:
+    """When old-time radio episodes arrived or left with this sync, read
+    the Radio page's folder again so new shows (Billy Graham…) are on the
+    dial - before the library-data step, which then puts each show on the
+    band it has on the other PCs."""
+    from ..db.session import new_session
+    from . import otr
+
+    root = otr.get_root(db)
+    if not root:
+        return ""
+    base = os.path.normcase(str(Path(root))).rstrip("\\/")
+    touched = any(
+        os.path.normcase(str(p)).startswith(base + os.sep) or os.path.normcase(str(p)).startswith(base + "/")
+        for p in list(result.new_local_paths) + list(result.removed_local_paths)
+    )
+    if not touched:
+        return ""
+    db.commit()  # the scan uses its own sessions
+    try:
+        scan = otr.scan(new_session, root, cancelled=should_stop or (lambda: False))
+    except Exception as exc:
+        log.warning("old-time radio scan after sync failed: %s", exc)
+        return "Radio shows couldn't be read"
+    bits = []
+    if scan.added:
+        bits.append(f"{scan.added:,} radio episode{'s' if scan.added != 1 else ''} added")
+    if scan.missing:
+        bits.append(f"{scan.missing:,} radio episode{'s' if scan.missing != 1 else ''} gone")
+    return ", ".join(bits)
