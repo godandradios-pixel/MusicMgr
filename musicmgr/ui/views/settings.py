@@ -720,6 +720,8 @@ class SettingsView(BaseView):
         self._verify_thread: Optional[VerifyFilesThread] = None
         self._rematch_thread: Optional[RematchChartsThread] = None
         self._loudness_thread: Optional[LoudnessAnalyzeThread] = None
+        #: 2026-10-13 Settings › Duplicates (services/duplicates.py)
+        self._duplicates_thread = None
         #: last "Missing metadata" scan, reused so reopening the dashboard
         #: (e.g. right after fixing one item) doesn't rerun the whole thing
         #: - see view_missing_metadata's own docstring. Cleared (forcing a
@@ -1146,6 +1148,16 @@ class SettingsView(BaseView):
             "Purge…",
             self.purge_missing_files,
         )
+        # 2026-10-13 - James: "Duplicate finder ... from an identical file
+        # standpoint. Playlist should point to songs in albums not chart
+        # folders" - see services/duplicates.py
+        add_tool_row(
+            "Duplicates",
+            "Move playlist songs off Billboard, Hot Country and Oldies copies onto album "
+            "copies, and list files that hold the identical recording.",
+            "Find…",
+            self.find_duplicates,
+        )
         add_tool_row(
             "Data location",
             "See where your library database and media files live.",
@@ -1425,6 +1437,7 @@ class SettingsView(BaseView):
             (self._verify_thread, "Files are being verified — wait for it to finish first"),
             (self._rematch_thread, "Charts are re-matching — wait for it to finish first"),
             (self._loudness_thread, "Volume levels are being analyzed — wait for it to finish first"),
+            (self._duplicates_thread, "Duplicates are being searched for — wait for it to finish first"),
             (getattr(self, "_usb_compare_thread", None), "The USB is being checked — wait for it to finish first"),
             (getattr(self, "_usb_sync_thread", None), "The USB is syncing — wait for it to finish first"),
         ):
@@ -1453,6 +1466,7 @@ class SettingsView(BaseView):
         "_verify_thread",
         "_rematch_thread",
         "_loudness_thread",
+        "_duplicates_thread",
         "_usb_compare_thread",
         "_usb_sync_thread",
     )
@@ -3193,6 +3207,51 @@ class SettingsView(BaseView):
         self.ctx.notify(f"Volume levels: {result.summary()}")
         self.ctx.player.reload_prefs()
         self._refresh_levels_status()
+
+    # -- duplicates (2026-10-13) ------------------------------------------------
+
+    def find_duplicates(self) -> None:
+        """Settings › Duplicates - see services/duplicates.py. Read-only
+        until "Switch … to album copies" is pressed in the results."""
+        from ..widgets.duplicates import DuplicateScanThread
+
+        if self._duplicates_thread is not None and self._duplicates_thread.isRunning():
+            self.ctx.notify("Already searching for duplicates")
+            return
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self.progress_label.setText("Reading the library…")
+        self._duplicates_thread = DuplicateScanThread(parent=self)
+        self._duplicates_thread.progress.connect(self._on_duplicates_progress)
+        self._duplicates_thread.finished_with.connect(self._on_duplicates_done)
+        self._duplicates_thread.start()
+        self._show_cancel()
+
+    def _on_duplicates_progress(self, done: int, total: int, name: str) -> None:
+        if total <= 0:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, total)
+            self.progress.setValue(done)
+        self.progress_label.setText(f"{name}  ({done:,}/{total:,})" if total else name)
+
+    def _on_duplicates_done(self, report) -> None:
+        from ..widgets.duplicates import DuplicatesDialog
+
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
+        self._hide_cancel(self._duplicates_thread)
+        dialog = DuplicatesDialog(report, self)
+        dialog.switched.connect(self._on_duplicates_switched)
+        dialog.exec()
+
+    def _on_duplicates_switched(self, changed: int) -> None:
+        self.ctx.notify(f"{changed} playlist song{'s' if changed != 1 else ''} now use album copies")
+        self.ctx.playlistsChanged.emit()
 
     def rematch_all(self) -> None:
         """2026-09-22 - James: "does the progress bar also work on ...
