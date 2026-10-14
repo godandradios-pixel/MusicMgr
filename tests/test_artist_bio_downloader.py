@@ -31,7 +31,8 @@ class TestDownloadBiosForArtistsShouldStop:
             lambda http, db, a, **k: bio_dl.ArtistBioOutcome(a.id, a.name, "downloaded"),
         )
 
-        result = bio_dl.download_bios_for_artists([artist.id], should_stop=lambda: True)
+        result = bio_dl.download_bios_for_artists([artist.id], should_stop=lambda: True,
+                                                  http=FakeActionWiki())
 
         assert result.outcomes == []
         session.refresh(artist)
@@ -54,7 +55,7 @@ class TestDownloadBiosForArtistsShouldStop:
             return calls["n"] > 1  # let the first artist through, stop before the second
 
         result = bio_dl.download_bios_for_artists(
-            [first.id, second.id], should_stop=should_stop
+            [first.id, second.id], should_stop=should_stop, http=FakeActionWiki()
         )
 
         assert len(result.outcomes) == 1
@@ -184,3 +185,100 @@ class TestWrongBiosAreFixed:
         assert outcome.status == "not_found"
         assert artist.profile == WIKI["Kansas"]["extract"]
 
+
+
+# -- 2026-10-13: the bulk run asks about many artists per request -----------
+#
+# James: "for the artist profiles, can you speed that up, no reason it
+# should take that long hitting wikipedia". FakeActionWiki answers the
+# MediaWiki action API (formatversion=2) from the same WIKI pages FakeWiki
+# serves, so the batched path can be checked against the one-artist path.
+
+
+def _action_page(title):
+    key = title.replace(" ", "_")
+    if key not in WIKI:
+        return {"title": title, "missing": True}
+    w = WIKI[key]
+    page = {"title": title, "description": w["description"], "extract": w["extract"] + "\n\nMore.",
+            "fullurl": w["content_urls"]["desktop"]["page"]}
+    if w["type"] == "disambiguation":
+        page["pageprops"] = {"disambiguation": ""}
+    return page
+
+
+class FakeActionWiki(FakeWiki):
+    def __init__(self, search=()):
+        super().__init__(search)
+        self.requests = 0
+
+    def get(self, url, params=None, timeout=None):
+        self.requests += 1
+        if url != bio_dl.WIKI_SEARCH_URL or (params or {}).get("list") == "search":
+            return super().get(url, params, timeout)
+        if params.get("generator") == "search":
+            pages = [dict(_action_page(t.replace("_", " ")), index=i + 1)
+                     for i, t in enumerate(self.search)]
+            return _Resp(200, {"query": {"pages": list(reversed(pages))}})
+        titles = params["titles"].split("|")
+        normalized = [{"from": t, "to": t.replace("_", " ")} for t in titles if "_" in t]
+        names = list(dict.fromkeys(t.replace("_", " ") for t in titles))
+        return _Resp(200, {"query": {"normalized": normalized,
+                                     "pages": [_action_page(t) for t in names]}})
+
+
+class TestBatchedBulkRun:
+    def _run(self, session, names, search=()):
+        artists = [make_artist(session, n) for n in names]
+        session.commit()
+        http = FakeActionWiki(search)
+        result = bio_dl.download_bios_for_artists([a.id for a in artists], rate_limit_s=0, http=http)
+        for a in artists:
+            session.refresh(a)
+        return artists, result, http
+
+    def test_picks_the_same_pages_as_the_one_artist_lookup(self, session):
+        names = ["Boston", ".38 Special", "Elvis Presley"]
+        artists, result, _ = self._run(session, names)
+        assert result.downloaded == 3
+        for a in artists:
+            expected = bio_dl._find_summary(FakeWiki(), a.name)
+            assert a.profile == expected["extract"]
+            assert a.urls == expected["content_urls"]["desktop"]["page"]
+
+    def test_a_plain_name_that_isnt_music_goes_to_search(self, session):
+        (kansas,), result, _ = self._run(session, ["Kansas"], search=["Kansas", "Kansas_City_Rockers"])
+        assert kansas.profile == "Kansas City Rockers were an American band."
+
+    def test_unknown_artists_are_not_found(self, session):
+        _, result, _ = self._run(session, ["Nobody Ever Heard Of", "Kansas"])
+        assert result.not_found == 2 and result.downloaded == 0
+
+    def test_far_fewer_requests(self, session):
+        names = [f"Unknown Act {i}" for i in range(16)] + ["Boston", ".38 Special", "Elvis Presley"]
+        _, result, http = self._run(session, names)
+        assert result.downloaded == 3 and result.not_found == 16
+        # one-artist path: 7 requests for each unknown act (5 guesses, the
+        # plain name, a search). Batched: 2 per batch of 8 + 1 search each.
+        assert http.requests <= 3 * 2 + 16 + 1
+
+    def test_names_that_cant_be_batched_use_the_one_artist_path(self, session):
+        (a,), result, http = self._run(session, ["AC|DC"])
+        assert result.not_found == 1
+        assert any(t.startswith("AC|DC") for t in http.asked)
+
+    def test_a_wikipedia_error_is_not_taken_as_not_found(self, session):
+        class Failing(FakeActionWiki):
+            def get(self, url, params=None, timeout=None):
+                if (params or {}).get("formatversion") == 2:
+                    self.requests += 1
+                    return _Resp(200, {"error": {"code": "toomanyvalues", "info": "Too many values"}})
+                return super().get(url, params, timeout)
+
+        artist = make_artist(session, "Boston")
+        session.commit()
+        result = bio_dl.download_bios_for_artists([artist.id], rate_limit_s=0, http=Failing())
+        session.refresh(artist)
+        # fell back to the one-artist lookup, which found the band
+        assert result.downloaded == 1
+        assert artist.profile.startswith("Boston is an American rock band")

@@ -61,9 +61,17 @@ log = logging.getLogger(__name__)
 WIKI_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
 WIKI_SEARCH_URL = "https://en.wikipedia.org/w/api.php"
 
-#: seconds between Wikipedia requests - polite pacing for a free public API,
-#: the same self-imposed courtesy lyrics_downloader.py applies to LRCLIB
-DEFAULT_RATE_LIMIT_S = 0.5
+#: seconds between Wikipedia requests - polite pacing for a free public API.
+#: 2026-10-13 (James: "can you speed that up, no reason it should take that
+#: long hitting wikipedia"): was 0.5 s after every *artist*, on top of up to
+#: a dozen one-title requests each. The bulk run now asks about many
+#: artists per request (see _prefetch_summaries), one request at a time as
+#: Wikipedia's API etiquette asks, so only a short gap is kept.
+DEFAULT_RATE_LIMIT_S = 0.1
+
+#: artists looked up per batched request: 8 artists x 6 candidate titles
+#: stays under the action API's 50-titles-per-request limit
+BATCH_ARTISTS = 8
 
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 5
@@ -235,6 +243,183 @@ def _find_summary(session: requests.Session, artist_name: str) -> Optional[dict]
     return None
 
 
+# -- batched lookups for the bulk run (2026-10-13) ----------------------------
+#
+# The one-artist path above makes up to a dozen requests per artist (each
+# "(band)"/"(musician)"/... guess, the plain name, a search, each hit) -
+# fine for the artist page's own button, slow for a whole library, and
+# slowest for exactly the artists Wikipedia doesn't have. The MediaWiki
+# action API answers up to 50 titles in one request, so the bulk run asks
+# about every guess for a batch of artists at once, then fetches the chosen
+# pages' text in one more request. Only artists none of the guesses fit go
+# on to a search - itself one request (generator=search returns the hits'
+# text along with them). Same preference order and the same music check as
+# _find_summary, so the same pages are picked.
+
+_BATCH_UNSAFE = re.compile(r"[|#<>\[\]{}]")
+
+
+def _pages(result: Optional[dict]) -> list[dict]:
+    pages = ((result or {}).get("query") or {}).get("pages") or []
+    return list(pages.values()) if isinstance(pages, dict) else list(pages)
+
+
+def _title_map(result: Optional[dict]) -> dict[str, str]:
+    """The renames a query reported: a requested title -> its normalised
+    form, and a redirect -> its target. `_resolve` follows them."""
+    query = (result or {}).get("query") or {}
+    hops: dict[str, str] = {}
+    for key in ("normalized", "redirects"):
+        for row in query.get(key) or []:
+            if row.get("from") and row.get("to"):
+                hops[row["from"]] = row["to"]
+    return hops
+
+
+def _resolve(title: str, mapping: dict[str, str]) -> str:
+    seen = set()
+    while title in mapping and title not in seen:
+        seen.add(title)
+        title = mapping[title]
+    return title
+
+
+def _first_paragraph(text: str) -> str:
+    """The REST summary the one-artist path uses is the article's opening
+    paragraph; TextExtracts' exintro is the whole lead - keep its first
+    paragraph so both paths save the same text."""
+    paras = [p.strip() for p in (text or "").split("\n") if p.strip()]
+    return paras[0] if paras else ""
+
+
+def _as_summary(page: dict) -> Optional[dict]:
+    """An action-API page shaped like a REST summary, so _is_usable,
+    _is_music and download_bio_for_artist treat both the same."""
+    if not page or page.get("missing") or page.get("invalid"):
+        return None
+    disambiguation = "disambiguation" in (page.get("pageprops") or {})
+    url = page.get("fullurl") or (
+        "https://en.wikipedia.org/wiki/" + requests.utils.quote(page.get("title", "").replace(" ", "_"))
+    )
+    return {
+        "type": "disambiguation" if disambiguation else "standard",
+        "title": page.get("title", ""),
+        "description": page.get("description") or "",
+        "extract": _first_paragraph(page.get("extract") or ""),
+        "content_urls": {"desktop": {"page": url}},
+    }
+
+
+_PAGE_PROPS = {
+    "prop": "extracts|description|pageprops|info",
+    "exintro": 1,
+    "explaintext": 1,
+    "exlimit": "max",
+    "ppprop": "disambiguation",
+    "inprop": "url",
+}
+
+
+def _query(http: requests.Session, params: dict) -> dict:
+    """One action-API query. Raises when there's no proper answer (no
+    reply, or an API error such as too many titles) so the caller never
+    mistakes a failed request for "Wikipedia has no such page"."""
+    base = {"action": "query", "format": "json", "formatversion": 2, "redirects": 1}
+    result = _wiki_request(http, WIKI_SEARCH_URL, base | params)
+    if not isinstance(result, dict):
+        raise ConnectionError("Wikipedia didn't answer")
+    if result.get("error"):
+        raise ConnectionError(f"Wikipedia: {result['error'].get('info') or result['error']}")
+    if "titles" in params and not _pages(result):
+        raise ConnectionError("Wikipedia sent no pages back")
+    return result
+
+
+def _summaries_for_titles(http: requests.Session, titles: Sequence[str]) -> dict[str, Optional[dict]]:
+    """requested title -> summary (None when there's no such page), for at
+    most 20 titles (TextExtracts' own per-request limit)."""
+    if not titles:
+        return {}
+    result = _query(http, {"titles": "|".join(titles)} | _PAGE_PROPS)
+    mapping = _title_map(result)
+    by_title = {p.get("title"): p for p in _pages(result)}
+    return {t: _as_summary(by_title.get(_resolve(t, mapping))) for t in titles}
+
+
+def _existing_titles(http: requests.Session, titles: Sequence[str]) -> dict[str, Optional[dict]]:
+    """requested title -> {"title", "disambiguation"} for pages that exist
+    (None for missing ones) - up to 50 titles in one request, no text."""
+    result = _query(http, {
+        "titles": "|".join(titles), "prop": "pageprops", "ppprop": "disambiguation",
+    })
+    mapping = _title_map(result)
+    by_title = {p.get("title"): p for p in _pages(result)}
+    out: dict[str, Optional[dict]] = {}
+    for t in titles:
+        page = by_title.get(_resolve(t, mapping))
+        if not page or page.get("missing") or page.get("invalid"):
+            out[t] = None
+        else:
+            out[t] = {"title": page.get("title", ""),
+                      "disambiguation": "disambiguation" in (page.get("pageprops") or {})}
+    return out
+
+
+def _search_summary(http: requests.Session, artist_name: str) -> Optional[dict]:
+    """_find_summary's last step in one request: search, with each hit's
+    text included, best hit first; the first one about music wins."""
+    result = _query(http, {
+        "generator": "search", "gsrsearch": f"{artist_name} band musician", "gsrlimit": 5,
+    } | _PAGE_PROPS)
+    pages = sorted(_pages(result), key=lambda p: p.get("index", 0))
+    for page in pages:
+        summary = _as_summary(page)
+        if _is_usable(summary) and _is_music(summary):
+            return summary
+    return None
+
+
+def _prefetch_summaries(http: requests.Session, names: Sequence[str]) -> dict[str, Optional[dict]]:
+    """Bulk version of _find_summary for a batch of artist names: name ->
+    summary, or None when Wikipedia has nothing about that act. A name
+    missing from the result couldn't be settled here (unusual characters,
+    a failed request) and is looked up the one-artist way instead."""
+    names = [n for n in dict.fromkeys(names) if n and n.strip() and not _BATCH_UNSAFE.search(n)]
+    if not names:
+        return {}
+    candidates = {n: [n + sfx for sfx in _MUSIC_SUFFIXES] + [n] for n in names}
+    exists = _existing_titles(http, [t for ts in candidates.values() for t in ts])
+
+    # the first guess that's a real, non-disambiguation page, in the same
+    # order _find_summary tries them
+    chosen: dict[str, str] = {}
+    for n, titles in candidates.items():
+        for t in titles:
+            info = exists.get(t)
+            if info and not info["disambiguation"]:
+                chosen[n] = t
+                break
+
+    out: dict[str, Optional[dict]] = {}
+    texts = _summaries_for_titles(http, list(dict.fromkeys(chosen.values())))
+    for n in names:
+        t = chosen.get(n)
+        summary = texts.get(t) if t else None
+        if t and _is_usable(summary) and (t != n or _is_music(summary)):
+            out[n] = summary
+            continue
+        if t and t != n and not _is_usable(summary):
+            # a "(band)" page with no text - rare; let the one-artist path
+            # walk the rest of the guesses
+            continue
+        # the plain name wasn't about music, or nothing matched: search
+        try:
+            out[n] = _search_summary(http, n)
+        except ConnectionError:
+            continue  # looked up the one-artist way instead
+    return out
+
+
 def is_doubtful(artist: Artist) -> bool:
     """A biography fetched from Wikipedia (its page is in Artist.urls) that
     says nothing about music - the city of Boston for the band Boston,
@@ -273,17 +458,27 @@ def _add_source_url(artist: Artist, url: str) -> None:
 # -- public API ---------------------------------------------------------------
 
 
+_NOT_LOOKED_UP = object()
+
+
+def _needs_lookup(artist: Artist, overwrite: bool) -> bool:
+    return not artist.profile or overwrite or is_doubtful(artist)
+
+
 def download_bio_for_artist(
-    http: requests.Session, db, artist: Artist, *, overwrite: bool = False
+    http: requests.Session, db, artist: Artist, *, overwrite: bool = False,
+    found=_NOT_LOOKED_UP,
 ) -> ArtistBioOutcome:
     """Look up and save one artist's biography. `db` is an open SQLAlchemy
     session the caller commits (or rolls back) - this function only sets
-    attributes on the given `artist`, already attached to that session."""
-    if artist.profile and not overwrite and not is_doubtful(artist):
+    attributes on the given `artist`, already attached to that session.
+    `found` is a summary (or None for "nothing on Wikipedia") the bulk run
+    already fetched in a batch; without it the artist is looked up here."""
+    if not _needs_lookup(artist, overwrite):
         return ArtistBioOutcome(artist.id, artist.name, "already_exists")
 
     try:
-        summary = _find_summary(http, artist.name)
+        summary = found if found is not _NOT_LOOKED_UP else _find_summary(http, artist.name)
     except Exception as exc:  # one bad artist must not stop a bulk run
         log.exception("bio lookup failed for %s", artist.name)
         return ArtistBioOutcome(artist.id, artist.name, "error", str(exc))
@@ -332,6 +527,7 @@ def download_bios_for_artists(
     rate_limit_s: float = DEFAULT_RATE_LIMIT_S,
     progress: Optional[Callable[[int, int, str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    http: Optional[requests.Session] = None,
 ) -> BioDownloadResult:
     """Download biographies for a list of artist ids, one Wikipedia lookup
     per artist - used both by Settings' bulk "Download artist profiles…"
@@ -351,37 +547,60 @@ def download_bios_for_artists(
     start the next one", never a rollback of work already saved.
     """
     result = BioDownloadResult()
-    http = requests.Session()
-    http.headers.update(_HEADERS)
+    if http is None:
+        http = requests.Session()
+        http.headers.update(_HEADERS)
 
     total = len(artist_ids)
+    ids = list(artist_ids)
+    done = 0
+    stopped = False
     with session_scope() as db:
-        for i, artist_id in enumerate(artist_ids, start=1):
-            if should_stop and should_stop():
+        for start in range(0, total, BATCH_ARTISTS):
+            if stopped:
                 break
-            artist = db.get(Artist, artist_id)
-            if artist is None:
-                continue
+            chunk = [a for a in (db.get(Artist, i) for i in ids[start:start + BATCH_ARTISTS])
+                     if a is not None]
+            done += (min(start + BATCH_ARTISTS, total) - start) - len(chunk)
+            prefetched: Optional[dict[str, Optional[dict]]] = None
 
-            if progress:
-                progress(i - 1, total, artist.name)
+            for artist in chunk:
+                if should_stop and should_stop():
+                    stopped = True
+                    break
+                if prefetched is None:
+                    # 2026-10-13: one batched lookup for the whole chunk (see
+                    # _prefetch_summaries); anything it couldn't settle is
+                    # looked up the one-artist way
+                    prefetched = {}
+                    wanted = [a.name for a in chunk if _needs_lookup(a, overwrite)]
+                    if wanted:
+                        if progress:
+                            progress(done, total, artist.name)
+                        try:
+                            prefetched = _prefetch_summaries(http, wanted)
+                        except Exception:  # fall back to one artist at a time
+                            log.exception("batched Wikipedia lookup failed")
+                        if rate_limit_s:
+                            time.sleep(rate_limit_s)
+                if progress:
+                    progress(done, total, artist.name)
+                kwargs = {"overwrite": overwrite}
+                if artist.name in prefetched:
+                    kwargs["found"] = prefetched[artist.name]
+                outcome = download_bio_for_artist(http, db, artist, **kwargs)
+                result.outcomes.append(outcome)
+                db.commit()
+                done += 1
 
-            outcome = download_bio_for_artist(http, db, artist, overwrite=overwrite)
-            result.outcomes.append(outcome)
-            db.commit()
-
-            if outcome.status == "downloaded":
-                result.downloaded += 1
-            elif outcome.status == "already_exists":
-                result.already_exists += 1
-            elif outcome.status == "not_found":
-                result.not_found += 1
-            elif outcome.status == "error":
-                result.errors.append(f"{artist.name}: {outcome.detail}")
-
-            # only pace ourselves when a request actually went out
-            if outcome.status not in ("already_exists",) and i < total:
-                time.sleep(rate_limit_s)
+                if outcome.status == "downloaded":
+                    result.downloaded += 1
+                elif outcome.status == "already_exists":
+                    result.already_exists += 1
+                elif outcome.status == "not_found":
+                    result.not_found += 1
+                elif outcome.status == "error":
+                    result.errors.append(f"{artist.name}: {outcome.detail}")
 
     if progress:
         progress(total, total, "")
