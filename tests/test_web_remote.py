@@ -282,40 +282,59 @@ class TestAddresses:
         monkeypatch.setattr(web_remote, "_hostname_addresses", lambda: [])
         assert web_remote.local_addresses() == ["192.168.0.1"]
 
-    def test_parse_windows_networks(self):
-        one = '{"name":"912Latonka","alias":"Ethernet 2","category":"Public","ips":"192.168.4.24"}'
-        nets = web_remote.parse_networks(one)
-        assert [(n.name, n.alias, n.public, n.ips) for n in nets] == \
-            [("912Latonka", "Ethernet 2", True, ["192.168.4.24"])]
-        two = ('[{"name":"Home","alias":"Wi-Fi","category":"Private","ips":["192.168.1.9","169.254.1.2"]},'
-               '{"name":"Work","alias":"Ethernet","category":"DomainAuthenticated","ips":[]}]')
-        nets = web_remote.parse_networks(two)
-        assert [n.public for n in nets] == [False, False]
-        assert nets[0].ips == ["192.168.1.9"]  # link-local dropped
-        assert web_remote.parse_networks("") is None
-        assert web_remote.parse_networks("not json") is None
+    def test_parse_windows_check(self):
+        one = ('{"networks":{"name":"912Latonka","alias":"Ethernet 2","category":"Private",'
+               '"ips":"192.168.4.24"},"ports":[],"blocked":0}')
+        check = web_remote.parse_check(one)
+        assert [(n.name, n.alias, n.public, n.ips) for n in check.networks] == \
+            [("912Latonka", "Ethernet 2", False, ["192.168.4.24"])]
+        assert (check.allowed_ports, check.blocked) == ([], 0)
+        two = ('{"networks":[{"name":"Home","alias":"Wi-Fi","category":"Public","ips":["192.168.1.9","169.254.1.2"]},'
+               '{"name":"Work","alias":"Ethernet","category":"DomainAuthenticated","ips":[]}],'
+               '"ports":"8765","blocked":2}')
+        check = web_remote.parse_check(two)
+        assert [n.public for n in check.networks] == [True, False]
+        assert check.networks[0].ips == ["192.168.1.9"]  # link-local dropped
+        assert (check.allowed_ports, check.blocked) == (["8765"], 2)
+        assert web_remote.parse_check("") is None
+        assert web_remote.parse_check("not json") is None
 
-    def test_network_info_uses_only_real_networks(self, monkeypatch):
+    def test_james_pc_private_but_no_firewall_rule(self, monkeypatch):
+        """2026-10-15: network already Private, but no firewall rule at all."""
         monkeypatch.setattr(web_remote, "_route_address", lambda: "192.168.4.24")
-        nets = [web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Public", ["192.168.4.24"])]
-        info = web_remote.network_info(nets)
+        check = web_remote.WindowsCheck(
+            [web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Private", ["192.168.4.24"])], [], 0)
+        info = web_remote.network_info(check, 8765)
         assert info.addresses == ["192.168.4.24"]  # not the Hyper-V 172.23.192.1
-        assert [n.name for n in info.public] == ["912Latonka"]
-        assert web_remote.network_info([]).public == []
+        assert info.public == [] and info.firewall_closed and info.needs_fix
+        assert web_remote.fix_command(info, 8765) == (
+            "Remove-NetFirewallRule -DisplayName 'MusicMgr phone remote' -ErrorAction SilentlyContinue; "
+            "New-NetFirewallRule -DisplayName 'MusicMgr phone remote' -Direction Inbound -Action Allow "
+            "-Protocol TCP -LocalPort 8765 -Profile Private,Domain")
+        # once the rule is there, nothing to fix
+        check.allowed_ports = ["8765"]
+        assert not web_remote.network_info(check, 8765).needs_fix
+        # ...unless the port changed
+        assert web_remote.network_info(check, 9000).firewall_closed
 
-    def test_make_private_command_quotes_names(self):
-        nets = [web_remote.HomeNetwork("x", "Bob's Wi-Fi", "Public", [])]
-        assert web_remote.make_private_command(nets) == \
-            "Set-NetConnectionProfile -InterfaceAlias 'Bob''s Wi-Fi' -NetworkCategory Private"
+    def test_fix_command_covers_everything(self):
+        info = web_remote.NetworkInfo(
+            ["192.168.1.9"], [web_remote.HomeNetwork("x", "Bob's Wi-Fi", "Public", [])],
+            firewall_closed=False, firewall_blocked=1)
+        cmd = web_remote.fix_command(info, 8765)
+        assert cmd.startswith("Set-NetConnectionProfile -InterfaceAlias 'Bob''s Wi-Fi' -NetworkCategory Private; ")
+        assert "Remove-NetFirewallRule" in cmd and "[string]$_.Action -eq 'Block'" in cmd
+        assert cmd.endswith("-LocalPort 8765 -Profile Private,Domain")
 
-    def test_windows_networks_is_none_elsewhere(self, monkeypatch):
+    def test_no_windows_check_means_no_warnings(self, monkeypatch):
         monkeypatch.setattr(web_remote.sys, "platform", "linux")
-        assert web_remote.windows_networks() is None
+        assert web_remote.windows_check() is None
+        assert not web_remote.network_info(None).needs_fix
 
 
 def test_check_network_runs_in_the_background(ctx, qapp, monkeypatch):
-    monkeypatch.setattr(web_remote, "windows_networks", lambda: [
-        web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Public", ["192.168.4.24"])])
+    monkeypatch.setattr(web_remote, "windows_check", lambda: web_remote.WindowsCheck(
+        [web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Public", ["192.168.4.24"])], [], 0))
     monkeypatch.setattr(web_remote, "_route_address", lambda: "192.168.4.24")
     done = []
     ctx.web_remote.networkChecked.connect(lambda: done.append(1), Qt.QueuedConnection)
@@ -326,29 +345,32 @@ def test_check_network_runs_in_the_background(ctx, qapp, monkeypatch):
         time.sleep(0.01)
     assert done
     assert ctx.web_remote.urls() == [f"http://192.168.4.24:{ctx.web_remote.port}/"]
+    assert ctx.web_remote.network.needs_fix
 
 
-def test_settings_warns_about_a_public_network(ctx, qapp, monkeypatch):
+def test_settings_offers_the_fix(ctx, qapp, monkeypatch):
     from musicmgr.ui.views.settings import SettingsView
 
     server = ctx.web_remote
     monkeypatch.setattr(type(server), "running", property(lambda self: True))
     monkeypatch.setattr(server, "check_network", lambda: None)
     server.network = web_remote.NetworkInfo(
-        ["192.168.4.24"], [web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Public", ["192.168.4.24"])])
+        ["192.168.4.24"], [web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Public", ["192.168.4.24"])],
+        firewall_closed=True)
     view = SettingsView(ctx)
     view._refresh_remote_status()
     text = view.remote_status.text()
-    assert "192.168.4.24" in text and "Public" in text and "912Latonka" in text
+    assert "192.168.4.24" in text and "912Latonka" in text and "Public" in text
+    assert f"no rule letting the phone reach port {server.port}" in text
     assert not view.remote_fix_btn.isHidden()
 
     ran = []
     monkeypatch.setattr(web_remote, "run_elevated_powershell", lambda cmd: ran.append(cmd) or True)
-    view._make_network_private()
-    assert ran == ["Set-NetConnectionProfile -InterfaceAlias 'Ethernet 2' -NetworkCategory Private"]
+    view._fix_remote_network()
+    assert len(ran) == 1 and "Set-NetConnectionProfile" in ran[0] and "New-NetFirewallRule" in ran[0]
     assert not view.remote_fix_btn.isEnabled()
 
-    server.network = web_remote.NetworkInfo(["192.168.4.24"], [])
+    server.network = web_remote.NetworkInfo(["192.168.4.24"])
     view._refresh_remote_status()
-    assert "Public" not in view.remote_status.text()
+    assert "can't get in" not in view.remote_status.text()
     assert view.remote_fix_btn.isHidden()

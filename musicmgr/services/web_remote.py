@@ -49,10 +49,10 @@ import socket
 import sys
 import threading
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -197,12 +197,34 @@ def local_addresses() -> list[str]:
 # - virtual adapters have none), lists only their addresses, and warns, with
 # a one-click fix, when one of them is Public.
 
-_PS_NETWORKS = (
-    "Get-NetConnectionProfile | ForEach-Object { "
-    "$ips = @(Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 "
+#
+# Same day, follow-up: with the network Private the phone still couldn't get
+# in - Windows Firewall had no rule for MusicMgr at all (the "Allow access?"
+# prompt never came up, or was dismissed), and Windows blocks incoming
+# connections that no rule allows. So the check also looks for MusicMgr's own
+# firewall rule (FIREWALL_RULE: inbound TCP on the remote's port, Private and
+# Domain networks - a port rule, so updating MusicMgr to a new exe doesn't
+# undo it) and for Block rules on the MusicMgr program, which a dismissed
+# prompt leaves behind and which beat any Allow rule. One "Fix it" button
+# repairs all of it behind a single Windows permission prompt.
+
+FIREWALL_RULE = "MusicMgr phone remote"
+
+_PS_CHECK = (
+    "$nets = @(Get-NetConnectionProfile | ForEach-Object { $p = $_; "
+    "$ips = @(Get-NetIPAddress -InterfaceIndex $p.InterfaceIndex -AddressFamily IPv4 "
     "-ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress }); "
-    "[pscustomobject]@{ name = [string]$_.Name; alias = [string]$_.InterfaceAlias; "
-    "category = [string]$_.NetworkCategory; ips = $ips } } | ConvertTo-Json -Compress"
+    "[pscustomobject]@{ name = [string]$p.Name; alias = [string]$p.InterfaceAlias; "
+    "category = [string]$p.NetworkCategory; ips = $ips } }); "
+    f"$ports = @(Get-NetFirewallRule -DisplayName '{FIREWALL_RULE}' -ErrorAction SilentlyContinue | "
+    "Where-Object { [string]$_.Enabled -eq 'True' -and [string]$_.Action -eq 'Allow' -and "
+    "[string]$_.Direction -eq 'Inbound' } | Get-NetFirewallPortFilter | "
+    "ForEach-Object { [string]$_.LocalPort }); "
+    "$blocked = @(Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like '*MusicMgr*' } | "
+    "Get-NetFirewallRule | Where-Object { [string]$_.Enabled -eq 'True' -and "
+    "[string]$_.Action -eq 'Block' -and [string]$_.Direction -eq 'Inbound' }).Count; "
+    "[pscustomobject]@{ networks = $nets; ports = $ports; blocked = $blocked } | "
+    "ConvertTo-Json -Compress -Depth 4"
 )
 
 
@@ -218,7 +240,16 @@ class HomeNetwork:
         return self.category.lower() == "public"
 
 
-def _powershell(command: str, timeout: float = 10.0) -> Optional[str]:
+@dataclass
+class WindowsCheck:
+    networks: list[HomeNetwork]
+    #: ports MusicMgr's own Allow rule opens
+    allowed_ports: list[str]
+    #: inbound Block rules on the MusicMgr program
+    blocked: int
+
+
+def _powershell(command: str, timeout: float = 20.0) -> Optional[str]:
     import subprocess
 
     kwargs: dict[str, Any] = {}
@@ -234,36 +265,48 @@ def _powershell(command: str, timeout: float = 10.0) -> Optional[str]:
     return done.stdout if done.returncode == 0 else None
 
 
-def parse_networks(text: Optional[str]) -> Optional[list[HomeNetwork]]:
-    """Get-NetConnectionProfile's JSON (one object, or a list of them)."""
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def parse_networks(data) -> list[HomeNetwork]:
+    """Get-NetConnectionProfile rows (one object, or a list of them)."""
+    out = []
+    for row in _as_list(data):
+        if not isinstance(row, dict):
+            continue
+        ips = [str(i) for i in _as_list(row.get("ips")) if _usable(str(i))]
+        out.append(HomeNetwork(str(row.get("name") or ""), str(row.get("alias") or ""),
+                               str(row.get("category") or ""), ips))
+    return out
+
+
+def parse_check(text: Optional[str]) -> Optional[WindowsCheck]:
     if not text or not text.strip():
         return None
     try:
         data = json.loads(text)
     except ValueError:
         return None
-    if isinstance(data, dict):
-        data = [data]
-    out = []
-    for row in data if isinstance(data, list) else []:
-        if not isinstance(row, dict):
-            continue
-        ips = row.get("ips") or []
-        if isinstance(ips, str):
-            ips = [ips]
-        out.append(HomeNetwork(str(row.get("name") or ""), str(row.get("alias") or ""),
-                               str(row.get("category") or ""),
-                               [str(i) for i in ips if _usable(str(i))]))
-    return out
+    if not isinstance(data, dict):
+        return None
+    try:
+        blocked = int(data.get("blocked") or 0)
+    except (TypeError, ValueError):
+        blocked = 0
+    return WindowsCheck(parse_networks(data.get("networks")),
+                        [str(p) for p in _as_list(data.get("ports"))], blocked)
 
 
-def windows_networks() -> Optional[list[HomeNetwork]]:
-    """The networks Windows is really connected to, or None off Windows or
-    if PowerShell couldn't say. Slow-ish (a second or so) - call it off the
-    main thread."""
+def windows_check() -> Optional[WindowsCheck]:
+    """Windows' connected networks and MusicMgr's firewall rules, or None
+    off Windows or if PowerShell couldn't say. Takes a few seconds - call it
+    off the main thread."""
     if sys.platform != "win32":
         return None
-    return parse_networks(_powershell(_PS_NETWORKS))
+    return parse_check(_powershell(_PS_CHECK))
 
 
 @dataclass
@@ -271,41 +314,70 @@ class NetworkInfo:
     #: best first - the QR code uses the first
     addresses: list[str]
     #: Windows networks set to Public (the firewall blocks the phone there)
-    public: list[HomeNetwork]
+    public: list[HomeNetwork] = field(default_factory=list)
+    #: no MusicMgr Allow rule for this port (Windows only)
+    firewall_closed: bool = False
+    #: Block rules on the MusicMgr program (Windows only)
+    firewall_blocked: int = 0
+
+    @property
+    def needs_fix(self) -> bool:
+        return bool(self.public or self.firewall_closed or self.firewall_blocked)
 
 
-def network_info(networks: Optional[list[HomeNetwork]] = None) -> NetworkInfo:
-    """Addresses for the phone plus any Public-network warning. With
-    Windows' own network list, only those networks' addresses are offered
-    (the default-route one first); otherwise local_addresses()' guess."""
-    if networks:
+def network_info(check: Optional[WindowsCheck] = None, port: int = DEFAULT_PORT) -> NetworkInfo:
+    """Addresses for the phone plus anything on Windows that would stop it.
+    With Windows' own network list, only those networks' addresses are
+    offered (the default-route one first); otherwise local_addresses()."""
+    if check is None:
+        return NetworkInfo(local_addresses())
+    addresses: list[str] = []
+    if check.networks:
         route = _route_address()
-        real = [ip for n in networks for ip in n.ips]
+        real = [ip for n in check.networks for ip in n.ips]
         ordered = ([route] if route in real else []) + [ip for ip in real if ip != route]
-        addresses = list(dict.fromkeys(ordered)) or local_addresses()
-        return NetworkInfo(addresses, [n for n in networks if n.public])
-    return NetworkInfo(local_addresses(), [])
+        addresses = list(dict.fromkeys(ordered))
+    return NetworkInfo(
+        addresses or local_addresses(),
+        [n for n in check.networks if n.public],
+        firewall_closed=str(port) not in check.allowed_ports,
+        firewall_blocked=check.blocked,
+    )
 
 
-def make_private_command(networks: Sequence[HomeNetwork]) -> str:
-    """PowerShell that sets these networks to Private (needs Administrator)."""
+def fix_command(info: NetworkInfo, port: int) -> str:
+    """PowerShell (needs Administrator) that fixes what network_info found:
+    Public networks to Private, MusicMgr's Block rules removed, and its
+    Allow rule (re)made for this port."""
     parts = []
-    for n in networks:
+    for n in info.public:
         alias = n.alias.replace("'", "''")
         parts.append(f"Set-NetConnectionProfile -InterfaceAlias '{alias}' -NetworkCategory Private")
+    if info.firewall_blocked:
+        parts.append(
+            "Get-NetFirewallApplicationFilter | Where-Object { $_.Program -like '*MusicMgr*' } | "
+            "Get-NetFirewallRule | Where-Object { [string]$_.Action -eq 'Block' -and "
+            "[string]$_.Direction -eq 'Inbound' } | Remove-NetFirewallRule")
+    if info.firewall_closed or info.firewall_blocked:
+        parts.append(f"Remove-NetFirewallRule -DisplayName '{FIREWALL_RULE}' -ErrorAction SilentlyContinue")
+        parts.append(
+            f"New-NetFirewallRule -DisplayName '{FIREWALL_RULE}' -Direction Inbound -Action Allow "
+            f"-Protocol TCP -LocalPort {int(port)} -Profile Private,Domain")
     return "; ".join(parts)
 
 
 def run_elevated_powershell(command: str) -> bool:
     """Start PowerShell as Administrator (Windows shows its UAC prompt) to
-    run `command`. Returns False if it couldn't be started."""
-    if sys.platform != "win32":
+    run `command`. Returns False if it couldn't be started. The command goes
+    over as -EncodedCommand, so no quoting can get mangled on the way."""
+    if sys.platform != "win32" or not command:
         return False
+    import base64
     import subprocess
 
-    inner = command.replace("'", "''")
+    encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
     outer = (f"Start-Process powershell -Verb RunAs -WindowStyle Hidden "
-             f"-ArgumentList '-NoProfile','-Command','{inner}'")
+             f"-ArgumentList '-NoProfile','-EncodedCommand','{encoded}'")
     try:
         subprocess.Popen(
             ["powershell", "-NoProfile", "-Command", outer],
@@ -997,14 +1069,17 @@ class RemoteServer(QObject):
 
     def check_network(self) -> None:
         """Ask Windows (on a background thread) which networks are really
-        connected and whether any is Public; networkChecked fires when done."""
+        connected, whether any is Public and whether the firewall lets the
+        phone in; networkChecked fires when done."""
         if self._network_busy:
             return
         self._network_busy = True
 
+        port = self.port
+
         def work():
             try:
-                info = network_info(windows_networks())
+                info = network_info(windows_check(), port)
             except Exception:  # pragma: no cover - never break Settings over it
                 log.exception("web remote: network check failed")
                 info = network_info(None)
@@ -1049,6 +1124,7 @@ class RemoteServer(QObject):
             name="web-remote", daemon=True,
         )
         self._thread.start()
+        self.network = None  # the port may have changed - check again
         log.info("web remote listening on port %s", self.port)
         self.statusChanged.emit(True, "Running")
         return True, "Running"

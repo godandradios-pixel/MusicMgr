@@ -984,12 +984,13 @@ class SettingsView(BaseView):
         self.remote_qr.setVisible(False)
         # 2026-10-15 - Windows had James's home network set to Public, so the
         # firewall dropped the phone; see web_remote's "Windows networks"
-        self.remote_fix_btn = TouchButton("Make it Private")
+        # same day: also when Windows Firewall has no rule letting it in
+        self.remote_fix_btn = TouchButton("Fix it")
         self.remote_fix_btn.setToolTip(
-            "Sets this network to Private in Windows, so Windows Firewall lets the "
-            "phone in. Windows asks for permission first.")
+            "Lets the phone in: sets this network to Private and adds a Windows Firewall "
+            "rule for the phone remote's port. Windows asks for permission first.")
         self.remote_fix_btn.setVisible(False)
-        self.remote_fix_btn.clicked.connect(self._make_network_private)
+        self.remote_fix_btn.clicked.connect(self._fix_remote_network)
         rgrid.addLayout(toggle_row, 0, 0, 1, 3)
         rgrid.addWidget(QLabel("Name on the phone"), 1, 0)
         rgrid.addWidget(self.remote_name_edit, 1, 1)
@@ -2058,7 +2059,7 @@ class SettingsView(BaseView):
             if server.network is None:
                 server.check_network()  # refreshes this again when it's done
             urls = server.urls()
-            public = server.network.public if server.network is not None else []
+            info = server.network
             if urls:
                 links = "<br>".join(f"<b>{u}</b>" for u in urls)
                 text = (
@@ -2066,24 +2067,19 @@ class SettingsView(BaseView):
                     "or point the Camera at the code. The phone has to be on the same "
                     "network as this PC. In Safari, Share › Add to Home Screen makes it an icon."
                 )
-                if public:
-                    names = ", ".join(f"“{n.name or n.alias}”" for n in public)
-                    text += (
-                        f"<br><br><span style='color:#e0866f'><b>⚠ Windows has {names} set as a "
-                        "Public network, so Windows Firewall blocks the phone.</b></span> "
-                        "Click <b>Make it Private</b> (Windows asks for permission), or go to "
-                        "Windows Settings › Network &amp; internet › "
-                        f"{'Wi-Fi' if any('wi-fi' in n.alias.lower() for n in public) else 'Ethernet'}"
-                        " › Network profile type › Private network.")
-                elif sys.platform.startswith("win"):
-                    text += ("<br>If the phone can't connect, allow MusicMgr through Windows "
-                             "Firewall for private networks.")
+                problems = self._remote_problems(info, server.port)
+                if problems:
+                    text += ("<br><br><span style='color:#e0866f'><b>⚠ The phone can't get in yet:"
+                             "</b></span><br>" + "<br>".join(f"• {p}" for p in problems)
+                             + "<br>Click <b>Fix it</b> - Windows asks for permission once.")
+                elif sys.platform.startswith("win") and info is None:
+                    text += "<br>Checking Windows' network and firewall settings…"
                 self._show_remote_qr(urls[0])
             else:
                 text = ("Running, but this PC doesn't seem to be on a network right now - "
                         f"connect to Wi-Fi or Ethernet, then use this PC's address with port {server.port}.")
                 self._show_remote_qr(None)
-            self.remote_fix_btn.setVisible(bool(public))
+            self.remote_fix_btn.setVisible(bool(urls) and info is not None and info.needs_fix)
             self.remote_status.setTextFormat(Qt.RichText)
             self.remote_status.setText(text)
         else:
@@ -2100,22 +2096,40 @@ class SettingsView(BaseView):
                     "playlists, albums or radio stations from your phone."
                 )
 
-    def _make_network_private(self) -> None:
-        """Set the Public network(s) to Private - an Administrator PowerShell
-        behind Windows' own permission prompt - then check again."""
+    @staticmethod
+    def _remote_problems(info, port: int) -> list[str]:
+        """What stops the phone reaching this PC, in words (Windows only)."""
+        if info is None:
+            return []
+        out = []
+        for n in info.public:
+            where = "Wi-Fi" if "wi-fi" in n.alias.lower() else "Ethernet"
+            out.append(f"Windows has “{n.name or n.alias}” set as a Public network (Windows "
+                       f"Settings › Network &amp; internet › {where} › Network profile type).")
+        if info.firewall_blocked:
+            out.append("Windows Firewall has a rule blocking MusicMgr (left by a dismissed "
+                       "“Allow access?” prompt).")
+        if info.firewall_closed:
+            out.append(f"Windows Firewall has no rule letting the phone reach port {port}.")
+        return out
+
+    def _fix_remote_network(self) -> None:
+        """Fix what the network check found - Public network to Private,
+        MusicMgr's firewall rule - in an Administrator PowerShell behind
+        Windows' own permission prompt, then check again."""
         server = self.ctx.web_remote
-        public = server.network.public if server.network is not None else []
-        if not public:
+        info = server.network
+        if info is None or not info.needs_fix:
             return
-        if not web_remote.run_elevated_powershell(web_remote.make_private_command(public)):
-            self.ctx.notify("Couldn't start PowerShell - change it in Windows Settings instead")
+        if not web_remote.run_elevated_powershell(web_remote.fix_command(info, server.port)):
+            self.ctx.notify("Couldn't start PowerShell - see the steps above to fix it by hand")
             return
         self.remote_fix_btn.setEnabled(False)
         self.remote_fix_btn.setText("Waiting for Windows…")
 
         def recheck():
             self.remote_fix_btn.setEnabled(True)
-            self.remote_fix_btn.setText("Make it Private")
+            self.remote_fix_btn.setText("Fix it")
             server.check_network()
 
         # give the permission prompt time to be answered, then look again
