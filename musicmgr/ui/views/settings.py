@@ -982,12 +982,24 @@ class SettingsView(BaseView):
         self.remote_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.remote_qr = QLabel()
         self.remote_qr.setVisible(False)
+        # 2026-10-15 - Windows had James's home network set to Public, so the
+        # firewall dropped the phone; see web_remote's "Windows networks"
+        self.remote_fix_btn = TouchButton("Make it Private")
+        self.remote_fix_btn.setToolTip(
+            "Sets this network to Private in Windows, so Windows Firewall lets the "
+            "phone in. Windows asks for permission first.")
+        self.remote_fix_btn.setVisible(False)
+        self.remote_fix_btn.clicked.connect(self._make_network_private)
         rgrid.addLayout(toggle_row, 0, 0, 1, 3)
         rgrid.addWidget(QLabel("Name on the phone"), 1, 0)
         rgrid.addWidget(self.remote_name_edit, 1, 1)
         rgrid.addWidget(QLabel("Port"), 2, 0)
         rgrid.addWidget(self.remote_port_spin, 2, 1, alignment=Qt.AlignLeft)
-        rgrid.addWidget(self.remote_status, 3, 0, 1, 2)
+        status_box = QVBoxLayout()
+        status_box.setSpacing(8)
+        status_box.addWidget(self.remote_status)
+        status_box.addWidget(self.remote_fix_btn, alignment=Qt.AlignLeft)
+        rgrid.addLayout(status_box, 3, 0, 1, 2)
         rgrid.addWidget(self.remote_qr, 1, 2, 3, 1, alignment=Qt.AlignRight | Qt.AlignTop)
         # Ask (2026-10-15, services/voice_ask.py) - spoken requests from the
         # phone's Ask box. The AI needs a key for the chosen model - Gemini's
@@ -1027,6 +1039,8 @@ class SettingsView(BaseView):
         self.remote_port_spin.valueChanged.connect(lambda _v: self._save_remote_prefs())
         self.remote_name_edit.editingFinished.connect(self._save_remote_prefs)
         ctx.web_remote.statusChanged.connect(lambda *_: self._refresh_remote_status())
+        # a bound method, queued: the check finishes on a background thread
+        ctx.web_remote.networkChecked.connect(self._refresh_remote_status, Qt.QueuedConnection)
         self._refresh_remote_status()
 
         # ---- appearance (2026-10-13) ----
@@ -2041,7 +2055,10 @@ class SettingsView(BaseView):
         server = self.ctx.web_remote
         error = getattr(self, "_remote_error", "")
         if server.running:
+            if server.network is None:
+                server.check_network()  # refreshes this again when it's done
             urls = server.urls()
+            public = server.network.public if server.network is not None else []
             if urls:
                 links = "<br>".join(f"<b>{u}</b>" for u in urls)
                 text = (
@@ -2049,7 +2066,16 @@ class SettingsView(BaseView):
                     "or point the Camera at the code. The phone has to be on the same "
                     "network as this PC. In Safari, Share › Add to Home Screen makes it an icon."
                 )
-                if sys.platform.startswith("win"):
+                if public:
+                    names = ", ".join(f"“{n.name or n.alias}”" for n in public)
+                    text += (
+                        f"<br><br><span style='color:#e0866f'><b>⚠ Windows has {names} set as a "
+                        "Public network, so Windows Firewall blocks the phone.</b></span> "
+                        "Click <b>Make it Private</b> (Windows asks for permission), or go to "
+                        "Windows Settings › Network &amp; internet › "
+                        f"{'Wi-Fi' if any('wi-fi' in n.alias.lower() for n in public) else 'Ethernet'}"
+                        " › Network profile type › Private network.")
+                elif sys.platform.startswith("win"):
                     text += ("<br>If the phone can't connect, allow MusicMgr through Windows "
                              "Firewall for private networks.")
                 self._show_remote_qr(urls[0])
@@ -2057,10 +2083,12 @@ class SettingsView(BaseView):
                 text = ("Running, but this PC doesn't seem to be on a network right now - "
                         f"connect to Wi-Fi or Ethernet, then use this PC's address with port {server.port}.")
                 self._show_remote_qr(None)
+            self.remote_fix_btn.setVisible(bool(public))
             self.remote_status.setTextFormat(Qt.RichText)
             self.remote_status.setText(text)
         else:
             self._show_remote_qr(None)
+            self.remote_fix_btn.setVisible(False)
             self.remote_status.setTextFormat(Qt.PlainText)
             if error:
                 self.remote_status.setText(error)
@@ -2071,6 +2099,28 @@ class SettingsView(BaseView):
                     "Turn it on to play, pause, skip, change the volume and pick "
                     "playlists, albums or radio stations from your phone."
                 )
+
+    def _make_network_private(self) -> None:
+        """Set the Public network(s) to Private - an Administrator PowerShell
+        behind Windows' own permission prompt - then check again."""
+        server = self.ctx.web_remote
+        public = server.network.public if server.network is not None else []
+        if not public:
+            return
+        if not web_remote.run_elevated_powershell(web_remote.make_private_command(public)):
+            self.ctx.notify("Couldn't start PowerShell - change it in Windows Settings instead")
+            return
+        self.remote_fix_btn.setEnabled(False)
+        self.remote_fix_btn.setText("Waiting for Windows…")
+
+        def recheck():
+            self.remote_fix_btn.setEnabled(True)
+            self.remote_fix_btn.setText("Make it Private")
+            server.check_network()
+
+        # give the permission prompt time to be answered, then look again
+        for delay in (6000, 15000, 30000):
+            QTimer.singleShot(delay, self, recheck)
 
     def _show_remote_qr(self, url: Optional[str]) -> None:
         matrix = web_remote.qr_matrix(url) if url else None

@@ -46,12 +46,13 @@ import json
 import logging
 import mimetypes
 import socket
+import sys
 import threading
 import zlib
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 from urllib.parse import parse_qs, urlparse
 
 from PySide6.QtCore import QObject, Qt, Signal
@@ -129,35 +130,190 @@ def computer_name() -> str:
         return "MusicMgr"
 
 
-def local_addresses() -> list[str]:
-    """This PC's IPv4 addresses on its local network(s), best guess first.
+def _route_address() -> Optional[str]:
+    """The address this PC would use to reach the internet - the one on the
+    home network the phone is on. The UDP "connect" never sends a packet; it
+    only asks the OS which address it would use.
 
-    The UDP "connect" never sends a packet - it only asks the OS which
-    address it would use to reach the outside world, which is the one the
-    phone on the same Wi-Fi can reach. Hostname lookups add any others
-    (a second network card, say)."""
-    found: list[str] = []
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("10.255.255.255", 1))
-            found.append(s.getsockname()[0])
-    except OSError:
-        pass
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            found.append(info[4][0])
-    except OSError:
-        pass
-    out: list[str] = []
-    for addr in found:
+    2026-10-15: this used to ask about 10.255.255.255, which a virtual
+    adapter (Hyper-V's "Default Switch", WSL, Docker, a VPN) can claim; a
+    real internet address always follows the default route instead."""
+    for target in ("8.8.8.8", "1.1.1.1", "10.255.255.255"):
         try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((target, 80))
+                addr = s.getsockname()[0]
+        except OSError:
             continue
-        if ip.is_loopback or ip.is_unspecified or addr in out:
+        if addr and not addr.startswith(("0.", "127.")):
+            return addr
+    return None
+
+
+def _hostname_addresses() -> list[str]:
+    try:
+        return [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        return []
+
+
+def _usable(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return not (ip.is_loopback or ip.is_unspecified or ip.is_link_local)
+
+
+def local_addresses() -> list[str]:
+    """This PC's IPv4 addresses on its local network(s), best guess first:
+    the default-route address, then the others. An address ending in .1
+    other than that one is left out - it's almost always the PC's own side
+    of a virtual network (Hyper-V's Default Switch 172.x.x.1, Docker's
+    172.17.0.1, libvirt's 192.168.122.1), which a phone can never reach;
+    a PC is hardly ever its home network's router."""
+    route = _route_address()
+    out: list[str] = []
+    for addr in ([route] if route else []) + _hostname_addresses():
+        if not _usable(addr) or addr in out:
+            continue
+        if addr != route and addr.endswith(".1"):
             continue
         out.append(addr)
     return out
+
+
+# --------------------------------------------------------------------------
+# Windows networks (2026-10-15)
+# --------------------------------------------------------------------------
+#
+# James's iPhone couldn't open the remote ("Safari couldn't open the page
+# because the server stopped responding"): Windows had his home network
+# "912Latonka" set as *Public*, and MusicMgr is allowed through Windows
+# Firewall on Private networks only, so the phone's connection was dropped
+# silently. The QR code also could have offered the Hyper-V "Default
+# Switch" address (172.23.192.1). So on Windows, Settings › Phone remote now
+# asks Windows which networks are really connected (Get-NetConnectionProfile
+# - virtual adapters have none), lists only their addresses, and warns, with
+# a one-click fix, when one of them is Public.
+
+_PS_NETWORKS = (
+    "Get-NetConnectionProfile | ForEach-Object { "
+    "$ips = @(Get-NetIPAddress -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 "
+    "-ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress }); "
+    "[pscustomobject]@{ name = [string]$_.Name; alias = [string]$_.InterfaceAlias; "
+    "category = [string]$_.NetworkCategory; ips = $ips } } | ConvertTo-Json -Compress"
+)
+
+
+@dataclass
+class HomeNetwork:
+    name: str
+    alias: str
+    category: str  # "Public", "Private" or "DomainAuthenticated"
+    ips: list[str]
+
+    @property
+    def public(self) -> bool:
+        return self.category.lower() == "public"
+
+
+def _powershell(command: str, timeout: float = 10.0) -> Optional[str]:
+    import subprocess
+
+    kwargs: dict[str, Any] = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        done = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, text=True, timeout=timeout, **kwargs,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def parse_networks(text: Optional[str]) -> Optional[list[HomeNetwork]]:
+    """Get-NetConnectionProfile's JSON (one object, or a list of them)."""
+    if not text or not text.strip():
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        data = [data]
+    out = []
+    for row in data if isinstance(data, list) else []:
+        if not isinstance(row, dict):
+            continue
+        ips = row.get("ips") or []
+        if isinstance(ips, str):
+            ips = [ips]
+        out.append(HomeNetwork(str(row.get("name") or ""), str(row.get("alias") or ""),
+                               str(row.get("category") or ""),
+                               [str(i) for i in ips if _usable(str(i))]))
+    return out
+
+
+def windows_networks() -> Optional[list[HomeNetwork]]:
+    """The networks Windows is really connected to, or None off Windows or
+    if PowerShell couldn't say. Slow-ish (a second or so) - call it off the
+    main thread."""
+    if sys.platform != "win32":
+        return None
+    return parse_networks(_powershell(_PS_NETWORKS))
+
+
+@dataclass
+class NetworkInfo:
+    #: best first - the QR code uses the first
+    addresses: list[str]
+    #: Windows networks set to Public (the firewall blocks the phone there)
+    public: list[HomeNetwork]
+
+
+def network_info(networks: Optional[list[HomeNetwork]] = None) -> NetworkInfo:
+    """Addresses for the phone plus any Public-network warning. With
+    Windows' own network list, only those networks' addresses are offered
+    (the default-route one first); otherwise local_addresses()' guess."""
+    if networks:
+        route = _route_address()
+        real = [ip for n in networks for ip in n.ips]
+        ordered = ([route] if route in real else []) + [ip for ip in real if ip != route]
+        addresses = list(dict.fromkeys(ordered)) or local_addresses()
+        return NetworkInfo(addresses, [n for n in networks if n.public])
+    return NetworkInfo(local_addresses(), [])
+
+
+def make_private_command(networks: Sequence[HomeNetwork]) -> str:
+    """PowerShell that sets these networks to Private (needs Administrator)."""
+    parts = []
+    for n in networks:
+        alias = n.alias.replace("'", "''")
+        parts.append(f"Set-NetConnectionProfile -InterfaceAlias '{alias}' -NetworkCategory Private")
+    return "; ".join(parts)
+
+
+def run_elevated_powershell(command: str) -> bool:
+    """Start PowerShell as Administrator (Windows shows its UAC prompt) to
+    run `command`. Returns False if it couldn't be started."""
+    if sys.platform != "win32":
+        return False
+    import subprocess
+
+    inner = command.replace("'", "''")
+    outer = (f"Start-Process powershell -Verb RunAs -WindowStyle Hidden "
+             f"-ArgumentList '-NoProfile','-Command','{inner}'")
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", outer],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        return False
+    return True
 
 
 def _allowed_client(addr: str) -> bool:
@@ -792,6 +948,8 @@ class RemoteServer(QObject):
 
     #: running state changed - (running, message)
     statusChanged = Signal(bool, str)
+    #: the network check finished (see check_network) - Settings re-reads
+    networkChecked = Signal()
 
     def __init__(self, ctx, parent=None) -> None:
         super().__init__(parent)
@@ -807,6 +965,9 @@ class RemoteServer(QObject):
         #: spoken requests (2026-10-15) - one at a time
         self.ask_lock = threading.Lock()
         self.asker = voice_ask.Asker(self.run_with_session)
+        #: last check_network() answer; None until one finishes
+        self.network: Optional[NetworkInfo] = None
+        self._network_busy = False
 
     def run_with_session(self, fn: Callable[[Any], Any]) -> Any:
         """fn(session) on the main thread - from any thread."""
@@ -831,7 +992,27 @@ class RemoteServer(QObject):
         self._name = (name or "").strip()
 
     def urls(self) -> list[str]:
-        return [f"http://{addr}:{self.port}/" for addr in local_addresses()]
+        addresses = self.network.addresses if self.network is not None else local_addresses()
+        return [f"http://{addr}:{self.port}/" for addr in addresses]
+
+    def check_network(self) -> None:
+        """Ask Windows (on a background thread) which networks are really
+        connected and whether any is Public; networkChecked fires when done."""
+        if self._network_busy:
+            return
+        self._network_busy = True
+
+        def work():
+            try:
+                info = network_info(windows_networks())
+            except Exception:  # pragma: no cover - never break Settings over it
+                log.exception("web remote: network check failed")
+                info = network_info(None)
+            self.network = info
+            self._network_busy = False
+            self.networkChecked.emit()
+
+        threading.Thread(target=work, name="web-remote-network", daemon=True).start()
 
     def page(self) -> bytes:
         if self._page_cache is None:

@@ -16,6 +16,7 @@ import wave
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 
 from musicmgr.db.models import MediaFile, Playlist, Track
 from musicmgr.services import library as lib
@@ -265,3 +266,89 @@ def test_settings_section_turns_the_remote_on_and_off(ctx, qapp, monkeypatch):
     assert view.remote_state.text() == "Phone remote is OFF"
     assert view.remote_cb.text() == "Turn phone remote on"
     assert view.remote_cb.objectName() == "PrimaryWarm"
+
+
+# -- networks: which address to offer, and Windows' Public networks (2026-10-15)
+
+class TestAddresses:
+    def test_virtual_adapter_dot_one_is_left_out(self, monkeypatch):
+        monkeypatch.setattr(web_remote, "_route_address", lambda: "192.168.4.24")
+        monkeypatch.setattr(web_remote, "_hostname_addresses",
+                            lambda: ["172.23.192.1", "192.168.4.24", "127.0.0.1", "10.0.0.50"])
+        assert web_remote.local_addresses() == ["192.168.4.24", "10.0.0.50"]
+
+    def test_the_route_address_is_kept_even_ending_in_dot_one(self, monkeypatch):
+        monkeypatch.setattr(web_remote, "_route_address", lambda: "192.168.0.1")
+        monkeypatch.setattr(web_remote, "_hostname_addresses", lambda: [])
+        assert web_remote.local_addresses() == ["192.168.0.1"]
+
+    def test_parse_windows_networks(self):
+        one = '{"name":"912Latonka","alias":"Ethernet 2","category":"Public","ips":"192.168.4.24"}'
+        nets = web_remote.parse_networks(one)
+        assert [(n.name, n.alias, n.public, n.ips) for n in nets] == \
+            [("912Latonka", "Ethernet 2", True, ["192.168.4.24"])]
+        two = ('[{"name":"Home","alias":"Wi-Fi","category":"Private","ips":["192.168.1.9","169.254.1.2"]},'
+               '{"name":"Work","alias":"Ethernet","category":"DomainAuthenticated","ips":[]}]')
+        nets = web_remote.parse_networks(two)
+        assert [n.public for n in nets] == [False, False]
+        assert nets[0].ips == ["192.168.1.9"]  # link-local dropped
+        assert web_remote.parse_networks("") is None
+        assert web_remote.parse_networks("not json") is None
+
+    def test_network_info_uses_only_real_networks(self, monkeypatch):
+        monkeypatch.setattr(web_remote, "_route_address", lambda: "192.168.4.24")
+        nets = [web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Public", ["192.168.4.24"])]
+        info = web_remote.network_info(nets)
+        assert info.addresses == ["192.168.4.24"]  # not the Hyper-V 172.23.192.1
+        assert [n.name for n in info.public] == ["912Latonka"]
+        assert web_remote.network_info([]).public == []
+
+    def test_make_private_command_quotes_names(self):
+        nets = [web_remote.HomeNetwork("x", "Bob's Wi-Fi", "Public", [])]
+        assert web_remote.make_private_command(nets) == \
+            "Set-NetConnectionProfile -InterfaceAlias 'Bob''s Wi-Fi' -NetworkCategory Private"
+
+    def test_windows_networks_is_none_elsewhere(self, monkeypatch):
+        monkeypatch.setattr(web_remote.sys, "platform", "linux")
+        assert web_remote.windows_networks() is None
+
+
+def test_check_network_runs_in_the_background(ctx, qapp, monkeypatch):
+    monkeypatch.setattr(web_remote, "windows_networks", lambda: [
+        web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Public", ["192.168.4.24"])])
+    monkeypatch.setattr(web_remote, "_route_address", lambda: "192.168.4.24")
+    done = []
+    ctx.web_remote.networkChecked.connect(lambda: done.append(1), Qt.QueuedConnection)
+    ctx.web_remote.check_network()
+    deadline = time.time() + 5
+    while not done and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    assert done
+    assert ctx.web_remote.urls() == [f"http://192.168.4.24:{ctx.web_remote.port}/"]
+
+
+def test_settings_warns_about_a_public_network(ctx, qapp, monkeypatch):
+    from musicmgr.ui.views.settings import SettingsView
+
+    server = ctx.web_remote
+    monkeypatch.setattr(type(server), "running", property(lambda self: True))
+    monkeypatch.setattr(server, "check_network", lambda: None)
+    server.network = web_remote.NetworkInfo(
+        ["192.168.4.24"], [web_remote.HomeNetwork("912Latonka", "Ethernet 2", "Public", ["192.168.4.24"])])
+    view = SettingsView(ctx)
+    view._refresh_remote_status()
+    text = view.remote_status.text()
+    assert "192.168.4.24" in text and "Public" in text and "912Latonka" in text
+    assert not view.remote_fix_btn.isHidden()
+
+    ran = []
+    monkeypatch.setattr(web_remote, "run_elevated_powershell", lambda cmd: ran.append(cmd) or True)
+    view._make_network_private()
+    assert ran == ["Set-NetConnectionProfile -InterfaceAlias 'Ethernet 2' -NetworkCategory Private"]
+    assert not view.remote_fix_btn.isEnabled()
+
+    server.network = web_remote.NetworkInfo(["192.168.4.24"], [])
+    view._refresh_remote_status()
+    assert "Public" not in view.remote_status.text()
+    assert view.remote_fix_btn.isHidden()
