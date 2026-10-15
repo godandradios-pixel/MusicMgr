@@ -8,6 +8,10 @@ Decisions (James, 2026-10-15):
 
 * Claude (the Anthropic API) understands the request, with an offline
   fallback for plain phrasings when there's no key or no internet.
+  Same day: Google Gemini added as a choice (James: "is there a free AI
+  model I can use ... that doesn't need a subscription") - its free tier
+  needs only a Google AI Studio key, no card. Settings › Phone remote picks
+  the model; each provider keeps its own key.
 * Voice comes from the iPhone keyboard's own dictation mic in the phone
   remote's Ask box - it works on the remote's plain http:// address, where
   Safari won't allow a web page to use the microphone itself.
@@ -17,23 +21,26 @@ Decisions (James, 2026-10-15):
 
 How a request runs (`Asker.ask`):
 
-1. With an API key, Claude gets the request, today's date, a short summary of
-   the library (genres, year span, the charts that exist) and the read-only
-   tools in `LibraryTools` - artists and their profiles, top songs, similar
-   artists, albums and songs, charts, playlists. It looks things up, then
-   calls `play_songs` with track ids it was given by those tools (ids it
-   made up are dropped), or `say` when there's nothing to play.
-2. Without a key, or when Claude can't be reached, `offline_ask` handles the
+1. With a key for the chosen model (Gemini or Claude), the AI gets the
+   request, today's date, a short summary of the library (genres, year
+   span, the charts that exist) and the read-only tools in `LibraryTools` -
+   artists and their profiles, top songs, similar artists, albums and
+   songs, charts, playlists. It looks things up, then calls `play_songs`
+   with track ids it was given by those tools (ids it made up are dropped),
+   or `say` when there's nothing to play.
+2. Without a key, or when the AI can't be reached, `offline_ask` handles the
    plain shapes - "play <artist>", "play the top 20 of 1972", "play number
    ones from 1965", "play playlist <name>", "play the album <name>",
    "play <song> by <artist>" - and otherwise searches the library.
 
-Threading: the web remote runs this on its request thread (Claude can take
+Threading: the web remote runs this on its request thread (the AI can take
 several seconds), but every library lookup is handed to the Qt main thread
 through `run_main` - the same rule as the rest of the web remote: the
 database is only touched from the main thread.
 
-The key is stored per PC in the `settings` table (Settings › Phone remote).
+The model and both keys are stored per PC in the `settings` table
+(Settings › Phone remote). Claude's and Gemini's loops are the same shape -
+only the wire format differs (`Asker._ask_claude` / `Asker._ask_gemini`).
 """
 
 from __future__ import annotations
@@ -76,23 +83,38 @@ from .top_songs import distinct_chart, song_key
 log = logging.getLogger(__name__)
 
 KEY_API_KEY = "ask_anthropic_api_key"
+KEY_GEMINI_KEY = "ask_gemini_api_key"
 KEY_MODEL = "ask_model"
 
-#: (model id, label in Settings)
+CLAUDE = "claude"
+GEMINI = "gemini"
+PROVIDER_NAMES = {CLAUDE: "Claude", GEMINI: "Gemini"}
+
+#: (model id, label in Settings, provider) - Gemini first: it's free
 MODELS = (
-    ("claude-sonnet-5-5", "Claude Sonnet - best understanding"),
-    ("claude-haiku-5-5", "Claude Haiku - faster, cheaper"),
+    ("gemini-3.8-flash", "Gemini Flash - free (Google AI Studio key)", GEMINI),
+    ("gemini-3.5-flash-lite", "Gemini Flash-Lite - free, fastest", GEMINI),
+    ("claude-sonnet-5-5", "Claude Sonnet - best understanding (paid)", CLAUDE),
+    ("claude-haiku-5-5", "Claude Haiku - faster, cheaper (paid)", CLAUDE),
 )
 DEFAULT_MODEL = MODELS[0][0]
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
-#: Claude's turns per request (each is one look-up round)
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+#: the AI's turns per request (each is one look-up round)
 MAX_ROUNDS = 10
 #: the whole request, so the phone isn't left waiting forever
 TIME_BUDGET_S = 60.0
-#: one HTTP call to Claude
+#: one HTTP call to the AI
 HTTP_TIMEOUT_S = 40.0
+
+
+def provider_of(model: str) -> str:
+    for model_id, _label, provider in MODELS:
+        if model_id == model:
+            return provider
+    return GEMINI if (model or "").startswith("gemini") else CLAUDE
 
 #: a request plays at most this many songs
 MAX_PLAY = 200
@@ -106,8 +128,19 @@ DEFAULT_PLAY = 25
 
 @dataclass
 class AskPrefs:
+    #: Anthropic (Claude)
     api_key: str = ""
     model: str = DEFAULT_MODEL
+    #: Google AI Studio (Gemini)
+    gemini_key: str = ""
+
+    @property
+    def provider(self) -> str:
+        return provider_of(self.model)
+
+    @property
+    def active_key(self) -> str:
+        return self.gemini_key if self.provider == GEMINI else self.api_key
 
 
 def load_prefs(session) -> AskPrefs:
@@ -115,14 +148,19 @@ def load_prefs(session) -> AskPrefs:
     row = session.get(Setting, KEY_API_KEY)
     if row is not None and row.value:
         prefs.api_key = row.value.strip()
+    row = session.get(Setting, KEY_GEMINI_KEY)
+    if row is not None and row.value:
+        prefs.gemini_key = row.value.strip()
     row = session.get(Setting, KEY_MODEL)
-    if row is not None and row.value and row.value in {m for m, _ in MODELS}:
+    if row is not None and row.value and row.value in {m[0] for m in MODELS}:
         prefs.model = row.value
     return prefs
 
 
 def save_prefs(session, prefs: AskPrefs) -> None:
-    for key, value in ((KEY_API_KEY, prefs.api_key.strip()), (KEY_MODEL, prefs.model)):
+    for key, value in ((KEY_API_KEY, prefs.api_key.strip()),
+                       (KEY_GEMINI_KEY, prefs.gemini_key.strip()),
+                       (KEY_MODEL, prefs.model)):
         row = session.get(Setting, key)
         if row is None:
             session.add(Setting(key=key, value=value))
@@ -145,7 +183,7 @@ class AskResult:
     #: one or two sentences for the phone
     message: str = ""
     shuffle: bool = False
-    #: "claude" or "offline"
+    #: "claude", "gemini" or "offline"
     engine: str = "offline"
 
 
@@ -316,7 +354,7 @@ def _match_titles(tracks: Sequence[Track], titles: Sequence[str]) -> list[Track]
 
 
 class LibraryTools:
-    """What Claude (and the offline parser) can look up. Every method takes
+    """What the AI (and the offline parser) can look up. Every method takes
     an open session and returns plain JSON-able data. Main thread only."""
 
     # -- artists ----------------------------------------------------------
@@ -692,41 +730,68 @@ Today is {today}.
 The library: {overview}"""
 
 
-def _anthropic_transport(api_key: str, payload: dict, timeout: float) -> dict:
+class AIError(Exception):
+    """The AI service answered with an error (or not at all)."""
+
+    def __init__(self, status: int, detail: str = "", provider: str = CLAUDE) -> None:
+        super().__init__(f"{PROVIDER_NAMES.get(provider, provider)} API {status}: {detail}")
+        self.status = status
+        self.detail = detail
+        self.provider = provider
+
+    def friendly(self) -> str:
+        name = PROVIDER_NAMES.get(self.provider, "The AI")
+        detail = self.detail.lower()
+        if self.provider == GEMINI:
+            if self.status in (401, 403) or "api key" in detail:
+                return "The Google AI Studio key in Settings › Phone remote was refused"
+            if self.status == 429:
+                return "Gemini's free limit is used up for now - try again in a minute"
+            if self.status == 404:
+                return "That Gemini model isn't available - pick another in Settings › Phone remote"
+        else:
+            if self.status in (401, 403):
+                return "The Anthropic API key in Settings › Phone remote was refused"
+            if self.status == 429:
+                return "Claude is rate-limiting requests right now"
+            if self.status == 400 and "credit" in detail:
+                return "The Anthropic account is out of credit"
+        if self.status == 529 or self.status >= 500:
+            return f"{name} is busy right now"
+        return f"{name} couldn't answer ({self.status})"
+
+
+#: the old name, from when Claude was the only choice
+ClaudeError = AIError
+
+
+def _post(url: str, headers: dict, payload: dict, timeout: float, provider: str) -> dict:
     import requests
 
-    r = requests.post(
-        API_URL,
-        headers={"x-api-key": api_key, "anthropic-version": API_VERSION,
-                 "content-type": "application/json"},
-        data=json.dumps(payload),
-        timeout=timeout,
-    )
+    r = requests.post(url, headers={**headers, "content-type": "application/json"},
+                      data=json.dumps(payload), timeout=timeout)
     if r.status_code != 200:
         try:
             detail = r.json().get("error", {}).get("message", "")
         except ValueError:
             detail = r.text[:200]
-        raise ClaudeError(r.status_code, detail)
+        raise AIError(r.status_code, detail, provider)
     return r.json()
 
 
-class ClaudeError(Exception):
-    def __init__(self, status: int, detail: str = "") -> None:
-        super().__init__(f"Claude API {status}: {detail}")
-        self.status = status
-        self.detail = detail
+def _anthropic_transport(api_key: str, payload: dict, timeout: float) -> dict:
+    return _post(API_URL, {"x-api-key": api_key, "anthropic-version": API_VERSION},
+                 payload, timeout, CLAUDE)
 
-    def friendly(self) -> str:
-        if self.status in (401, 403):
-            return "The Anthropic API key in Settings › Phone remote was refused"
-        if self.status == 429:
-            return "Claude is rate-limiting requests right now"
-        if self.status == 529 or self.status >= 500:
-            return "Claude is busy right now"
-        if self.status == 400 and "credit" in self.detail.lower():
-            return "The Anthropic account is out of credit"
-        return f"Claude couldn't answer ({self.status})"
+
+def _gemini_transport(api_key: str, model: str, payload: dict, timeout: float) -> dict:
+    return _post(GEMINI_URL.format(model=model), {"x-goog-api-key": api_key},
+                 payload, timeout, GEMINI)
+
+
+def _jsonable(out: Any) -> Any:
+    """Dates and the like as text, so any JSON encoder takes it."""
+    return json.loads(json.dumps(out, ensure_ascii=False, default=str))
 
 
 class Asker:
@@ -734,7 +799,9 @@ class Asker:
 
     run_main(fn) runs fn(session) on the main thread with an open session and
     returns its result (the web remote passes its bridge; tests run inline).
-    transport(api_key, payload, timeout) -> response dict (tests fake it).
+    transport(api_key, payload, timeout) -> Claude's response;
+    gemini_transport(api_key, model, payload, timeout) -> Gemini's (tests
+    fake both).
     """
 
     def __init__(
@@ -742,9 +809,11 @@ class Asker:
         run_main: Callable[[Callable[[Any], Any]], Any],
         transport: Callable[[str, dict, float], dict] = _anthropic_transport,
         clock: Callable[[], float] = time.monotonic,
+        gemini_transport: Callable[[str, str, dict, float], dict] = _gemini_transport,
     ) -> None:
         self.run_main = run_main
         self.transport = transport
+        self.gemini_transport = gemini_transport
         self.clock = clock
         self.tools = LibraryTools()
 
@@ -752,43 +821,72 @@ class Asker:
         text = " ".join((text or "").split())
         if not text:
             return AskResult(message="Say or type what you'd like to hear")
-        if not prefs.api_key:
-            result = self.run_main(lambda s: offline_ask(s, self.tools, text))
+        provider = prefs.provider
+        name = PROVIDER_NAMES[provider]
+        if not prefs.active_key:
+            result = self._offline(text)
             if not result.track_ids:
-                result.message += (" (Only simple requests work without Claude - add an Anthropic"
-                                   " API key in Settings › Phone remote for anything you can say.)")
+                result.message += (
+                    " (Only simple requests work offline - add a free Google AI Studio key"
+                    " in Settings › Phone remote for anything you can say.)"
+                    if provider == GEMINI else
+                    " (Only simple requests work offline - add an Anthropic API key in"
+                    " Settings › Phone remote for anything you can say.)")
             return result
         try:
+            if provider == GEMINI:
+                return self._ask_gemini(text, prefs)
             return self._ask_claude(text, prefs)
-        except (ClaudeError, OSError, ValueError, KeyError, TimeoutError) as exc:
-            log.warning("Ask: Claude failed (%s) - falling back to offline", exc)
-            reason = exc.friendly() if isinstance(exc, ClaudeError) else "Couldn't reach Claude"
-            result = self.run_main(lambda s: offline_ask(s, self.tools, text))
-            result.message = f"{reason} - {result.message[:1].lower()}{result.message[1:]}"
-            return result
+        except (AIError, OSError, ValueError, KeyError, TimeoutError) as exc:
+            log.warning("Ask: %s failed (%s) - falling back to offline", name, exc)
+            reason = exc.friendly() if isinstance(exc, AIError) else (
+                f"{name} took too long" if isinstance(exc, TimeoutError) else f"Couldn't reach {name}")
+            return self._offline(text, reason)
         except Exception as exc:  # requests' own exceptions, mostly
             if type(exc).__module__.startswith("requests"):
-                log.warning("Ask: Claude unreachable (%s) - falling back to offline", exc)
-                result = self.run_main(lambda s: offline_ask(s, self.tools, text))
-                result.message = f"Couldn't reach Claude - {result.message[:1].lower()}{result.message[1:]}"
-                return result
+                log.warning("Ask: %s unreachable (%s) - falling back to offline", name, exc)
+                return self._offline(text, f"Couldn't reach {name}")
             raise
 
-    # -- the tool-use loop --------------------------------------------------
+    def _offline(self, text: str, reason: str = "") -> AskResult:
+        result = self.run_main(lambda s: offline_ask(s, self.tools, text))
+        if reason:
+            result.message = f"{reason} - {result.message[:1].lower()}{result.message[1:]}"
+        return result
 
-    def _ask_claude(self, text: str, prefs: AskPrefs) -> AskResult:
+    def _system(self) -> str:
         overview = self.run_main(self.tools.overview)
-        system = SYSTEM_PROMPT.format(
+        return SYSTEM_PROMPT.format(
             default=DEFAULT_PLAY, max=MAX_PLAY, today=dt.date.today().isoformat(),
             overview=json.dumps(overview, ensure_ascii=False),
         )
+
+    def _call(self, name: str, args: dict, seen_ids: set[int], engine: str):
+        """One tool call: (AskResult, None) when it finishes the request,
+        else (None, the look-up's data)."""
+        if name == "play_songs":
+            return self._finish_play(args, seen_ids, engine), None
+        if name == "say":
+            return AskResult(message=str(args.get("message") or ""), engine=engine), None
+        out = _jsonable(self._run_tool(name, args))
+        seen_ids.update(_ids_in(out))
+        return None, out
+
+    def _remaining(self, started: float) -> float:
+        remaining = TIME_BUDGET_S - (self.clock() - started)
+        if remaining <= 2:
+            raise TimeoutError("The AI took too long")
+        return min(HTTP_TIMEOUT_S, remaining)
+
+    # -- Claude's tool-use loop ---------------------------------------------
+
+    def _ask_claude(self, text: str, prefs: AskPrefs) -> AskResult:
+        system = self._system()
         messages: list[dict] = [{"role": "user", "content": text}]
         seen_ids: set[int] = set()
         started = self.clock()
         for _round in range(MAX_ROUNDS):
-            remaining = TIME_BUDGET_S - (self.clock() - started)
-            if remaining <= 2:
-                break
+            timeout = self._remaining(started)
             payload = {
                 "model": prefs.model or DEFAULT_MODEL,
                 "max_tokens": 2048,
@@ -796,26 +894,72 @@ class Asker:
                 "tools": TOOL_SPECS,
                 "messages": messages,
             }
-            reply = self.transport(prefs.api_key, payload, min(HTTP_TIMEOUT_S, remaining))
+            reply = self.transport(prefs.api_key, payload, timeout)
             content = reply.get("content") or []
             messages.append({"role": "assistant", "content": content})
             uses = [b for b in content if b.get("type") == "tool_use"]
             if not uses:
                 said = " ".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
-                return AskResult(message=said or "I couldn't work out what to play", engine="claude")
+                return AskResult(message=said or "I couldn't work out what to play", engine=CLAUDE)
             results = []
             for use in uses:
-                name, args = use.get("name"), use.get("input") or {}
-                if name == "play_songs":
-                    return self._finish_play(args, seen_ids)
-                if name == "say":
-                    return AskResult(message=str(args.get("message") or ""), engine="claude")
-                out = self._run_tool(name, args)
-                seen_ids.update(_ids_in(out))
+                done, out = self._call(use.get("name"), use.get("input") or {}, seen_ids, CLAUDE)
+                if done is not None:
+                    return done
                 results.append({"type": "tool_result", "tool_use_id": use.get("id"),
-                                "content": json.dumps(out, ensure_ascii=False, default=str)})
+                                "content": json.dumps(out, ensure_ascii=False)})
             messages.append({"role": "user", "content": results})
         raise TimeoutError("Claude took too long")
+
+    # -- Gemini's function-calling loop -------------------------------------
+
+    def _ask_gemini(self, text: str, prefs: AskPrefs) -> AskResult:
+        system = self._system()
+        tools = [{"functionDeclarations": [
+            {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}
+            for t in TOOL_SPECS]}]
+        contents: list[dict] = [{"role": "user", "parts": [{"text": text}]}]
+        seen_ids: set[int] = set()
+        started = self.clock()
+        for _round in range(MAX_ROUNDS):
+            timeout = self._remaining(started)
+            payload = {
+                "systemInstruction": {"parts": [{"text": system}]},
+                "contents": contents,
+                "tools": tools,
+                "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+                "generationConfig": {"maxOutputTokens": 2048},
+            }
+            reply = self.gemini_transport(prefs.gemini_key, prefs.model, payload, timeout)
+            candidates = reply.get("candidates") or []
+            if not candidates:
+                reason = (reply.get("promptFeedback") or {}).get("blockReason", "no answer")
+                raise AIError(400, f"Gemini returned nothing ({reason})", GEMINI)
+            # sent back exactly as it came - newer Gemini models attach a
+            # thought signature to their calls that must come back with them
+            content = candidates[0].get("content") or {}
+            content.setdefault("role", "model")
+            parts = content.get("parts") or []
+            contents.append(content)
+            calls = [p["functionCall"] for p in parts if isinstance(p.get("functionCall"), dict)]
+            if not calls:
+                said = " ".join(p.get("text", "") for p in parts
+                                if p.get("text") and not p.get("thought")).strip()
+                return AskResult(message=said or "I couldn't work out what to play", engine=GEMINI)
+            responses = []
+            for call in calls:
+                name = call.get("name")
+                done, out = self._call(name, call.get("args") or {}, seen_ids, GEMINI)
+                if done is not None:
+                    return done
+                response = {"name": name, "response": {"result": out}}
+                if call.get("id"):
+                    response["id"] = call["id"]
+                responses.append({"functionResponse": response})
+            contents.append({"role": "user", "parts": responses})
+        raise TimeoutError("Gemini took too long")
+
+    # -- shared --------------------------------------------------------------
 
     def _run_tool(self, name: str, args: dict) -> dict:
         if name not in _LOOKUPS:
@@ -828,7 +972,7 @@ class Asker:
         except (ValueError, LookupError) as exc:
             return {"error": str(exc)}
 
-    def _finish_play(self, args: dict, seen_ids: set[int]) -> AskResult:
+    def _finish_play(self, args: dict, seen_ids: set[int], engine: str = CLAUDE) -> AskResult:
         ids = []
         for raw in args.get("song_ids") or []:
             try:
@@ -842,7 +986,7 @@ class Asker:
             title=str(args.get("title") or "")[:120],
             message=str(args.get("message") or "")[:400] if ids else "I couldn't find any of those in the library",
             shuffle=bool(args.get("shuffle")),
-            engine="claude",
+            engine=engine,
         )
 
 

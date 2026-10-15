@@ -25,7 +25,7 @@ How it fits together:
   file; it polls /api/state about once a second.
 
 Ask (2026-10-15): POST /api/ask {"text": ...} plays what a spoken request
-asks for - see services/voice_ask.py. It runs on the request thread (Claude
+asks for - see services/voice_ask.py. It runs on the request thread (the AI
 can take several seconds) with every library look-up handed to the main
 thread like everything else; `RemoteApi.play_ask` plays the picks and keeps
 what was playing so the `ask_queue_instead` command can put it back.
@@ -753,7 +753,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
     def _ask(self) -> None:
-        """A spoken request (2026-10-15). Runs on this request thread - Claude
+        """A spoken request (2026-10-15). Runs on this request thread - the AI
         can take a while - with every library look-up handed to the main
         thread; one at a time per PC."""
         remote = self.remote

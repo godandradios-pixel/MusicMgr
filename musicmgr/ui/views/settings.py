@@ -990,27 +990,36 @@ class SettingsView(BaseView):
         rgrid.addWidget(self.remote_status, 3, 0, 1, 2)
         rgrid.addWidget(self.remote_qr, 1, 2, 3, 1, alignment=Qt.AlignRight | Qt.AlignTop)
         # Ask (2026-10-15, services/voice_ask.py) - spoken requests from the
-        # phone's Ask box; Claude needs an Anthropic API key, else only the
-        # plain phrasings work (offline)
+        # phone's Ask box. The AI needs a key for the chosen model - Gemini's
+        # is free (Google AI Studio), Claude's is paid (Anthropic); without
+        # one only the plain phrasings work (offline). Each key is kept.
+        self.ask_model_combo = QComboBox()
+        for model_id, label, _provider in voice_ask.MODELS:
+            self.ask_model_combo.addItem(label, model_id)
+        self.ask_gemini_key_edit = QLineEdit()
+        self.ask_gemini_key_edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
+        self.ask_gemini_key_edit.setPlaceholderText("Free key from aistudio.google.com")
+        self.ask_gemini_key_edit.setToolTip(
+            "For the Gemini choices. Free: sign in at aistudio.google.com and click "
+            "'Get API key'. Saved on this PC only.")
         self.ask_key_edit = QLineEdit()
         self.ask_key_edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
         self.ask_key_edit.setPlaceholderText("sk-ant-…  (from console.anthropic.com)")
-        self.ask_key_edit.setToolTip(
-            "Lets the phone's Ask box understand anything you say. Saved on this PC only.")
-        self.ask_model_combo = QComboBox()
-        for model_id, label in voice_ask.MODELS:
-            self.ask_model_combo.addItem(label, model_id)
+        self.ask_key_edit.setToolTip("For the Claude choices (paid). Saved on this PC only.")
         self.ask_status = dim_label("")
         self.ask_status.setWordWrap(True)
-        rgrid.addWidget(QLabel("Anthropic API key"), 4, 0)
-        rgrid.addWidget(self.ask_key_edit, 4, 1, 1, 2)
-        rgrid.addWidget(QLabel("Ask with"), 5, 0)
-        rgrid.addWidget(self.ask_model_combo, 5, 1, alignment=Qt.AlignLeft)
-        rgrid.addWidget(self.ask_status, 6, 0, 1, 3)
+        rgrid.addWidget(QLabel("Ask with"), 4, 0)
+        rgrid.addWidget(self.ask_model_combo, 4, 1, alignment=Qt.AlignLeft)
+        rgrid.addWidget(QLabel("Google AI Studio key"), 5, 0)
+        rgrid.addWidget(self.ask_gemini_key_edit, 5, 1, 1, 2)
+        rgrid.addWidget(QLabel("Anthropic API key"), 6, 0)
+        rgrid.addWidget(self.ask_key_edit, 6, 1, 1, 2)
+        rgrid.addWidget(self.ask_status, 7, 0, 1, 3)
         rgrid.setColumnStretch(1, 1)
         body.addWidget(remote_card)
         self._load_ask_prefs()
         self.ask_key_edit.editingFinished.connect(self._save_ask_prefs)
+        self.ask_gemini_key_edit.editingFinished.connect(self._save_ask_prefs)
         self.ask_model_combo.currentIndexChanged.connect(lambda _i: self._save_ask_prefs())
         self._load_remote_prefs()
         self._sync_remote_toggle()
@@ -1962,11 +1971,13 @@ class SettingsView(BaseView):
     def _load_ask_prefs(self) -> None:
         with self.ctx.session() as db:
             prefs = voice_ask.load_prefs(db)
-        for w in (self.ask_key_edit, self.ask_model_combo):
+        widgets = (self.ask_key_edit, self.ask_gemini_key_edit, self.ask_model_combo)
+        for w in widgets:
             w.blockSignals(True)
         self.ask_key_edit.setText(prefs.api_key)
+        self.ask_gemini_key_edit.setText(prefs.gemini_key)
         self.ask_model_combo.setCurrentIndex(max(0, self.ask_model_combo.findData(prefs.model)))
-        for w in (self.ask_key_edit, self.ask_model_combo):
+        for w in widgets:
             w.blockSignals(False)
         self._refresh_ask_status(prefs)
 
@@ -1974,6 +1985,7 @@ class SettingsView(BaseView):
         prefs = voice_ask.AskPrefs(
             api_key=self.ask_key_edit.text().strip(),
             model=self.ask_model_combo.currentData() or voice_ask.DEFAULT_MODEL,
+            gemini_key=self.ask_gemini_key_edit.text().strip(),
         )
         with self.ctx.session() as db:
             voice_ask.save_prefs(db, prefs)
@@ -1981,15 +1993,21 @@ class SettingsView(BaseView):
         self._refresh_ask_status(prefs)
 
     def _refresh_ask_status(self, prefs) -> None:
-        if prefs.api_key:
+        gemini = prefs.provider == voice_ask.GEMINI
+        if prefs.active_key and gemini:
+            self.ask_status.setText(
+                "Ask: the phone's Ask box sends what you say to Gemini (free tier), which picks "
+                "songs from this library. Google may use free-tier requests to improve its products.")
+        elif prefs.active_key:
             self.ask_status.setText(
                 "Ask: the phone's Ask box sends what you say to Claude, which picks songs from "
                 "this library (about a cent a request).")
         else:
+            which = "a free Google AI Studio key" if gemini else "an Anthropic API key"
             self.ask_status.setText(
-                "Ask: without a key, the phone's Ask box only understands plain requests - "
-                "“play Elvis”, “top 20 of 1972”, “number ones from 1965”, “playlist Road Trip”.")
-        self.ask_model_combo.setEnabled(bool(prefs.api_key))
+                f"Ask: add {which} above. Until then the phone's Ask box only understands plain "
+                "requests - “play Elvis”, “top 20 of 1972”, “number ones from 1965”, "
+                "“playlist Road Trip”.")
 
     def _sync_remote_toggle(self) -> None:
         """Dress the On/Off button and the big state line for whether the
