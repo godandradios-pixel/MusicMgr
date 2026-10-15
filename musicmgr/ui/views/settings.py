@@ -181,7 +181,7 @@ from ...services import updater
 from ...services import library_state
 from ...services import usb_sync
 from ...services import video_scanner
-from ...services import web_remote
+from ...services import voice_ask, web_remote
 from ...services import videos as vid_svc
 from ...services.library import format_duration
 from ..context import AppContext
@@ -989,8 +989,29 @@ class SettingsView(BaseView):
         rgrid.addWidget(self.remote_port_spin, 2, 1, alignment=Qt.AlignLeft)
         rgrid.addWidget(self.remote_status, 3, 0, 1, 2)
         rgrid.addWidget(self.remote_qr, 1, 2, 3, 1, alignment=Qt.AlignRight | Qt.AlignTop)
+        # Ask (2026-10-15, services/voice_ask.py) - spoken requests from the
+        # phone's Ask box; Claude needs an Anthropic API key, else only the
+        # plain phrasings work (offline)
+        self.ask_key_edit = QLineEdit()
+        self.ask_key_edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
+        self.ask_key_edit.setPlaceholderText("sk-ant-…  (from console.anthropic.com)")
+        self.ask_key_edit.setToolTip(
+            "Lets the phone's Ask box understand anything you say. Saved on this PC only.")
+        self.ask_model_combo = QComboBox()
+        for model_id, label in voice_ask.MODELS:
+            self.ask_model_combo.addItem(label, model_id)
+        self.ask_status = dim_label("")
+        self.ask_status.setWordWrap(True)
+        rgrid.addWidget(QLabel("Anthropic API key"), 4, 0)
+        rgrid.addWidget(self.ask_key_edit, 4, 1, 1, 2)
+        rgrid.addWidget(QLabel("Ask with"), 5, 0)
+        rgrid.addWidget(self.ask_model_combo, 5, 1, alignment=Qt.AlignLeft)
+        rgrid.addWidget(self.ask_status, 6, 0, 1, 3)
         rgrid.setColumnStretch(1, 1)
         body.addWidget(remote_card)
+        self._load_ask_prefs()
+        self.ask_key_edit.editingFinished.connect(self._save_ask_prefs)
+        self.ask_model_combo.currentIndexChanged.connect(lambda _i: self._save_ask_prefs())
         self._load_remote_prefs()
         self._sync_remote_toggle()
         self.remote_cb.toggled.connect(lambda _on: self._save_remote_prefs())
@@ -1937,6 +1958,38 @@ class SettingsView(BaseView):
             server.set_name(prefs.name)
             server.stop()
         self._refresh_remote_status()
+
+    def _load_ask_prefs(self) -> None:
+        with self.ctx.session() as db:
+            prefs = voice_ask.load_prefs(db)
+        for w in (self.ask_key_edit, self.ask_model_combo):
+            w.blockSignals(True)
+        self.ask_key_edit.setText(prefs.api_key)
+        self.ask_model_combo.setCurrentIndex(max(0, self.ask_model_combo.findData(prefs.model)))
+        for w in (self.ask_key_edit, self.ask_model_combo):
+            w.blockSignals(False)
+        self._refresh_ask_status(prefs)
+
+    def _save_ask_prefs(self) -> None:
+        prefs = voice_ask.AskPrefs(
+            api_key=self.ask_key_edit.text().strip(),
+            model=self.ask_model_combo.currentData() or voice_ask.DEFAULT_MODEL,
+        )
+        with self.ctx.session() as db:
+            voice_ask.save_prefs(db, prefs)
+            db.commit()
+        self._refresh_ask_status(prefs)
+
+    def _refresh_ask_status(self, prefs) -> None:
+        if prefs.api_key:
+            self.ask_status.setText(
+                "Ask: the phone's Ask box sends what you say to Claude, which picks songs from "
+                "this library (about a cent a request).")
+        else:
+            self.ask_status.setText(
+                "Ask: without a key, the phone's Ask box only understands plain requests - "
+                "“play Elvis”, “top 20 of 1972”, “number ones from 1965”, “playlist Road Trip”.")
+        self.ask_model_combo.setEnabled(bool(prefs.api_key))
 
     def _sync_remote_toggle(self) -> None:
         """Dress the On/Off button and the big state line for whether the

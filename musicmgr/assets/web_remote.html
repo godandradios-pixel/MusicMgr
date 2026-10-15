@@ -107,6 +107,30 @@ h2:first-child { margin-top: 4px; }
   transition: opacity .2s; pointer-events: none; max-width: 90vw; text-align: center; }
 #toast.on { opacity: 1; }
 .offline { margin: 40px 10px; text-align: center; color: var(--dim); }
+
+/* ask (2026-10-15) - spoken requests via the keyboard's dictation mic */
+.ask { width: 100%; max-width: 420px; }
+.ask form { display: flex; gap: 8px; }
+.ask input { flex: 1; min-width: 0; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); font: inherit; font-size: 17px; outline: none; }
+.ask input:focus { border-color: var(--accent); }
+.ask .go { width: 48px; border-radius: 12px; background: var(--accent); color: #1b1410; display: grid; place-items: center; flex: none; }
+.ask .go:disabled { opacity: .5; }
+.ask .go svg { width: 22px; height: 22px; }
+.ask .hint { color: var(--faint); font-size: 13px; margin: 6px 4px 0; }
+.ask .hint b { color: var(--dim); font-weight: 600; }
+.answer { margin-top: 10px; padding: 12px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.answer .t { font-weight: 650; }
+.answer .m { color: var(--dim); font-size: 15px; margin-top: 2px; }
+.answer .btns { margin: 10px 0 2px; flex-wrap: wrap; }
+.answer .pill { padding: 8px 14px; font-size: 14px; }
+.answer ol { margin: 8px 0 0; padding-left: 0; list-style-position: inside; color: var(--dim); font-size: 14px; }
+.answer li { padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.answer li span { color: var(--faint); }
+.thinking { display: flex; align-items: center; gap: 10px; color: var(--dim); }
+.spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent2);
+  animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -114,6 +138,14 @@ h2:first-child { margin-top: 4px; }
 <main id="main">
   <section id="v-now" class="on">
     <div class="np">
+      <div class="ask">
+        <form id="askf" autocomplete="off">
+          <input id="askq" type="search" enterkeyhint="go" placeholder="Ask for music…" autocorrect="off" spellcheck="false" aria-label="Ask for music">
+          <button class="go" id="askgo" type="submit" aria-label="Ask"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+        </form>
+        <div class="hint" id="askhint">Tap, then the keyboard's 🎤 and say <b>“the top 20 country hits of 1972”</b></div>
+        <div id="answer"></div>
+      </div>
       <div class="art" id="art">♪</div>
       <div class="meta">
         <div class="t" id="title">Nothing playing</div>
@@ -393,6 +425,37 @@ $("radio").addEventListener("click", (e) => {
   else if (d.sh) { cmd({cmd: "tune_show", id: +d.sh}); show("now"); }
   else if (d.onair) { cmd({cmd: "tune_onair"}); show("now"); }
 });
+
+/* ---- ask (2026-10-15) ---- */
+const HINTS = ["“the top 20 country hits of 1972”", "“number ones from the summer of 1965”", "“Elvis's greatest hits”",
+  "“something like Patsy Cline”", "“upbeat songs from the 50s”", "“bands from Liverpool”", "“my road trip playlist”"];
+let hintN = 0, asking = false;
+setInterval(() => { if (asking || document.activeElement === $("askq")) return;
+  hintN = (hintN + 1) % HINTS.length; $("askhint").innerHTML = `Tap, then the keyboard's 🎤 and say <b>${esc(HINTS[hintN])}</b>`; }, 6000);
+$("askf").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("askq").value.trim(); if (!text || asking) return;
+  $("askq").blur(); asking = true; $("askgo").disabled = true;
+  $("answer").innerHTML = `<div class="answer"><div class="thinking"><span class="spin"></span>Finding “${esc(text)}”…</div></div>`;
+  try {
+    const r = await fetch("/api/ask", {method: "POST", headers: {"Content-Type": "application/json", "X-MusicMgr": "1"}, body: JSON.stringify({text})});
+    const j = await r.json();
+    if (!r.ok) { drawAnswer({ok: false, message: j.message || "That didn't work"}); return; }
+    drawAnswer(j); if (j.state) render(j.state);
+    if (j.ok) $("askq").value = "";
+  } catch (err) { drawAnswer({ok: false, message: "Can't reach MusicMgr"}); }
+  finally { asking = false; $("askgo").disabled = false; }
+});
+function drawAnswer(j) {
+  if (!j.ok) { $("answer").innerHTML = `<div class="answer"><div class="m">${esc(j.message || "Nothing to play")}</div></div>`; return; }
+  const songs = j.songs || [], shown = songs.slice(0, 5);
+  $("answer").innerHTML = `<div class="answer"><div class="t">${esc(j.title || "Playing")} · ${j.count} song${j.count === 1 ? "" : "s"}</div>
+    ${j.message ? `<div class="m">${esc(j.message)}</div>` : ""}
+    <ol>${shown.map(t => `<li>${esc(t.title)} <span>· ${esc(t.artist)}</span></li>`).join("")}${songs.length > shown.length ? `<li><span>…and ${songs.length - shown.length} more (Queue tab)</span></li>` : ""}</ol>
+    <div class="btns">${j.can_queue_instead ? '<button class="pill" id="askqueue">Add to queue instead</button>' : ""}<button class="pill" id="askclose">Done</button></div></div>`;
+  const q = $("askqueue"); if (q) q.onclick = async () => { q.disabled = true; await cmd({cmd: "ask_queue_instead"}); $("answer").innerHTML = ""; };
+  $("askclose").onclick = () => { $("answer").innerHTML = ""; };
+}
 
 paint($("seek")); paint($("vol")); poll();
 </script>

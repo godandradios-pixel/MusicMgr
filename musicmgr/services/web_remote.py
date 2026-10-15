@@ -24,6 +24,12 @@ How it fits together:
 * The page itself is `musicmgr/assets/web_remote.html` - one self-contained
   file; it polls /api/state about once a second.
 
+Ask (2026-10-15): POST /api/ask {"text": ...} plays what a spoken request
+asks for - see services/voice_ask.py. It runs on the request thread (Claude
+can take several seconds) with every library look-up handed to the main
+thread like everything else; `RemoteApi.play_ask` plays the picks and keeps
+what was playing so the `ask_queue_instead` command can put it back.
+
 Safety without a login: the server answers only devices on the local network
 (private, loopback and link-local addresses - see `_allowed_client`), so a
 router port-forward set up by mistake still gets nothing; and every command
@@ -34,6 +40,7 @@ to a request without the browser first asking this server's permission
 
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 import json
 import logging
@@ -53,6 +60,7 @@ from sqlalchemy.orm import selectinload
 
 from .. import config
 from ..db.models import Playlist, RadioShow, RadioStation, Release, Setting, Track
+from . import voice_ask
 
 log = logging.getLogger(__name__)
 
@@ -480,6 +488,73 @@ class RemoteApi:
         ok = self.ctx.tuner.tune_onair()
         return "On the air" if ok else "Nothing to broadcast yet"
 
+    # -- Ask (2026-10-15, services/voice_ask.py) ---------------------------
+
+    def play_ask(self, result) -> dict:
+        """Play what a spoken request picked, remembering what was playing
+        so the phone's "Add to queue instead" can put it back."""
+        player = self.ctx.player
+        out = {"ok": True, "title": result.title, "message": result.message,
+               "engine": result.engine, "count": 0, "songs": [], "can_queue_instead": False}
+        if not result.track_ids:
+            out["ok"] = False
+            return out
+        with self.ctx.session() as s:
+            found = {t.id: t for t in s.scalars(
+                select(Track).options(selectinload(Track.release))
+                .where(Track.id.in_(result.track_ids))
+            ).unique()}
+            tracks = [found[i] for i in result.track_ids if i in found]
+            out["songs"] = [_track_dict(t) for t in tracks]
+            before = self._snapshot()
+            player.set_shuffle(bool(result.shuffle))
+            n = self.ctx.play_tracks(tracks, start=0, source="ask") if tracks else 0
+        out["count"] = n
+        if not n:
+            out["ok"] = False
+            out["message"] = result.message or "None of those songs have a playable file"
+            return out
+        self._ask_before = before
+        self._ask_ids = [t["id"] for t in out["songs"]]
+        out["can_queue_instead"] = before is not None
+        out["state"] = self.state()
+        return out
+
+    def _snapshot(self):
+        player = self.ctx.player
+        item = player.current
+        if item is None or not player.queue:
+            return None
+        return {
+            "items": player.queue,
+            "index": player.current_index,
+            "position_ms": 0 if item.is_stream else int(player.position() or 0),
+            "playing": player.is_playing(),
+            "shuffle": player.shuffle,
+            "source": player.source,
+        }
+
+    def _cmd_ask_queue_instead(self, _b) -> str:
+        """Undo the last Ask's "play now": what was playing comes back where
+        it was, and the picks are queued after it."""
+        before, ids = getattr(self, "_ask_before", None), getattr(self, "_ask_ids", None)
+        if not before or not ids:
+            return "Nothing to put back"
+        self._ask_before = self._ask_ids = None
+        player = self.ctx.player
+        items = [dataclasses.replace(it) for it in before["items"]]
+        index = before["index"]
+        if 0 <= index < len(items):
+            items[index] = dataclasses.replace(items[index], start_ms=before["position_ms"])
+        player.set_shuffle(bool(before["shuffle"]))
+        player.set_queue(items, start=max(index, 0), source=before["source"])
+        if not before["playing"]:
+            player.pause()
+        with self.ctx.session() as s:
+            found = {t.id: t for t in s.scalars(select(Track).where(Track.id.in_(ids)))}
+            n = self.ctx.enqueue_tracks([found[i] for i in ids if i in found])
+        return f"Put back what was playing - {n} song{'s' if n != 1 else ''} queued after it"
+
 
 def _quality_label(path: str) -> str:
     from .audio_quality import describe
@@ -654,6 +729,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(403, "Missing remote header")
             return
         url = urlparse(self.path)
+        if url.path == "/api/ask":
+            self._ask()
+            return
         if url.path != "/api/cmd":
             self._error(404, "Not found")
             return
@@ -672,6 +750,32 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # pragma: no cover
             log.exception("web remote command failed")
             self._error(500, f"Something went wrong: {exc}")
+
+
+    def _ask(self) -> None:
+        """A spoken request (2026-10-15). Runs on this request thread - Claude
+        can take a while - with every library look-up handed to the main
+        thread; one at a time per PC."""
+        remote = self.remote
+        if not remote.ask_lock.acquire(blocking=False):
+            self._error(409, "Still working on the last request")
+            return
+        try:
+            length = min(int(self.headers.get("Content-Length") or 0), 16 * 1024)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            text = str(body.get("text") or "")[:500] if isinstance(body, dict) else ""
+            prefs = remote.run_with_session(voice_ask.load_prefs)
+            result = remote.asker.ask(text, prefs)
+            self._json(self._main(lambda: remote.api.play_ask(result)))
+        except TimeoutError as exc:
+            self._error(503, str(exc))
+        except (ValueError, TypeError) as exc:
+            self._error(400, str(exc))
+        except Exception as exc:  # pragma: no cover
+            log.exception("web remote ask failed")
+            self._error(500, f"Something went wrong: {exc}")
+        finally:
+            remote.ask_lock.release()
 
 
 class _Server(ThreadingHTTPServer):
@@ -700,6 +804,18 @@ class RemoteServer(QObject):
         self.port = DEFAULT_PORT
         self.icon_png: bytes = b""
         self._page_cache: Optional[bytes] = None
+        #: spoken requests (2026-10-15) - one at a time
+        self.ask_lock = threading.Lock()
+        self.asker = voice_ask.Asker(self.run_with_session)
+
+    def run_with_session(self, fn: Callable[[Any], Any]) -> Any:
+        """fn(session) on the main thread - from any thread."""
+        def job():
+            with self.ctx.session() as s:
+                return fn(s)
+        if threading.current_thread() is threading.main_thread():
+            return job()
+        return self.bridge.call(job)
 
     # -- info -------------------------------------------------------------
 
