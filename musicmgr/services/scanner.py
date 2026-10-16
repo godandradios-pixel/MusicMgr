@@ -148,6 +148,10 @@ class TrackTags:
     #: genuinely says Various Artists" apart from "no track said anything, so
     #: each one silently fell back to its own performer".
     had_explicit_album_artist: bool = False
+    #: True if the title came from the file's own title tag, not its
+    #: filename - `_fallback_from_path` only strips a track-number prefix
+    #: from a filename title (2026-10-16, "6 Inch" filed as "Inch")
+    had_title_tag: bool = False
     duration_ms: Optional[int] = None
     bitrate: Optional[int] = None
     sample_rate: Optional[int] = None
@@ -280,6 +284,34 @@ def _first_id3_comment(raw) -> str:
     return ""
 
 
+_NO_CATALOG = {"none", "[none]", "n/a"}
+
+
+def _distinct_catalog_numbers(text: str) -> str:
+    """'986113-7, 986113-7, 986113-7' -> '986113-7' (2026-10-16). Some
+    taggers write one catalog number per label on a co-released album, so
+    the same number comes back several times - and a release is looked up
+    by its catalog number, so the repeated form no longer found the album
+    already in the library and a second copy of it was made (Ludacris's
+    Chicken-N-Beer). Different numbers are kept, in order."""
+    seen: list[str] = []
+    for part in (p.strip() for p in (text or "").split(",")):
+        if part and part.lower() not in _NO_CATALOG and part.lower() not in (s.lower() for s in seen):
+            seen.append(part)
+    return ", ".join(seen)
+
+
+def _distinct_label(text: str) -> str:
+    """'RCA, RCA' -> 'RCA'. Only a label that is one name repeated is
+    shortened - a comma can be part of a real name ("BMG Direct Marketing,
+    Inc.") and co-labels ("Def Jam South, Disturbing tha Peace") stay as
+    they are."""
+    parts = [p.strip() for p in re.split(r"[,;]", text or "")]
+    if len(parts) > 1 and all(p and p.lower() == parts[0].lower() for p in parts):
+        return parts[0]
+    return text
+
+
 def _int_of(text: str) -> Optional[int]:
     if not text:
         return None
@@ -343,7 +375,9 @@ def read_tags(path: Path) -> TrackTags:
     # 2026-10-06: a .wma's tags were never read at all before (its keys
     # are capitalised and namespaced, unlike every other format's), which
     # mattered once the tag editor could write them
-    tags.title = _first(src, "title", "TIT2", "\xa9nam", "Title") or path.stem
+    tags.title = _first(src, "title", "TIT2", "\xa9nam", "Title")
+    tags.had_title_tag = bool(tags.title)
+    tags.title = tags.title or path.stem
     tags.artist = _first(src, "artist", "TPE1", "\xa9ART", "Author")
     tags.album_artist = _first(
         src, "albumartist", "album artist", "TPE2", "aART", "ALBUMARTIST", "WM/AlbumArtist"
@@ -373,9 +407,10 @@ def read_tags(path: Path) -> TrackTags:
     # written by the tag editor and MusicBrainz Picard
     tags.label = (_first(src, "organization", "label", "TPUB", "publisher", "LABEL", "WM/Publisher")
                   or _raw_first(raw, _FF + "LABEL"))
-    tags.catalog_number = (_first(src, "catalognumber", "CATALOGNUMBER", "TXXX:CATALOGNUMBER",
-                                  "WM/CatalogNo")
-                           or _raw_first(raw, _FF + "CATALOGNUMBER"))
+    tags.label = _distinct_label(tags.label)
+    tags.catalog_number = _distinct_catalog_numbers(
+        _first(src, "catalognumber", "CATALOGNUMBER", "TXXX:CATALOGNUMBER", "WM/CatalogNo")
+        or _raw_first(raw, _FF + "CATALOGNUMBER"))
     tags.barcode = (_first(src, "barcode", "BARCODE", "WM/Barcode")
                     or _raw_first(raw, "TXXX:BARCODE", _FF + "BARCODE"))
     tags.country = (_first(src, "releasecountry", "RELEASECOUNTRY")
@@ -432,6 +467,15 @@ def _fallback_from_path(path: Path, tags: TrackTags) -> TrackTags:
     assignment below just never matched that guard. Every untagged file
     has been filed under "Unknown Artist" instead of its parent folder's
     name until now.
+
+    2026-10-16 (James: "6 Inch", "99 Red Balloons", "777-9311" and a dozen
+    more showed up as "Inch", "Red Balloons", "9311"): `tags.title ==
+    path.stem` isn't proof the title came from the filename - a file named
+    after its own song ("6 Inch.mp3", title tag "6 Inch") passes it too, so
+    the number that belongs to the song was cut off as a track number. Only
+    an untagged title is stripped now (`had_title_tag`), and never a number
+    run into another with a hyphen ("777-9311", "20-20", "5-10-15 Hours"),
+    which is part of the title, not a track number.
     """
     if tags.artist in ("", "Unknown Artist"):
         parent = path.parent
@@ -441,6 +485,10 @@ def _fallback_from_path(path: Path, tags: TrackTags) -> TrackTags:
             if tags.album_artist in ("", "Unknown Artist"):
                 tags.album_artist = grand.name
     m = re.match(r"^\s*(\d{1,3})[\s._-]+", path.stem)
+    if m and m.group().endswith("-") and path.stem[m.end():m.end() + 1].isdigit():
+        m = None  # "777-9311": one title, not track 777
+    if m and tags.had_title_tag and tags.title == path.stem:
+        m = None  # "99 Red Balloons.mp3" titled "99 Red Balloons": the song's own number
     if m:
         if not tags.track_no:
             tags.track_no = int(m.group(1))
@@ -1047,11 +1095,30 @@ def _import_files(
     for folder_files in by_folder.values():
         folder_tags = {p: _fallback_from_path(p, read_tags(p)) for p in folder_files}
         tags_cache.update(folder_tags)
-        decision = _folder_album_artist(folder_tags)
-        for p in folder_files:
-            overrides[p] = decision
+        # one decision per album in the folder, not per folder (2026-10-16):
+        # a folder of loose singles or 78s - James's "Old78Records" (179
+        # records) and "BPM" (44 singles) - holds many albums, each tagged
+        # with its own album artist, and the folder's most common one
+        # (Bing Crosby, John Summit & Hayla) was put on every one of them
+        by_album: dict[str, dict[Path, TrackTags]] = {}
+        for p, t in folder_tags.items():
+            by_album.setdefault(normalize(t.album), {})[p] = t
+        for album_tags in by_album.values():
+            decision = _folder_album_artist(album_tags)
+            for p in album_tags:
+                overrides[p] = decision
 
     hidden = hide_retitled(session, tags_cache.items())
+
+    # the albums these files are on now - any a file leaves and leaves empty
+    # is removed at the end (purge_empty_releases)
+    paths = [str(p) for p in [*to_process, *regroup]]
+    left_releases: set[int] = set()
+    for start in range(0, len(paths), 500):
+        left_releases.update(session.scalars(
+            select(Track.release_id).join(MediaFile, MediaFile.track_id == Track.id)
+            .where(MediaFile.path.in_(paths[start:start + 500]))
+        ))
 
     regroup_set = set(regroup)
     for idx, path in enumerate(files, start=1):
@@ -1111,6 +1178,8 @@ def _import_files(
     restore_hidden(session, hidden)
     if result.retracked:
         result.history_moved.update(carry_history(session, result.retracked))
+    if left_releases:
+        purge_empty_releases(session, left_releases)
     if result.separated_from and not (should_stop and should_stop()):
         _rematch_separated(session, result, progress)
 
@@ -1289,7 +1358,20 @@ def purge_orphaned_tracks(session: Session) -> int:
     candidates = session.scalars(
         select(Track).where(Track.id.not_in(playable_track_ids))
     ).all()
-    removed = 0
+    # 2026-10-16: a track whose file now lives on another track - the same
+    # song by the same artist, found again under a new path or a new album
+    # (a rescan of a moved, renamed or retagged file) - hands its history
+    # over and goes, instead of staying behind with no file forever
+    moves = {}
+    for track in candidates:
+        twin = _live_twin(session, track, playable_track_ids)
+        if twin is not None:
+            moves[track.id] = twin.id
+    removed = len(carry_history(session, moves)) if moves else 0
+    if removed:
+        candidates = session.scalars(
+            select(Track).where(Track.id.not_in(playable_track_ids))
+        ).all()
     for track in candidates:
         has_history = (
             session.scalar(
@@ -1320,4 +1402,69 @@ def purge_orphaned_tracks(session: Session) -> int:
         removed += 1
     if removed:
         session.flush()
+    purge_empty_releases(session)
     return removed
+
+
+def _live_twin(session: Session, track: Track, playable_track_ids) -> Optional[Track]:
+    """The one playable track that is plainly the same song as `track`:
+    same title, same performer, and on the same album - or failing that,
+    on an album by the same album artist. None when there's no such track
+    or more than one (two live versions: which one the history belongs to
+    is a guess, so it's left alone)."""
+    artist_key = normalize(track.artist_display or "")
+    if not track.title_key or not artist_key:
+        return None
+    release = track.release
+    same_song = [
+        t for t in session.scalars(select(Track).where(
+            Track.title_key == track.title_key,
+            Track.id != track.id,
+            Track.id.in_(playable_track_ids),
+        ))
+        if normalize(t.artist_display or "") == artist_key
+    ]
+    on_album = [t for t in same_song if t.release_id == track.release_id]
+    if len(on_album) == 1:
+        return on_album[0]
+    if on_album or release is None or release.album_artist_id is None:
+        return None
+    by_artist = [t for t in same_song
+                 if t.release is not None and t.release.album_artist_id == release.album_artist_id]
+    return by_artist[0] if len(by_artist) == 1 else None
+
+
+def purge_empty_releases(session: Session, release_ids: Optional[Iterable[int]] = None) -> int:
+    """Delete releases left with no tracks (2026-10-16). A rescan that files
+    an album's tracks under a different release - a retag changed its album
+    artist or catalog number - moved every track off the old one but left
+    it standing, so the artist page showed the album twice, once empty
+    (James's Chicken-N-Beer and Word of Mouf). Only the scanner makes
+    releases, and only for files, so an empty one is never wanted. A master
+    left with no releases goes too; one that still has some points at one
+    of those instead.
+
+    `release_ids` limits it to those releases - an import passes the ones
+    its own files were on, so it never touches a release it had nothing
+    to do with; the scan's closing `purge_orphaned_tracks` sweeps them all."""
+    from ..db.models import Master
+
+    stmt = select(Release).where(~select(Track.id).where(Track.release_id == Release.id).exists())
+    if release_ids is not None:
+        stmt = stmt.where(Release.id.in_(list(release_ids)))
+    empty = session.scalars(stmt).all()
+    if not empty:
+        return 0
+    master_ids = {r.master_id for r in empty if r.master_id is not None}
+    empty_ids = {r.id for r in empty}
+    for release in empty:
+        session.delete(release)
+    session.flush()
+    for master in session.scalars(select(Master).where(Master.id.in_(master_ids))):
+        rest = session.scalars(select(Release.id).where(Release.master_id == master.id)).first()
+        if rest is None:
+            session.delete(master)
+        elif master.main_release_id is None or master.main_release_id in empty_ids:
+            master.main_release_id = rest
+    session.flush()
+    return len(empty)

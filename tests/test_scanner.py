@@ -15,6 +15,7 @@ guessing rather than mutagen's own tag reading.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import wave
 from pathlib import Path
 
@@ -610,9 +611,11 @@ class TestPurgeOrphanedTracks:
         assert len(session.scalars(select(Track)).all()) == 1
 
 
-def make_tagged_mp3(path: Path, title: str, artist: str, album: str) -> None:
-    """A tiny silent MP3 with title/artist/album tags."""
-    from mutagen.id3 import TALB, TIT2, TPE1
+def make_tagged_mp3(path: Path, title: str, artist: str, album: str, *,
+                    album_artist: str = "", catalog: str = "") -> None:
+    """A tiny silent MP3 with title/artist/album tags (and, if given, an
+    album artist and catalog number)."""
+    from mutagen.id3 import TALB, TIT2, TPE1, TPE2, TXXX
     from mutagen.mp3 import MP3
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -626,6 +629,10 @@ def make_tagged_mp3(path: Path, title: str, artist: str, album: str) -> None:
     audio.tags.add(TIT2(encoding=3, text=[title]))
     audio.tags.add(TPE1(encoding=3, text=[artist]))
     audio.tags.add(TALB(encoding=3, text=[album]))
+    if album_artist:
+        audio.tags.add(TPE2(encoding=3, text=[album_artist]))
+    if catalog:
+        audio.tags.add(TXXX(encoding=3, desc="CATALOGNUMBER", text=[catalog]))
     audio.save()
 
 
@@ -752,3 +759,226 @@ class TestSameSongByDifferentArtists:
         # a file that's already its own track just comes back as it is
         again = scanner.import_single(session, folder / "Perry Como - Forever And Ever.mp3")
         assert again.id == track.id
+
+
+def _touch_newer(path: Path) -> None:
+    """Make a rewritten file's mtime differ for sure, so a rescan sees it changed."""
+    st = path.stat()
+    os.utime(path, (st.st_atime, st.st_mtime + 10))
+
+
+class TestSongNumbersInTitles:
+    """2026-10-16 - James: "6 Inch", "99 Red Balloons", "777-9311" showed up
+    as "Inch", "Red Balloons", "9311": a song named with a number, in a file
+    named after it, lost the number as if it were a track number."""
+
+    def test_a_tagged_title_that_matches_the_filename_keeps_its_number(self):
+        tags = scanner.TrackTags(title="6 Inch", artist="Beyoncé", track_no=5, had_title_tag=True)
+
+        result = scanner._fallback_from_path(Path("/music/Beyonce/Lemonade/6 Inch.mp3"), tags)
+
+        assert result.title == "6 Inch"
+        assert result.track_no == 5
+
+    def test_the_songs_number_is_not_taken_as_a_missing_track_number(self):
+        tags = scanner.TrackTags(title="99 Red Balloons", artist="Nena", had_title_tag=True)
+
+        result = scanner._fallback_from_path(Path("/music/Nena/99/99 Red Balloons.mp3"), tags)
+
+        assert result.title == "99 Red Balloons"
+        assert result.track_no is None
+
+    def test_numbers_joined_by_a_hyphen_are_one_title_even_untagged(self):
+        for stem in ("777-9311", "20-20", "5-10-15 Hours"):
+            tags = scanner.TrackTags(title=stem, artist="")
+            result = scanner._fallback_from_path(Path(f"/music/A/B/{stem}.wav"), tags)
+            assert (result.title, result.track_no) == (stem, None)
+
+    def test_an_untagged_tracknumber_prefix_is_still_stripped(self):
+        for stem, title, no in (("01 Song", "Song", 1), ("3 - Song", "Song", 3), ("07. Song", "Song", 7)):
+            tags = scanner.TrackTags(title=stem, artist="")
+            result = scanner._fallback_from_path(Path(f"/music/A/B/{stem}.wav"), tags)
+            assert (result.title, result.track_no) == (title, no)
+
+    def test_a_scan_keeps_the_title_tag(self, session, tmp_path):
+        make_tagged_mp3(tmp_path / "Beyonce" / "Lemonade" / "6 Inch.mp3", "6 Inch", "Beyoncé", "Lemonade")
+
+        scanner.scan_folder(session, tmp_path)
+
+        assert session.scalar(select(Track)).title == "6 Inch"
+
+
+class TestRepeatedCatalogNumbers:
+    """2026-10-16 - a file tagged "986113-7, 986113-7, 986113-7" no longer
+    matched its album's catalog number, so the album was made again."""
+
+    def test_repeats_and_placeholders_collapse(self):
+        assert scanner._distinct_catalog_numbers("986113-7, 986113-7, 986113-7") == "986113-7"
+        assert scanner._distinct_catalog_numbers("196588383021, [none], [none]") == "196588383021"
+        assert scanner._distinct_catalog_numbers("none, none") == ""
+        assert scanner._distinct_catalog_numbers("810 308-2, D-170402") == "810 308-2, D-170402"
+
+    def test_only_a_label_repeated_whole_is_shortened(self):
+        assert scanner._distinct_label("RCA, RCA") == "RCA"
+        assert scanner._distinct_label("Island; Island, Island") == "Island"
+        assert scanner._distinct_label("BMG Direct Marketing, Inc.") == "BMG Direct Marketing, Inc."
+        assert scanner._distinct_label("Def Jam South, Disturbing tha Peace") == \
+            "Def Jam South, Disturbing tha Peace"
+
+    def test_a_retag_repeating_the_catalog_number_stays_on_the_same_album(self, session, tmp_path):
+        song = tmp_path / "Ludacris" / "Chicken-N-Beer" / "Stand Up.mp3"
+        make_tagged_mp3(song, "Stand Up", "Ludacris", "Chicken-N-Beer",
+                        album_artist="Ludacris", catalog="986113-7")
+        scanner.scan_folder(session, tmp_path)
+        first = session.scalar(select(Release))
+
+        make_tagged_mp3(song, "Stand Up", "Ludacris", "Chicken-N-Beer",
+                        album_artist="Ludacris", catalog="986113-7, 986113-7, 986113-7")
+        _touch_newer(song)
+        scanner.scan_folder(session, tmp_path)
+
+        releases = session.scalars(select(Release)).all()
+        assert [r.id for r in releases] == [first.id]
+        assert releases[0].catalog_number == "986113-7"
+
+
+class TestAFolderOfManyAlbums:
+    """2026-10-16 - James's "Old78Records" and "BPM" folders hold one record
+    or single per file, each tagged with its own album artist; the folder's
+    most common album artist was put on all of them."""
+
+    def test_each_album_in_a_folder_keeps_its_own_album_artist(self, session, tmp_path):
+        folder = tmp_path / "Old78Records"
+        make_tagged_mp3(folder / "Bing Crosby - White Christmas.mp3", "White Christmas",
+                        "Bing Crosby", "DECCA - 18429", album_artist="Bing Crosby")
+        make_tagged_mp3(folder / "Bing Crosby - Let It Snow.mp3", "Let It Snow",
+                        "Bing Crosby", "DECCA - 23281", album_artist="Bing Crosby")
+        make_tagged_mp3(folder / "Dinah Shore - Sleepy Lagoon.mp3", "Sleepy Lagoon",
+                        "Dinah Shore", "Victor - 27875", album_artist="Dinah Shore")
+        make_tagged_mp3(folder / "Dinah Shore - Three Little Sisters.mp3", "Three Little Sisters",
+                        "Dinah Shore", "Victor - 27875", album_artist="Dinah Shore")
+
+        scanner.scan_folder(session, tmp_path)
+
+        by_title = {r.title: r for r in session.scalars(select(Release))}
+        assert by_title["Victor - 27875"].artist_display == "Dinah Shore"
+        assert by_title["Victor - 27875"].album_artist.name == "Dinah Shore"
+        assert len(by_title["Victor - 27875"].tracks) == 2
+        assert by_title["DECCA - 18429"].artist_display == "Bing Crosby"
+
+    def test_untagged_singles_in_one_folder_are_each_their_performers(self, session, tmp_path):
+        folder = tmp_path / "BPM"
+        make_tagged_mp3(folder / "Adam Port & Stryv - Move.mp3", "Move", "Adam Port & Stryv", "Move")
+        make_tagged_mp3(folder / "Dom Dolla - Saving Up.mp3", "Saving Up", "Dom Dolla", "Saving Up")
+
+        scanner.scan_folder(session, tmp_path)
+
+        assert {r.title: r.artist_display for r in session.scalars(select(Release))} == {
+            "Move": "Adam Port & Stryv", "Saving Up": "Dom Dolla"}
+
+    def test_one_album_in_a_folder_is_still_decided_as_a_whole(self, session, tmp_path):
+        # an untagged compilation: one album, a different performer per file
+        folder = tmp_path / "Hits"
+        make_tagged_mp3(folder / "a.mp3", "One", "Performer One", "Hits")
+        make_tagged_mp3(folder / "b.mp3", "Two", "Performer Two", "Hits")
+
+        scanner.scan_folder(session, tmp_path)
+
+        release = session.scalar(select(Release))
+        assert release.artist_display == "Various Artists" and release.is_compilation
+
+
+class TestEmptyReleases:
+    """2026-10-16 - an album whose tracks all moved to another release (a
+    retag changed its album artist) was left on the artist page, empty."""
+
+    def test_a_release_its_tracks_all_left_is_removed(self, session, tmp_path):
+        from musicmgr.db.models import Master
+
+        song = tmp_path / "Album" / "Song.mp3"
+        make_tagged_mp3(song, "Song", "Singer", "Album", album_artist="Wrong Artist")
+        scanner.scan_folder(session, tmp_path)
+        make_tagged_mp3(song, "Song", "Singer", "Album", album_artist="Singer")
+        _touch_newer(song)
+
+        scanner.scan_folder(session, tmp_path)
+
+        releases = session.scalars(select(Release)).all()
+        assert [r.artist_display for r in releases] == ["Singer"]
+        masters = session.scalars(select(Master)).all()
+        assert [m.artist_display for m in masters] == ["Singer"]
+        assert masters[0].main_release_id == releases[0].id
+
+    def test_purge_empty_releases_leaves_releases_with_tracks(self, session, tmp_path):
+        make_silent_wav(tmp_path / "Artist" / "Album" / "01 Song.wav")
+        scanner.scan_folder(session, tmp_path)
+
+        assert scanner.purge_empty_releases(session) == 0
+        assert len(session.scalars(select(Release)).all()) == 1
+
+
+class TestOrphansFindTheirFileAgain:
+    """2026-10-16 - a rescan that found a song's file under a new path left
+    the old track behind with no file, keeping its plays and chart matches
+    while the new track had none."""
+
+    def _scan_then_move(self, session, tmp_path, new_path: Path) -> Track:
+        # moved to a new folder and retagged onto a best-of - a file under
+        # a new path on a new album is a new track to the scanner
+        old = tmp_path / "Old Folder" / "Song.mp3"
+        make_tagged_mp3(old, "Song", "Singer", "Album", album_artist="Singer")
+        scanner.scan_folder(session, tmp_path)
+        track = session.scalar(select(Track))
+        session.add(PlayEvent(track_id=track.id))
+        track.play_count = 3
+        session.flush()
+        old.unlink()
+        make_tagged_mp3(new_path, "Song", "Singer", "Greatest Hits", album_artist="Singer")
+        scanner.scan_folder(session, tmp_path)
+        scanner.mark_missing_files(session)
+        return track
+
+    def test_a_moved_files_old_track_hands_over_its_history(self, session, tmp_path):
+        old_track = self._scan_then_move(session, tmp_path, tmp_path / "New Folder" / "Song.mp3")
+        old_id = old_track.id
+        assert len(session.scalars(select(Track)).all()) == 2
+
+        removed = scanner.purge_orphaned_tracks(session)
+
+        session.expire_all()
+        tracks = session.scalars(select(Track)).all()
+        assert removed == 1 and len(tracks) == 1 and tracks[0].id != old_id
+        assert tracks[0].play_count == 3
+        assert session.scalar(select(PlayEvent)).track_id == tracks[0].id
+        assert len(session.scalars(select(Release)).all()) == 1
+
+    def test_no_handover_when_two_live_versions_could_be_it(self, session, tmp_path):
+        self._scan_then_move(session, tmp_path, tmp_path / "New Folder" / "Song.mp3")
+        make_tagged_mp3(tmp_path / "Other" / "Song.mp3", "Song", "Singer", "Other Album",
+                        album_artist="Singer")
+        scanner.scan_folder(session, tmp_path)
+
+        scanner.purge_orphaned_tracks(session)
+
+        # the old track keeps its play - it's not clear which version it was
+        session.expire_all()
+        event = session.scalar(select(PlayEvent))
+        assert all(f.is_missing for f in session.get(Track, event.track_id).files)
+
+    def test_another_artists_song_of_the_same_name_is_not_a_twin(self, session, tmp_path):
+        old = tmp_path / "Old Folder" / "Song.mp3"
+        make_tagged_mp3(old, "Song", "Singer", "Album", album_artist="Singer")
+        scanner.scan_folder(session, tmp_path)
+        track = session.scalar(select(Track))
+        session.add(PlayEvent(track_id=track.id))
+        session.flush()
+        old.unlink()
+        make_tagged_mp3(tmp_path / "Album" / "Song.mp3", "Song", "Someone Else", "Album",
+                        album_artist="Singer")
+        scanner.scan_folder(session, tmp_path)
+        scanner.mark_missing_files(session)
+
+        scanner.purge_orphaned_tracks(session)
+
+        session.expire_all()
+        assert session.scalar(select(PlayEvent)).track_id == track.id
