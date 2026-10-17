@@ -919,3 +919,62 @@ class TestCollapsibleGroups:
         content = view.findChild(QScrollArea).widget()
         assert not content.isAncestorOf(view.cancel_btn)
         assert not content.isAncestorOf(view.progress_label)
+
+
+class TestDownloadArtistProfilesScope:
+    """2026-10-17 - James: "Is there a way I can decide to completely skip
+    an artist profile if one exists vs. always checking. This option takes
+    way too long." The bulk run asks whether to look up only artists never
+    tried before, or retry everyone."""
+
+    @pytest.fixture
+    def started(self, view, monkeypatch):
+        got = []
+
+        class FakeThread:
+            def __init__(self, ids, parent=None):
+                got.append(list(ids))
+                self.progress = self.finished_with = type(
+                    "S", (), {"connect": lambda *a: None})()
+
+            def start(self):
+                pass
+
+            def isRunning(self):
+                return False
+
+        monkeypatch.setattr(settings_module, "BioDownloadThread", FakeThread)
+        monkeypatch.setattr(view, "_show_cancel", lambda *a: None)
+        return got
+
+    def _artists(self, session):
+        from musicmgr.db.models import Artist
+        import datetime as dt
+        new = Artist(name="New Act", name_key="new act")
+        tried = Artist(name="Tried Act", name_key="tried act",
+                       profile_checked_at=dt.datetime(2026, 10, 1))
+        has_bio = Artist(name="Rush", name_key="rush", profile="Rush is a Canadian rock band.")
+        session.add_all([new, tried, has_bio])
+        session.commit()
+        return new, tried
+
+    def test_new_only_skips_artists_already_looked_up(self, view, session, started, monkeypatch):
+        new, tried = self._artists(session)
+        asked = []
+        monkeypatch.setattr(view, "_ask_profile_scope",
+                            lambda n, a: asked.append((n, a)) or "new")
+        view.download_artist_profiles()
+        assert asked == [(1, 2)]
+        assert started == [[new.id]]
+
+    def test_retry_all_includes_them(self, view, session, started, monkeypatch):
+        new, tried = self._artists(session)
+        monkeypatch.setattr(view, "_ask_profile_scope", lambda n, a: "all")
+        view.download_artist_profiles()
+        assert sorted(started[0]) == sorted([new.id, tried.id])
+
+    def test_cancel_starts_nothing(self, view, session, started, monkeypatch):
+        self._artists(session)
+        monkeypatch.setattr(view, "_ask_profile_scope", lambda n, a: None)
+        view.download_artist_profiles()
+        assert started == []

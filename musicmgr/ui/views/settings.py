@@ -2873,25 +2873,23 @@ class SettingsView(BaseView):
             self.ctx.notify(busy)
             return
 
-        artist_ids = bio_dl.artists_missing_bio()
-        if not artist_ids:
+        all_ids = bio_dl.artists_missing_bio()
+        if not all_ids:
             QMessageBox.information(
                 self, "Artist profiles", "Every artist already has a saved biography."
             )
             return
-
-        confirm = QMessageBox.question(
-            self,
-            "Download artist profiles",
-            f"Look up a short biography on Wikipedia for {len(artist_ids)} artist"
-            f"{'s' if len(artist_ids) != 1 else ''} with none saved yet?\n\n"
-            "This needs an internet connection and, being rate-limited to be "
-            "polite to a free public API, can take a while for a large library. "
-            "Continue?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if confirm != QMessageBox.Yes:
+        # 2026-10-17 - James: "Is there a way I can decide to completely
+        # skip an artist profile if one exists vs. always checking. This
+        # option takes way too long." Artists Wikipedia had nothing for (and
+        # ones whose bio isn't about music) used to be looked up again on
+        # every run; now they're remembered (Artist.profile_checked_at) and
+        # the run can be limited to artists never looked up before.
+        new_ids = bio_dl.artists_missing_bio(new_only=True)
+        choice = self._ask_profile_scope(len(new_ids), len(all_ids))
+        if choice is None:
             return
+        artist_ids = new_ids if choice == "new" else all_ids
 
         self.progress.setVisible(True)
         self.progress.setRange(0, len(artist_ids))
@@ -2901,6 +2899,47 @@ class SettingsView(BaseView):
         self._bio_thread.finished_with.connect(self._on_bio_done)
         self._bio_thread.start()
         self._show_cancel()
+
+    def _ask_profile_scope(self, new_count: int, all_count: int) -> Optional[str]:
+        """"new" (only artists never looked up), "all" (also retry every
+        artist looked up before with no luck, plus non-music bios), or None
+        to cancel. Kept separate so tests can answer it."""
+        retry_count = all_count - new_count
+
+        def artists(n: int) -> str:
+            return f"{n:,} artist{'s' if n != 1 else ''}"
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Download artist profiles")
+        box.setIcon(QMessageBox.Question)
+        lines = []
+        if new_count:
+            lines.append(f"{artists(new_count)} with no biography haven't been looked up yet.")
+        if retry_count:
+            lines.append(
+                f"{artists(retry_count)} were looked up before and Wikipedia had "
+                "nothing (or only a page that isn't about the music)."
+            )
+        lines.append("")
+        lines.append("Needs an internet connection. Retrying everyone can take a "
+                     "long time on a big library.")
+        box.setText("\n".join(lines))
+        new_btn = all_btn = None
+        if new_count:
+            new_btn = box.addButton(f"New artists only ({new_count:,})", QMessageBox.AcceptRole)
+        if retry_count:
+            label = (f"Retry all ({all_count:,})" if new_count
+                     else f"Retry them ({all_count:,})")
+            all_btn = box.addButton(label, QMessageBox.ActionRole)
+        cancel = box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(new_btn or cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if new_btn is not None and clicked is new_btn:
+            return "new"
+        if all_btn is not None and clicked is all_btn:
+            return "all"
+        return None
 
     def _on_bio_progress(self, done: int, total: int, name: str) -> None:
         self.progress.setRange(0, total)

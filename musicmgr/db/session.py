@@ -73,7 +73,8 @@ _COLUMN_ADDITIONS = {
     # dropping.
     "tracks": [("rating", "INTEGER"), ("lastfm_popularity", "INTEGER")],
     # 2026-10-01 radio - see db.models.Artist.similar_fetched_at
-    "artists": [("similar_fetched_at", "DATETIME")],
+    # 2026-10-17 - see db.models.Artist.profile_checked_at
+    "artists": [("similar_fetched_at", "DATETIME"), ("profile_checked_at", "DATETIME")],
     # 2026-10-03 - see db.models.RadioStation.off_air_since
     "radio_stations": [("off_air_since", "DATETIME")],
     # 2026-09-07 follow-up: genre chips on the Jukebox page (James: "I would

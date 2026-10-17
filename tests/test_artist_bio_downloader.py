@@ -338,3 +338,56 @@ class TestRadioFolderSkipped:
         queen = _artist_with_files(session, "Queen", r"D:\MusicFLAC\Queen\Radio\07 Radio Ga Ga.flac")
         session.commit()
         assert queen.id in bio_dl.artists_missing_bio()
+
+
+# -- 2026-10-17: "New artists only" ------------------------------------------
+#
+# James: "Is there a way I can decide to completely skip an artist profile
+# if one exists vs. always checking. This option takes way too long."
+
+
+class TestNewArtistsOnly:
+    def _run(self, session, artists, http=None):
+        session.commit()
+        result = bio_dl.download_bios_for_artists(
+            [a.id for a in artists], rate_limit_s=0, http=http or FakeActionWiki())
+        for a in artists:
+            session.refresh(a)
+        return result
+
+    def test_a_finished_lookup_is_remembered_found_or_not(self, session):
+        found, missing = make_artist(session, "Boston"), make_artist(session, "Nobody Ever")
+        assert set(bio_dl.artists_missing_bio(new_only=True)) == {found.id, missing.id}
+
+        self._run(session, [found, missing])
+
+        assert found.profile_checked_at is not None
+        assert missing.profile_checked_at is not None
+        # the unknown act is still "missing" for a full retry, not for new-only
+        assert missing.id in bio_dl.artists_missing_bio()
+        assert bio_dl.artists_missing_bio(new_only=True) == []
+
+    def test_new_only_skips_doubtful_bios(self, session):
+        artist = make_artist(session, "Boston")
+        artist.profile = WIKI["Boston"]["extract"]
+        artist.urls = "https://en.wikipedia.org/wiki/Boston"
+        session.commit()
+        assert artist.id in bio_dl.artists_missing_bio()
+        assert artist.id not in bio_dl.artists_missing_bio(new_only=True)
+
+    def test_a_network_failure_is_not_remembered(self, session):
+        class Down(FakeActionWiki):
+            def get(self, url, params=None, timeout=None):
+                import requests
+                raise requests.exceptions.ConnectionError("offline")
+
+        monkey_sleep = bio_dl.time.sleep
+        bio_dl.time.sleep = lambda s: None
+        try:
+            artist = make_artist(session, "Boston")
+            result = self._run(session, [artist], http=Down())
+        finally:
+            bio_dl.time.sleep = monkey_sleep
+        assert result.not_found == 0 and len(result.errors) == 1
+        assert artist.profile_checked_at is None
+        assert artist.id in bio_dl.artists_missing_bio(new_only=True)

@@ -110,6 +110,14 @@ class Artist(Base):
     #: fetched for this artist (rows in ArtistSimilar; none = Last.fm knew
     #: no similar artists). NULL = never fetched. See services/radio.py.
     similar_fetched_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
+    #: 2026-10-17 - when a Wikipedia biography lookup last *finished* for
+    #: this artist (found or not; a network error doesn't count). NULL =
+    #: never looked up. Lets Settings' "Download artist profiles…" offer a
+    #: "New artists only" run that skips everyone already tried (James:
+    #: "Is there a way I can decide to completely skip an artist profile if
+    #: one exists vs. always checking. This option takes way too long") -
+    #: see services/artist_bio_downloader.artists_missing_bio.
+    profile_checked_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
 
     __table_args__ = (UniqueConstraint("name_key", name="uq_artist_name_key"),)
 

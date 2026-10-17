@@ -44,6 +44,7 @@ for the same reason (LRCLIB's catalogue is just as ambiguous by title).
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 import time
@@ -142,6 +143,16 @@ class BioDownloadResult:
 # -- Wikipedia request/retry, the same shape as lyrics_downloader's --------
 
 
+def _failed(session: requests.Session) -> None:
+    """A request that gave up (retries exhausted, refused) - as opposed to
+    a 404, which really means "no such page". Marked on the session so
+    download_bio_for_artist doesn't record the artist as looked up when
+    the "nothing found" was really a network failure (2026-10-17, see
+    Artist.profile_checked_at)."""
+    session._wiki_failed = True  # type: ignore[attr-defined]
+    return None
+
+
 def _wiki_request(session: requests.Session, url: str, params: Optional[dict] = None) -> Optional[dict]:
     """GET a Wikipedia endpoint with retry handling: 429/5xx and
     timeouts/connection errors are retried with backoff; 404 means "no
@@ -158,7 +169,7 @@ def _wiki_request(session: requests.Session, url: str, params: Optional[dict] = 
                     log.warning(
                         "Wikipedia: HTTP %s after %d attempts", response.status_code, _MAX_RETRIES
                     )
-                    return None
+                    return _failed(session)
                 retry_after = response.headers.get("Retry-After")
                 try:
                     wait_seconds = float(retry_after) if retry_after else 2**attempt
@@ -173,16 +184,16 @@ def _wiki_request(session: requests.Session, url: str, params: Optional[dict] = 
         except requests.exceptions.Timeout:
             if attempt >= _MAX_RETRIES:
                 log.warning("Wikipedia: request timed out after %d attempts", _MAX_RETRIES)
-                return None
+                return _failed(session)
             time.sleep(2**attempt)
         except requests.exceptions.ConnectionError:
             if attempt >= _MAX_RETRIES:
                 log.warning("Wikipedia: connection failed after %d attempts", _MAX_RETRIES)
-                return None
+                return _failed(session)
             time.sleep(2**attempt)
         except requests.RequestException as exc:
             log.warning("Wikipedia: %s", exc)
-            return None
+            return _failed(session)
 
     return None
 
@@ -477,11 +488,19 @@ def download_bio_for_artist(
     if not _needs_lookup(artist, overwrite):
         return ArtistBioOutcome(artist.id, artist.name, "already_exists")
 
+    http._wiki_failed = False  # type: ignore[attr-defined] - see _failed
     try:
         summary = found if found is not _NOT_LOOKED_UP else _find_summary(http, artist.name)
     except Exception as exc:  # one bad artist must not stop a bulk run
         log.exception("bio lookup failed for %s", artist.name)
         return ArtistBioOutcome(artist.id, artist.name, "error", str(exc))
+    if not summary and getattr(http, "_wiki_failed", False):
+        return ArtistBioOutcome(artist.id, artist.name, "error", "couldn't reach Wikipedia")
+
+    # the lookup finished (found or not) - remembered so a "New artists
+    # only" run can skip this artist next time (see artists_missing_bio).
+    # Not set on an error above: a network hiccup isn't an answer.
+    artist.profile_checked_at = dt.datetime.now(dt.timezone.utc)
 
     if not summary:
         return ArtistBioOutcome(artist.id, artist.name, "not_found")
@@ -644,7 +663,7 @@ def radio_only_artists(db) -> set[int]:
     return any_file - non_radio
 
 
-def artists_missing_bio(limit: Optional[int] = None) -> list[int]:
+def artists_missing_bio(limit: Optional[int] = None, *, new_only: bool = False) -> list[int]:
     """Every artist id with no biography saved yet - what Settings' bulk
     "Download artist profiles…" button targets by default (overwrite=False
     would just skip these same rows one network round trip at a time
@@ -653,17 +672,28 @@ def artists_missing_bio(limit: Optional[int] = None) -> list[int]:
     2026-10-13: plus every artist whose fetched biography isn't about
     music (`is_doubtful` - the city for Boston), so one run puts those
     right; and never an artist whose files are all in the Radio folder
-    (`radio_only_artists`)."""
+    (`radio_only_artists`).
+
+    2026-10-17 - `new_only` (James: "Is there a way I can decide to
+    completely skip an artist profile if one exists vs. always checking.
+    This option takes way too long"): only artists with no biography that
+    have never been looked up (`Artist.profile_checked_at` is NULL). Every
+    artist Wikipedia had nothing for used to be looked up again on every
+    run, and so did every doubtful one, which is most of the time a big
+    library's run takes."""
     with session_scope() as db:
         stmt = select(Artist.id).where(
             (Artist.profile.is_(None)) | (Artist.profile == "")
         )
+        if new_only:
+            stmt = stmt.where(Artist.profile_checked_at.is_(None))
         ids = [row[0] for row in db.execute(stmt).all()]
-        doubtful = db.scalars(select(Artist).where(
-            Artist.profile.is_not(None), Artist.profile != "",
-            Artist.urls.like("%wikipedia.org/wiki/%"),
-        ))
-        ids.extend(a.id for a in doubtful if is_doubtful(a))
+        if not new_only:
+            doubtful = db.scalars(select(Artist).where(
+                Artist.profile.is_not(None), Artist.profile != "",
+                Artist.urls.like("%wikipedia.org/wiki/%"),
+            ))
+            ids.extend(a.id for a in doubtful if is_doubtful(a))
         # 2026-10-13: not the Radio folder's shows (radio_only_artists)
         radio = radio_only_artists(db)
         if radio:
