@@ -37,6 +37,7 @@ from .common import (
     Breadcrumb,
     CoverArt,
     LyricsDownloadThread,
+    NeighborArrows,
     TouchButton,
     TouchList,
     dim_label,
@@ -72,7 +73,21 @@ class ReleaseDetailPanel(QWidget):
         # embedded three-pane-browser instance, which isn't a "page" you
         # navigate back out of.
         self.breadcrumb = Breadcrumb()
-        layout.addWidget(self.breadcrumb)
+        # ‹ › previous/next album right after the trail (2026-10-17, James:
+        # "should we do the same on the Album < and >", after the artist
+        # page got its own pair). LibraryView decides what the neighbors
+        # are - the Albums grid's order, or the artist's releases when this
+        # page was opened from an artist page - and hides the pair entirely
+        # when there's no list to step through (opened from Now Playing or
+        # the Missing metadata dashboard).
+        crumb_row = QHBoxLayout()
+        crumb_row.setSpacing(0)
+        crumb_row.addWidget(self.breadcrumb, 0)
+        self.neighbor_arrows = NeighborArrows("album")
+        self.neighbor_arrows.setVisible(False)
+        crumb_row.addWidget(self.neighbor_arrows, 0)
+        crumb_row.addStretch(1)
+        layout.addLayout(crumb_row)
 
         detail = QFrame()
         detail.setObjectName("Card")

@@ -367,6 +367,48 @@ class Breadcrumb(QWidget):
         self.setVisible(bool(self._crumbs))
 
 
+class NeighborArrows(QWidget):
+    """A ‹ › pair that sits right after a `Breadcrumb` and steps to the
+    previous/next item at the same level - the artist page's previous/next
+    artist (2026-10-17, James: "I would like a way to click a right arrow
+    for next artist and < for a previous artist") and, the same day, the
+    album page's previous/next album ("should we do the same on the Album
+    < and >"). Same small round `#RowPageArrow` style as the cover rows'
+    own page buttons.
+
+    The owner decides what "previous"/"next" means and reports back
+    through `set_neighbors()`; a None name greys that arrow out (first or
+    last in the list), and the tooltip names where each arrow leads.
+    """
+
+    previousRequested = Signal()
+    nextRequested = Signal()
+
+    def __init__(self, noun: str, parent=None) -> None:
+        super().__init__(parent)
+        self._noun = noun
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 0, 0, 0)
+        row.setSpacing(6)
+        self.prev_btn = QPushButton("‹")
+        self.next_btn = QPushButton("›")
+        for btn, signal in ((self.prev_btn, self.previousRequested),
+                            (self.next_btn, self.nextRequested)):
+            btn.setObjectName("RowPageArrow")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(signal.emit)
+            row.addWidget(btn, 0, Qt.AlignVCenter)
+        self.set_neighbors(None, None)
+
+    def set_neighbors(self, previous_name: Optional[str], next_name: Optional[str]) -> None:
+        for btn, name, word in (
+            (self.prev_btn, previous_name, "Previous"),
+            (self.next_btn, next_name, "Next"),
+        ):
+            btn.setEnabled(name is not None)
+            btn.setToolTip(f"{word} {self._noun}: {name}" if name else "")
+
+
 def placeholder_pixmap(size: int, seed_text: str = "") -> QPixmap:
     """Deterministic striped tile with initials, for releases with no cover art.
 

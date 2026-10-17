@@ -78,3 +78,60 @@ def test_stepping_keeps_the_missing_metadata_root(view, artists):
     view.artist_detail.next_artist_btn.click()
     assert view.artist_detail.artist_id == artists["Big Country"].id
     assert view.artist_detail.breadcrumb.path == ["Missing metadata", "Big Country"]
+
+
+# -- album page (2026-10-17 - James: "should we do the same on the Album
+# < and >") ---------------------------------------------------------------
+
+
+@pytest.fixture
+def albums(session):
+    """Two AC/DC albums and one by Rush - the Albums grid sorts by artist,
+    then year, then title."""
+    made = {}
+    for artist_name, title, year in [
+        ("Rush", "Moving Pictures", 1981),
+        ("AC/DC", "Powerage", 1978),
+        ("AC/DC", "Let There Be Rock", 1977),
+    ]:
+        artist = lib.get_or_create_artist(session, artist_name)
+        release = lib.get_or_create_release(session, title, artist_name, year=year)
+        release.album_artist_id = artist.id
+        made[title] = release
+    session.flush()
+    session.commit()
+    return made
+
+
+def test_album_arrows_follow_albums_grid_order(view, albums):
+    view.select_mode("album")
+    view.album_grid.tileActivated.emit(albums["Let There Be Rock"].id)
+    page = view.album_detail
+    arrows = page.neighbor_arrows
+    assert not arrows.isHidden()
+    assert not arrows.prev_btn.isEnabled()
+    assert arrows.next_btn.toolTip() == "Next album: Powerage"
+
+    arrows.next_btn.click()
+    assert page.release_id == albums["Powerage"].id
+    assert page.breadcrumb.path == ["Albums", "Powerage"]
+    arrows.next_btn.click()
+    assert page.release_id == albums["Moving Pictures"].id
+    assert not arrows.next_btn.isEnabled()
+
+
+def test_album_arrows_from_artist_page_stay_within_that_artist(view, albums):
+    acdc = albums["Powerage"].album_artist_id
+    view._open_artist(acdc)
+    view.artist_detail.releaseActivated.emit(albums["Let There Be Rock"].id)
+    arrows = view.album_detail.neighbor_arrows
+    arrows.next_btn.click()
+    assert view.album_detail.release_id == albums["Powerage"].id
+    assert view.album_detail.breadcrumb.path == ["Artists", "AC/DC", "Powerage"]
+    # Moving Pictures is Rush's - not next in AC/DC's list
+    assert not arrows.next_btn.isEnabled()
+
+
+def test_album_arrows_hidden_when_opened_from_now_playing(view, albums):
+    view._open_release_from_elsewhere(albums["Powerage"].id)
+    assert view.album_detail.neighbor_arrows.isHidden()

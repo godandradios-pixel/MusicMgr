@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QScrollArea,
     QStackedWidget,
     QVBoxLayout,
@@ -33,6 +32,7 @@ from .common import (
     Breadcrumb,
     CoverArt,
     EmptyState,
+    NeighborArrows,
     PopularityDownloadThread,
     TouchButton,
     TouchList,
@@ -277,6 +277,7 @@ class ArtistDetailPanel(QWidget):
         self._artist_id: Optional[int] = None
         self._artist_name: str = ""
         self._tracks: list = []
+        self._release_ids: list[int] = []
         #: this artist's Last.fm chart (see ArtistTopTrack's docstring),
         #: rank-ordered, exactly as last fetched - empty until a fetch has
         #: ever run for this artist, in which case _refresh_top_tracks
@@ -365,28 +366,20 @@ class ArtistDetailPanel(QWidget):
         # 2026-10-17 - James: "When I'm on an artist page, I see the
         # breadcrumb Artist > Big Country. I would like a way to click a
         # right arrow for next artist and < for a previous artist." The two
-        # arrows sit right after the trail (not pushed to the card's far
-        # edge - the trailing stretch keeps them hugging the crumbs), using
-        # the same small round #RowPageArrow style as the cover rows' own
-        # ‹ › page buttons. Disabled at either end of the list; tooltips
-        # name the artist each one leads to.
+        # arrows (common.NeighborArrows) sit right after the trail, not
+        # pushed to the card's far edge - the trailing stretch keeps them
+        # hugging the crumbs.
         crumb_row = QHBoxLayout()
-        crumb_row.setSpacing(6)
+        crumb_row.setSpacing(0)
         crumb_row.addWidget(self.breadcrumb, 0)
-        self.prev_artist_btn = QPushButton("‹")
-        self.prev_artist_btn.setObjectName("RowPageArrow")
-        self.prev_artist_btn.setCursor(Qt.PointingHandCursor)
-        self.prev_artist_btn.clicked.connect(self.previousArtistRequested.emit)
-        self.next_artist_btn = QPushButton("›")
-        self.next_artist_btn.setObjectName("RowPageArrow")
-        self.next_artist_btn.setCursor(Qt.PointingHandCursor)
-        self.next_artist_btn.clicked.connect(self.nextArtistRequested.emit)
-        crumb_row.addSpacing(6)
-        crumb_row.addWidget(self.prev_artist_btn, 0, Qt.AlignVCenter)
-        crumb_row.addWidget(self.next_artist_btn, 0, Qt.AlignVCenter)
+        self.neighbor_arrows = NeighborArrows("artist")
+        self.neighbor_arrows.previousRequested.connect(self.previousArtistRequested.emit)
+        self.neighbor_arrows.nextRequested.connect(self.nextArtistRequested.emit)
+        self.prev_artist_btn = self.neighbor_arrows.prev_btn
+        self.next_artist_btn = self.neighbor_arrows.next_btn
+        crumb_row.addWidget(self.neighbor_arrows, 0)
         crumb_row.addStretch(1)
         meta.addLayout(crumb_row)
-        self.set_neighbors(None, None)
 
         self.name = QLabel("")
         self.name.setStyleSheet("font-size: 26px; font-weight: 700;")
@@ -541,12 +534,14 @@ class ArtistDetailPanel(QWidget):
         """Enable/label the ‹ › arrows beside the breadcrumb - None means
         there's no artist in that direction (first/last in the list), which
         greys that arrow out."""
-        for btn, name, word in (
-            (self.prev_artist_btn, previous_name, "Previous"),
-            (self.next_artist_btn, next_name, "Next"),
-        ):
-            btn.setEnabled(name is not None)
-            btn.setToolTip(f"{word} artist: {name}" if name else "")
+        self.neighbor_arrows.set_neighbors(previous_name, next_name)
+
+    @property
+    def release_ids(self) -> list[int]:
+        """This artist's releases in the coverflow's own order (by
+        sort_key, same as GatefoldCoverflow.set_tiles) - what the album
+        page's ‹ › arrows step through when it was opened from here."""
+        return list(self._release_ids)
 
     def set_artist(self, artist_id: Optional[int], root_label: str = "Artists") -> None:
         """`root_label` names the breadcrumb's leading crumb - "Artists"
@@ -558,6 +553,7 @@ class ArtistDetailPanel(QWidget):
         self._artist_id = artist_id
         self._artist_name = ""
         self._tracks = []
+        self._release_ids = []
         self._lastfm_top_tracks = []
         self._picks = []
         self._top_tracks = []
@@ -663,6 +659,7 @@ class ArtistDetailPanel(QWidget):
             f"{tracks} track{'s' if tracks != 1 else ''} · {format_duration(total_ms)}"
         )
         self.releases.set_tiles(tiles)
+        self._release_ids = [t.key for t in sorted(tiles, key=lambda t: t.sort_key)]
         self._refresh_top_tracks()
         # same reasoning as ReleaseDetailPanel.set_release - lets the
         # bottom PlayerBar's play button start this artist's tracks even

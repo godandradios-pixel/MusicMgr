@@ -163,6 +163,12 @@ class LibraryView(BaseView):
         #: arrows (2026-10-17) keep the same leading crumb while stepping
         #: from one artist to the next
         self._artist_root: Optional[tuple[str, Callable[[], None]]] = None
+        #: what the album page was last opened with - its breadcrumb
+        #: ancestors and the release-id list its ‹ › arrows step through
+        #: (None = no list, arrows hidden) - kept so stepping reopens the
+        #: next album with the same trail (see _open_release/_step_release)
+        self._release_ancestors: list[tuple[str, Callable[[], None]]] = []
+        self._release_siblings: Optional[Callable[[], list]] = None
         self._search_text = ""
 
         self.stats = dim_label("")
@@ -300,7 +306,7 @@ class LibraryView(BaseView):
         self.album_grid.tileActivated.connect(
             lambda rid: self._open_release(rid, [
                 ("Albums", lambda: self.panes.setCurrentIndex(PANE_ALBUM_GRID)),
-            ])
+            ], siblings=self._album_grid_order)
         )
         self.album_grid.videoActivated.connect(self._activate_video)
         self.album_grid.videoGroupActivated.connect(self._activate_video_group)
@@ -405,10 +411,14 @@ class LibraryView(BaseView):
 
     def _open_release_from_artist(self, release_id: int) -> None:
         artist_name = self.artist_detail.name.text() or "Artist"
+        # the artist page's own release order, captured now - the arrows
+        # keep stepping through *this* artist's releases even though
+        # nothing reloads the artist page while you're on the album page
+        release_ids = self.artist_detail.release_ids
         self._open_release(release_id, [
             ("Artists", lambda: self.panes.setCurrentIndex(PANE_ARTIST_GRID)),
             (artist_name, lambda: self.panes.setCurrentIndex(PANE_ARTIST_DETAIL)),
-        ])
+        ], siblings=lambda: release_ids)
 
     def _build_track_list(self) -> QWidget:
         self.track_panel = AlbumTracksPanel(self.ctx)
@@ -421,6 +431,8 @@ class LibraryView(BaseView):
     def _build_release_detail(self) -> QWidget:
         self.album_detail = ReleaseDetailPanel(self.ctx, art_size=190)
         self.album_detail.breadcrumb.crumbActivated.connect(self._on_release_breadcrumb)
+        self.album_detail.neighbor_arrows.previousRequested.connect(lambda: self._step_release(-1))
+        self.album_detail.neighbor_arrows.nextRequested.connect(lambda: self._step_release(1))
         return self.album_detail
 
     def _on_release_breadcrumb(self, index: int) -> None:
@@ -796,12 +808,73 @@ class LibraryView(BaseView):
         self.ctx.focusVideoArtistRequested.emit(artist)
 
     def _open_release(
-        self, release_id: int, ancestors: list[tuple[str, Callable[[], None]]]
+        self,
+        release_id: int,
+        ancestors: list[tuple[str, Callable[[], None]]],
+        siblings: Optional[Callable[[], list]] = None,
     ) -> None:
+        """`siblings` returns the release ids the page's ‹ › arrows step
+        through (2026-10-17) - the Albums grid's order, or an artist's
+        releases. None hides the arrows (Now Playing, Missing metadata:
+        there's no list to be "next" in)."""
+        self._release_ancestors = list(ancestors)
+        self._release_siblings = siblings
         self._release_breadcrumb_actions = [action for _, action in ancestors]
         self.album_detail.set_breadcrumb_ancestors([label for label, _ in ancestors])
         self.album_detail.set_release(release_id)
+        self._update_release_arrows(release_id)
         self.panes.setCurrentIndex(PANE_RELEASE_DETAIL)
+
+    def _album_grid_order(self) -> list:
+        """The Albums grid's on-screen order (live search included), or the
+        whole grid if the open album isn't among the filtered results."""
+        order = self.album_grid.item_keys()
+        current = self.album_detail.release_id
+        if current is not None and current not in order:
+            order = self.album_grid.item_keys(filtered=False)
+        return order
+
+    def _release_neighbors(self, release_id: int) -> tuple[Optional[int], Optional[int]]:
+        if self._release_siblings is None:
+            return None, None
+        order = self._release_siblings()
+        try:
+            i = order.index(release_id)
+        except ValueError:
+            return None, None
+        return (
+            order[i - 1] if i > 0 else None,
+            order[i + 1] if i + 1 < len(order) else None,
+        )
+
+    def _step_release(self, direction: int) -> None:
+        current = self.album_detail.release_id
+        if current is None:
+            return
+        prev_id, next_id = self._release_neighbors(current)
+        target = prev_id if direction < 0 else next_id
+        if target is not None:
+            self._open_release(target, self._release_ancestors, self._release_siblings)
+
+    def _update_release_arrows(self, release_id: int) -> None:
+        arrows = self.album_detail.neighbor_arrows
+        if self._release_siblings is None:
+            arrows.setVisible(False)
+            return
+        prev_id, next_id = self._release_neighbors(release_id)
+        titles: dict[int, str] = {}
+        wanted = [i for i in (prev_id, next_id) if i is not None]
+        if wanted:
+            with self.ctx.session() as session:
+                for row_id, title in session.execute(
+                    select(Release.id, Release.title).where(Release.id.in_(wanted))
+                ):
+                    titles[row_id] = title
+        arrows.set_neighbors(
+            titles.get(prev_id) if prev_id is not None else None,
+            titles.get(next_id) if next_id is not None else None,
+        )
+        arrows.setVisible(True)
 
     def _open_artist_from_elsewhere(self, artist_id: int) -> None:
         """ctx.openArtistRequested - Now Playing's tappable artist name
