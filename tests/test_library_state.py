@@ -941,3 +941,93 @@ class TestFolderPathNamedCopies:
         assert ls._unnest_name("", "Billboard/1951") == "Billboard/1951"
         assert ls._unnest_name("A/B", "A/B/A/B/1951") == "1951"
         assert ls._unnest_name("A/B", "A/B/") == "A/B/"
+
+
+class TestArtistProfiles:
+    """James: "In the Settings Sync - I would like the Artist profiles to
+    sync with the USB" (2026-10-17)."""
+
+    def _artist(self, s, name="Rush"):
+        return s.scalar(select(Artist).where(Artist.name == name))
+
+    def test_profiles_travel_and_edits_and_clears_follow(self, two_pcs):
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            rush = self._artist(s)
+            rush.profile = "Rush were a Canadian rock band."
+            rush.urls = "https://en.wikipedia.org/wiki/Rush_(band)"
+        notes = pc1.sync()
+        assert notes.profiles_out == 1 and "1 artist profile" in notes.summary()
+
+        notes = pc2.sync()
+        assert notes.profiles_set == 1 and notes.received()
+        with db_session.session_scope() as s:
+            rush = self._artist(s)
+            assert rush.profile == "Rush were a Canadian rock band."
+            assert rush.urls == "https://en.wikipedia.org/wiki/Rush_(band)"
+            rush.profile = "Rush were a Canadian rock trio."
+        pc2.sync()
+        assert pc1.sync().profiles_set == 1
+        with db_session.session_scope() as s:
+            assert self._artist(s).profile == "Rush were a Canadian rock trio."
+            self._artist(s).profile = None    # cleared by hand on PC1
+        pc1.sync()
+        notes = pc2.sync()
+        assert notes.profiles_cleared == 1
+        with db_session.session_scope() as s:
+            assert self._artist(s).profile is None
+        assert pc1.sync().summary() == "Library data already in sync"
+        assert pc2.sync().summary() == "Library data already in sync"
+
+    def test_an_artist_this_pc_lacks_gets_its_profile_when_it_arrives(self, two_pcs):
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            s.add(Artist(name="Boston", name_key="boston", profile="Boston is a rock band."))
+        pc1.sync()
+        assert pc2.sync().profiles_set == 0      # no Boston on PC2 yet
+        # ...and PC2 doesn't send it away again
+        pc1.use()
+        with db_session.session_scope() as s:
+            assert s.scalar(select(Artist).where(Artist.name_key == "boston")).profile
+        pc1.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            s.add(Artist(name="Boston", name_key="boston"))
+        assert pc2.sync().profiles_set == 1
+        with db_session.session_scope() as s:
+            assert s.scalar(select(Artist).where(Artist.name_key == "boston")).profile == (
+                "Boston is a rock band.")
+
+    def test_switched_off_profiles_stay_put(self, two_pcs):
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            self._artist(s).profile = "Rush were a Canadian rock band."
+        pc1.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            ls.set_category_enabled(s, ls.PROFILES, False)
+        assert pc2.sync().profiles_set == 0
+        with db_session.session_scope() as s:
+            assert self._artist(s).profile is None
+            ls.set_category_enabled(s, ls.PROFILES, True)
+        assert pc2.sync().profiles_set == 1
+
+    def test_a_drive_written_before_profile_sync_clears_nothing(self, two_pcs):
+        pc1, _pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            self._artist(s).profile = "Rush were a Canadian rock band."
+        pc1.sync()
+        path = ls.usb_state_path(pc1.drive)
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+        data.pop(ls.PROFILES, None)
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        notes = pc1.sync()
+        assert notes.profiles_cleared == 0
+        with db_session.session_scope() as s:
+            assert self._artist(s).profile

@@ -21,6 +21,11 @@ library.db - never the database file itself:
   opens. Rides with it, old-time radio progress: each show's band, which
   episodes were heard and where one was stopped (services/otr_sync.py);
   the show files themselves are each PC's own radio folder
+- **artist profiles** (2026-10-17 - James: "In the Settings Sync - I would
+  like the Artist profiles to sync with the USB"): the biography text on
+  each artist's page (Artist.profile) and its source links (Artist.urls),
+  keyed by the artist's name_key. Artist photos already travel as files
+  with the artists folder; Last.fm top tracks are fetched by each PC
 
 Everything is keyed by names and paths, never by database ids (ids differ
 on every PC). A track's key is its path inside a synced folder, as the
@@ -111,9 +116,11 @@ CHARTS = "charts"
 #: old-time radio progress (otr_sync.py)
 RADIO = "radio"
 OTR = "otr"
-CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS, RADIO)
+#: artist biographies and their source links (2026-10-17)
+PROFILES = "profiles"
+CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS, RADIO, PROFILES)
 #: the ones kept in library-state.json.gz itself
-_STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, RADIO)
+_STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, RADIO, PROFILES)
 #: what a station carries (keyed by its stream address)
 _STATION_FIELDS = ("name", "band", "dial_order", "homepage", "favicon_url", "country",
                    "tags", "codec", "bitrate", "rb_uuid")
@@ -444,7 +451,7 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
 
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: read_images(db), FOLDERS: {path: True for path in _folders_by_path(db)},
-            RADIO: read_stations(db), OTR: _read_otr(db)}
+            RADIO: read_stations(db), OTR: _read_otr(db), PROFILES: read_profiles(db)}
 
 
 def _read_otr(db: Session) -> dict:
@@ -493,6 +500,61 @@ def apply_stations(db: Session, merged: dict, local: dict, notes: "MergeNotes") 
         st.dial_order = st.dial_order or 0
         if st.favicon_url != old_logo:
             st.favicon_path = None  # fetched again for the new picture
+    db.flush()
+
+
+# --------------------------------------------------------------------------
+# artist profiles (2026-10-17)
+# --------------------------------------------------------------------------
+
+
+def read_profiles(db: Session) -> dict[str, dict]:
+    """Every artist with a biography, by name_key: its text and source
+    links (newline separated, as Artist.urls keeps them)."""
+    out: dict[str, dict] = {}
+    for artist in db.scalars(select(Artist).where(Artist.profile.is_not(None),
+                                                  Artist.profile != "")):
+        if artist.name_key and artist.name_key not in out:
+            out[artist.name_key] = {"profile": artist.profile, "urls": artist.urls or None}
+    return out
+
+
+def carry_profiles(local: dict, base: dict, artists: set[str]) -> set[str]:
+    """Profiles of artists this PC doesn't have - or didn't have at the
+    last sync, so the profile was never placed here - must not look like
+    local removals. Put them back as the base had them; returns the keys
+    put back, which `apply_profiles` sets once the artist is here."""
+    was_missing = set(base.get("profiles_unplaced") or [])
+    carried = set()
+    for key, value in (base.get(PROFILES) or {}).items():
+        if key not in local[PROFILES] and (key not in artists or key in was_missing):
+            local[PROFILES][key] = value
+            carried.add(key)
+    return carried
+
+
+def apply_profiles(db: Session, merged: dict, local: dict, notes: "MergeNotes",
+                   carried: set[str] = frozenset()) -> None:
+    """Set or clear the biographies that changed on the drive. An artist
+    this PC doesn't have yet gets its profile once it arrives (see
+    carry_profiles)."""
+    want = merged.get(PROFILES) or {}
+    by_key = {a.name_key: a for a in db.scalars(select(Artist))}
+    for key in set(notes.profiles_in) | set(carried) | set(notes.profiles_removed):
+        artist = by_key.get(key)
+        if artist is None:
+            continue
+        value = want.get(key)
+        if value is None:
+            if artist.profile:
+                artist.profile = None
+                notes.profiles_cleared += 1
+            continue
+        if artist.profile == value.get("profile") and (artist.urls or None) == value.get("urls"):
+            continue
+        artist.profile = value.get("profile")
+        artist.urls = value.get("urls")
+        notes.profiles_set += 1
     db.flush()
 
 
@@ -613,7 +675,8 @@ def _set(db: Session, key: str, value: str) -> None:
 
 def empty_state() -> dict:
     return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": [],
-            IMAGES: {}, "images_unplaced": [], FOLDERS: {}, RADIO: {}, OTR: {}}
+            IMAGES: {}, "images_unplaced": [], FOLDERS: {}, RADIO: {}, OTR: {},
+            PROFILES: {}, "profiles_unplaced": []}
 
 
 def load_state(path: Path) -> Optional[dict]:
@@ -639,6 +702,9 @@ def load_state(path: Path) -> Optional[dict]:
         state[RADIO] = None
     if OTR not in data:
         state[OTR] = None
+    if PROFILES not in data:
+        # ...and artist profiles (2026-10-17)
+        state[PROFILES] = None
     if data.get("playlist_keys") != PLAYLIST_KEYS:
         if state["playlists"]:
             # written by a MusicMgr from before 1.7.1 (2026-10-14): which PC,
@@ -655,7 +721,7 @@ def save_state(path: Path, state: dict, pc_id: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = dict(state)
     data.pop(OLD_BUILD, None)
-    for key in ("unresolved", "images_unplaced"):
+    for key in ("unresolved", "images_unplaced", "profiles_unplaced"):
         if key in data and not data[key]:
             data.pop(key)
     data["format"] = FORMAT
@@ -728,6 +794,15 @@ class MergeNotes:
     #: the drive was last written by a MusicMgr from before 1.7.1 - that
     #: PC's id, or "unknown"; it makes those copies and needs updating
     old_build_pc: Optional[str] = None
+    #: artist profiles (2026-10-17), by name_key: changed / cleared on the
+    #: drive, and how many this PC sent
+    profiles_in: list[str] = field(default_factory=list)
+    profiles_removed: list[str] = field(default_factory=list)
+    profiles_out: int = 0
+    #: of those, how many were really set / cleared here (an artist this PC
+    #: doesn't have waits for it - see carry_profiles)
+    profiles_set: int = 0
+    profiles_cleared: int = 0
 
     def received(self) -> bool:
         """Did anything change in this library? (Views refresh if so.)"""
@@ -735,7 +810,7 @@ class MergeNotes:
                     or self.playlists_removed or self.images_in or self.folders_in
                     or self.folders_removed or self.board_in
                     or self.stations_in or self.stations_removed or self.otr_in
-                    or self.nested_cleaned
+                    or self.nested_cleaned or self.profiles_set or self.profiles_cleared
                     or (self.charts is not None
                         and (self.charts.charts_in or self.charts.charts_removed)))
 
@@ -780,6 +855,12 @@ class MergeNotes:
             parts.append(f"{n} radio station{'s' if n != 1 else ''} removed")
         if self.otr_in:
             parts.append("radio show progress updated")
+        if self.profiles_set:
+            n = self.profiles_set
+            parts.append(f"{n:,} artist profile{'s' if n != 1 else ''} updated")
+        if self.profiles_cleared:
+            n = self.profiles_cleared
+            parts.append(f"{n:,} artist profile{'s' if n != 1 else ''} cleared")
         ch = self.charts
         if ch is not None:
             if ch.charts_in:
@@ -820,6 +901,9 @@ class MergeNotes:
             sent.append(f"{n} radio station{'s' if n != 1 else ''}")
         if self.otr_out:
             sent.append("radio show progress")
+        if self.profiles_out:
+            n = self.profiles_out
+            sent.append(f"{n:,} artist profile{'s' if n != 1 else ''}")
         if ch is not None and ch.charts_out:
             n = ch.charts_out
             sent.append(f"{n} chart{'s' if n != 1 else ''}")
@@ -964,8 +1048,16 @@ def merge(local: dict, usb: dict, base: dict,
     notes.otr_in = len(taken_otr) + sum(1 for k in (local.get(OTR) or {}) if k not in otr)
     notes.otr_out = _changed(otr, usb.get(OTR) or {})
 
+    # artist profiles: three-way per artist; changed on both -> this PC's
+    local_pr = local.get(PROFILES) or {}
+    profiles, taken_pr = _merge_dict(local_pr, usb.get(PROFILES) or {}, base.get(PROFILES) or {})
+    notes.profiles_in = sorted(k for k in taken_pr if profiles[k] != local_pr.get(k))
+    notes.profiles_removed = sorted(k for k in local_pr if k not in profiles)
+    notes.profiles_out = _changed(profiles, usb.get(PROFILES) or {})
+
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
-            IMAGES: images, FOLDERS: folders, RADIO: stations, OTR: otr}, notes
+            IMAGES: images, FOLDERS: folders, RADIO: stations, OTR: otr,
+            PROFILES: profiles}, notes
 
 
 # --------------------------------------------------------------------------
@@ -1318,7 +1410,7 @@ def revive(merged: dict, base: dict, idx: TrackIndex, notes: "MergeNotes") -> No
 
 
 def enabled_categories(db: Session) -> frozenset:
-    """Which of plays/ratings/playlists/Jukebox/charts/radio this PC syncs (Settings →
+    """Which of plays/ratings/playlists/Jukebox/charts/radio/profiles this PC syncs (Settings →
     USB sync checkboxes, all on by default - 2026-09-24)."""
     return frozenset(
         cat for cat in CATEGORIES
@@ -1393,6 +1485,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         base[OTR] = {}
     if usb[OTR] is None:
         usb[OTR] = copy.deepcopy(base[OTR])
+    if base[PROFILES] is None:
+        base[PROFILES] = {}
+    if usb[PROFILES] is None:
+        # ...or artist profiles
+        usb[PROFILES] = copy.deepcopy(base[PROFILES])
     original_base = dict(base)
     for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS + _WITH_RADIO:
         if not _included(cat, include):
@@ -1407,6 +1504,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         carry_unplaced(local[OTR], base[OTR], otr_idx)
     targets = _image_targets(db)
     carried = carry_images(local, base, targets) if PLAYLISTS in include else set()
+    carried_pr = (carry_profiles(local, base, set(db.scalars(select(Artist.name_key))))
+                  if PROFILES in include else set())
     merged, notes = merge(local, usb, base, otr_prefer_usb=otr_idx.prefer_usb)
     notes.nested_cleaned = nested
     notes.old_build_pc = usb.get(OLD_BUILD)
@@ -1435,6 +1534,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     if RADIO not in include:
         notes.stations_in, notes.stations_removed, notes.stations_out = [], [], 0
         notes.otr_in = notes.otr_out = 0
+    if PROFILES not in include:
+        notes.profiles_in, notes.profiles_removed, notes.profiles_out = [], [], 0
     apply_state(db, idx, local, merged, notes, include)
     if RADIO in include:
         apply_stations(db, merged, local, notes)
@@ -1442,6 +1543,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     if PLAYLISTS in include:
         # after apply_state, so playlists/folders that just arrived get theirs
         apply_images(db, merged, local, notes, carried)
+    if PROFILES in include:
+        apply_profiles(db, merged, local, notes, carried_pr)
     if notes.lost_board is not None:
         from .usb_sync import usb_deleted_dir
 
@@ -1463,6 +1566,12 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         base_copy["images_placed"] = base.get("images_placed")
     targets = _image_targets(db)
     base_copy["images_unplaced"] = sorted(k for k in base_copy[IMAGES] or {} if k not in targets)
+    if PROFILES in include:
+        artist_keys = set(db.scalars(select(Artist.name_key)))
+        base_copy["profiles_unplaced"] = sorted(
+            k for k in base_copy[PROFILES] or {} if k not in artist_keys)
+    else:
+        base_copy["profiles_unplaced"] = base.get("profiles_unplaced") or []
     base_copy["unresolved"] = sorted(k for k in _referenced_keys(merged) if not _resolvable(idx, k))
     save_state(base_state_path(drive), base_copy, pc_id)
     if CHARTS in include:

@@ -1361,6 +1361,9 @@ class SettingsView(BaseView):
             # 2026-09-30 - James: "I would like to have Charts be added"
             (library_state.CHARTS, "Charts"),
             (library_state.RADIO, "Radio"),
+            # 2026-10-17 - James: "I would like the Artist profiles to sync
+            # with the USB"
+            (library_state.PROFILES, "Artist profiles"),
         ):
             cb = QCheckBox(text)
             if cat == library_state.PLAYLISTS:
@@ -1374,6 +1377,9 @@ class SettingsView(BaseView):
             if cat == library_state.CHARTS:
                 cb.setToolTip("Imported charts, their folders and editions, and matches "
                               "fixed by hand. Each PC matches the rest to its own library")
+            if cat == library_state.PROFILES:
+                cb.setToolTip("The biography on each artist's page and the links it came "
+                              "from. Artist photos travel with the artwork files")
             cb.toggled.connect(lambda on, cat=cat: self._save_usb_data_choice(cat, on))
             self.usb_data_cbs[cat] = cb
             data_row.addWidget(cb)
