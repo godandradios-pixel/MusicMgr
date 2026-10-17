@@ -1350,8 +1350,11 @@ class SettingsView(BaseView):
         # 2026-09-24 - James: "do I have the option to sync Jukebox entries
         # or to ignore?" -> "Add check boxes for all 4". Per PC; see
         # services/library_state.py:sync_library_state's `include`.
-        data_row = QHBoxLayout()
-        data_row.addWidget(dim_label("Also sync library data:"))
+        # 2026-10-17: a grid, now there are too many for one row
+        usb_layout.addWidget(dim_label("Also sync library data:"))
+        data_row = QGridLayout()
+        data_row.setHorizontalSpacing(18)
+        data_cols = 4
         self.usb_data_cbs: dict[str, QCheckBox] = {}
         for cat, text in (
             (library_state.PLAYS, "Plays"),
@@ -1367,6 +1370,10 @@ class SettingsView(BaseView):
             # 2026-10-17 - James: "Please also add the Last.fm top-tracks
             # as a sync option"
             (library_state.TOP_TRACKS, "Top songs"),
+            # 2026-10-17 - James: "Please proceed with 2., 3., and 4."
+            (library_state.SIMILAR, "Similar artists"),
+            (library_state.TUNER, "Radio dial"),
+            (library_state.PREFS, "Playback & look"),
         ):
             cb = QCheckBox(text)
             if cat == library_state.PLAYLISTS:
@@ -1386,10 +1393,22 @@ class SettingsView(BaseView):
             if cat == library_state.TOP_TRACKS:
                 cb.setToolTip("Each artist's Last.fm top tracks, and the top songs "
                               "chosen by hand to show instead")
+            if cat == library_state.SIMILAR:
+                cb.setToolTip("Last.fm's similar artists, which \"radio from this song\" "
+                              "picks from, so the other PC needn't fetch them again")
+            if cat == library_state.TUNER:
+                cb.setToolTip("Where the Radio page's dial was left: the band, the "
+                              "station or show tuned in, and the static switch")
+            if cat == library_state.PREFS:
+                cb.setToolTip("Crossfade, volume levelling and preamp, the record player "
+                              "on Now Playing, and the skin and finishes (a new look shows "
+                              "after a restart). Off unless switched on: each PC may want "
+                              "its own")
             cb.toggled.connect(lambda on, cat=cat: self._save_usb_data_choice(cat, on))
+            n = len(self.usb_data_cbs)
             self.usb_data_cbs[cat] = cb
-            data_row.addWidget(cb)
-        data_row.addStretch(1)
+            data_row.addWidget(cb, n // data_cols, n % data_cols)
+        data_row.setColumnStretch(data_cols, 1)
         usb_layout.addLayout(data_row)
         # 2026-10-06 - James: "when doing a USB scan, why do I need 2
         # progress bars?" The group used to have its own bar as well as the
@@ -1879,6 +1898,16 @@ class SettingsView(BaseView):
         if data_changed:
             self.ctx.libraryChanged.emit()
             self.ctx.playlistsChanged.emit()
+        if notes is not None and notes.prefs_in:
+            # 2026-10-17: playback & look arrived - show them, play by them
+            self._load_playback_prefs()
+            self.ctx.player.reload_prefs()
+            saved_look = skins.load_choice()
+            for kind, box in self.look_combos.items():
+                box.blockSignals(True)
+                box.setCurrentIndex(max(0, box.findData(saved_look[kind])))
+                box.blockSignals(False)
+            self._sync_look_status()
         if result is not None and getattr(result, "artwork_changed", False):
             clear_art_cache()
         if result is not None and (result.new_local_paths or result.removed_local_paths):

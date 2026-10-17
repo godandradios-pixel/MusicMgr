@@ -373,7 +373,8 @@ class TestLibraryDataChoices:
 
         view, *_ = setup
         assert set(view.usb_data_cbs) == set(ls.CATEGORIES)
-        assert all(cb.isChecked() for cb in view.usb_data_cbs.values())
+        assert all(cb.isChecked() == (cat not in ls.DEFAULT_OFF)
+                   for cat, cb in view.usb_data_cbs.items())
         view.usb_data_cbs[ls.JUKEBOX].setChecked(False)
         with ctx.session() as db:
             assert ls.JUKEBOX not in ls.enabled_categories(db)

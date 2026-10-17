@@ -230,8 +230,9 @@ class TestUnplaceable:
 class TestChoices:
     def test_defaults_all_on_and_saved_per_pc(self, db):
         with db_session.session_scope() as s:
-            assert ls.enabled_categories(s) == frozenset(ls.CATEGORIES)
+            assert ls.enabled_categories(s) == frozenset(ls.CATEGORIES) - ls.DEFAULT_OFF
             ls.set_category_enabled(s, ls.JUKEBOX, False)
+            ls.set_category_enabled(s, ls.PREFS, True)
             assert ls.enabled_categories(s) == frozenset(ls.CATEGORIES) - {ls.JUKEBOX}
 
     def test_jukebox_off_neither_sends_nor_takes_then_on_merges(self, two_pcs):
@@ -1136,3 +1137,180 @@ class TestTopSongs:
         assert pc1.sync().top_tracks_cleared == 0
         with db_session.session_scope() as s:
             assert self._top(s)[1] == [("Tom Sawyer", 900)]
+
+
+class TestSimilarArtists:
+    """2026-10-17 - Last.fm similar artists ("radio from this song")."""
+
+    def _similar(self, s, name="Rush"):
+        from musicmgr.db.models import ArtistSimilar
+
+        artist = s.scalar(select(Artist).where(Artist.name == name))
+        rows = [(r.name, r.match) for r in s.scalars(
+            select(ArtistSimilar).where(ArtistSimilar.artist_id == artist.id)
+            .order_by(ArtistSimilar.match.desc()))]
+        return artist, rows
+
+    def _fetch(self, s, artist, entries, when):
+        import datetime as dt
+
+        from musicmgr.db.models import ArtistSimilar
+
+        s.execute(ArtistSimilar.__table__.delete().where(ArtistSimilar.artist_id == artist.id))
+        for name, match in entries:
+            s.add(ArtistSimilar(artist_id=artist.id, name=name, name_key=name.lower(),
+                                match=match))
+        artist.similar_fetched_at = dt.datetime(2026, 10, when, tzinfo=dt.timezone.utc)
+
+    def test_similar_artists_travel_and_the_newer_fetch_wins(self, two_pcs):
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            artist, _ = self._similar(s)
+            self._fetch(s, artist, [("Yes", 0.9), ("Genesis", 0.7)], when=1)
+        assert pc1.sync().similar_out == 1
+        notes = pc2.sync()
+        assert notes.similar_set == 1
+        with db_session.session_scope() as s:
+            artist, rows = self._similar(s)
+            assert rows == [("Yes", 0.9), ("Genesis", 0.7)]
+            assert artist.similar_fetched_at is not None
+        # both PCs fetch again before the next sync: the later fetch wins
+        pc1.use()
+        with db_session.session_scope() as s:
+            self._fetch(s, self._similar(s)[0], [("Triumph", 0.8)], when=5)
+        pc2.use()
+        with db_session.session_scope() as s:
+            self._fetch(s, self._similar(s)[0], [("Styx", 0.6)], when=3)
+        pc2.sync()
+        assert pc1.sync().similar_set == 0          # PC1's is newer
+        assert pc2.sync().similar_set == 1
+        with db_session.session_scope() as s:
+            assert self._similar(s)[1] == [("Triumph", 0.8)]
+        assert pc1.sync().summary() == "Library data already in sync"
+        assert pc2.sync().summary() == "Library data already in sync"
+
+
+class TestPlaybackAndLook:
+    """2026-10-17 - playback preferences and the skin; off by default."""
+
+    def _look(self, pc):
+        path = pc.data / "appearance.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def _switch_on(self, *pcs):
+        for pc in pcs:
+            pc.use()
+            with db_session.session_scope() as s:
+                ls.set_category_enabled(s, ls.PREFS, True)
+
+    def test_off_by_default_moves_nothing(self, two_pcs):
+        from musicmgr.services import playback_prefs
+
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            playback_prefs.save(s, playback_prefs.PlaybackPrefs(crossfade_s=6))
+        pc1.sync()
+        pc2.sync()
+        with db_session.session_scope() as s:
+            assert playback_prefs.load(s).crossfade_s == 0
+
+    def test_prefs_and_look_travel(self, two_pcs):
+        from musicmgr.services import playback_prefs
+        from musicmgr.ui import skins
+
+        pc1, pc2, _drive = two_pcs
+        self._switch_on(pc1, pc2)
+        pc1.use()
+        with db_session.session_scope() as s:
+            playback_prefs.save(s, playback_prefs.PlaybackPrefs(
+                crossfade_s=6, levelling=playback_prefs.LEVELLING_ALBUM, preamp_db=-3.0))
+        skins.save_choice({"skin": "midnight", "jukebox": "gold", "radio": "oak",
+                           "turntable": "black"}, pc1.data / "appearance.json")
+        assert pc1.sync().prefs_out
+        notes = pc2.sync()
+        assert notes.prefs_in and notes.look_in and "restart" in notes.summary()
+        with db_session.session_scope() as s:
+            prefs = playback_prefs.load(s)
+            assert (prefs.crossfade_s, prefs.levelling, prefs.preamp_db) == (6, "album", -3.0)
+        assert self._look(pc2) == {"skin": "midnight", "jukebox": "gold", "radio": "oak",
+                                   "turntable": "black"}
+        assert pc1.sync().summary() == "Library data already in sync"
+        assert pc2.sync().summary() == "Library data already in sync"
+
+
+class TestRadioDial:
+    """2026-10-17 - where the Radio page's dial was left."""
+
+    def _setting(self, s, key):
+        from musicmgr.db.models import Setting
+
+        row = s.get(Setting, key)
+        return row.value if row else None
+
+    def _put(self, s, key, value):
+        from musicmgr.db.models import Setting
+
+        row = s.get(Setting, key)
+        if row is None:
+            s.add(Setting(key=key, value=value))
+        else:
+            row.value = value
+
+    def test_band_and_station_travel_by_stream_address(self, two_pcs):
+        from musicmgr.services import stations as st_svc
+
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            st_svc.add_manual(s, "KDKA", "https://live.example/kdka", band="am")
+            wdve = st_svc.add_manual(s, "WDVE", "https://live.example/wdve")
+            s.flush()
+            self._put(s, "tuner_band", "fm")
+            self._put(s, "tuner_static", "0")
+            self._put(s, "tuner_last", f"station|{wdve.id}")
+        assert pc1.sync().tuner_out
+        pc2.use()
+        with db_session.session_scope() as s:   # PC2's ids differ from PC1's
+            st_svc.add_manual(s, "Other", "https://live.example/other")
+        notes = pc2.sync()
+        assert notes.tuner_in == 3
+        with db_session.session_scope() as s:
+            from musicmgr.db.models import RadioStation
+
+            wdve = s.scalar(select(RadioStation).where(RadioStation.name == "WDVE"))
+            assert self._setting(s, "tuner_last") == f"station|{wdve.id}"
+            assert self._setting(s, "tuner_band") == "fm"
+            assert self._setting(s, "tuner_static") == "0"
+        assert pc1.sync().stations_in == ["https://live.example/other"]
+        assert pc1.sync().summary() == "Library data already in sync"
+        assert pc2.sync().summary() == "Library data already in sync"
+
+    def test_a_station_this_pc_lacks_leaves_its_dial_and_sends_nothing_back(self, two_pcs):
+        from musicmgr.services import stations as st_svc
+
+        pc1, pc2, _drive = two_pcs
+        pc2.use()
+        with db_session.session_scope() as s:
+            ls.set_category_enabled(s, ls.RADIO, False)   # PC2 won't get the station
+            mine = st_svc.add_manual(s, "Mine", "https://live.example/mine")
+            s.flush()
+            self._put(s, "tuner_last", f"station|{mine.id}")
+            mine_id = mine.id
+        pc2.sync()
+        pc1.use()
+        with db_session.session_scope() as s:
+            kdka = st_svc.add_manual(s, "KDKA", "https://live.example/kdka", band="am")
+            s.flush()
+            self._put(s, "tuner_last", f"station|{kdka.id}")
+        pc1.sync()
+        pc2.sync()
+        with db_session.session_scope() as s:
+            assert self._setting(s, "tuner_last") == f"station|{mine_id}"
+        notes = pc2.sync()
+        assert notes.tuner_out == 0
+        pc1.sync()
+        pc1.use()
+        with db_session.session_scope() as s:   # PC1 still where it was left
+            assert self._setting(s, "tuner_last") == f"station|{kdka.id}"

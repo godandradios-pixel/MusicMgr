@@ -30,6 +30,10 @@ library.db - never the database file itself:
   top-tracks as a sync option"): each artist's Last.fm chart
   (ArtistTopTrack) and the songs chosen by hand to show instead
   (ArtistTopPick), keyed by name_key, as one value per artist
+- **similar artists** (2026-10-17): Last.fm's similar-artists list that
+  "radio from this song" uses (ArtistSimilar) and when it was fetched, so
+  a second PC needn't fetch it again
+- **playback & look** and **the tuner** (2026-10-17) - see prefs_sync.py
 
 Everything is keyed by names and paths, never by database ids (ids differ
 on every PC). A track's key is its path inside a synced folder, as the
@@ -89,6 +93,7 @@ from sqlalchemy.orm import Session
 from .. import __version__, config
 from ..db.models import (
     Artist,
+    ArtistSimilar,
     ArtistTopPick,
     ArtistTopTrack,
     JukeboxSlot,
@@ -126,11 +131,23 @@ OTR = "otr"
 PROFILES = "profiles"
 #: Last.fm top tracks and hand-picked top songs (2026-10-17)
 TOP_TRACKS = "top_tracks"
-CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS, RADIO, PROFILES, TOP_TRACKS)
+#: Last.fm similar artists (2026-10-17)
+SIMILAR = "similar"
+#: playback preferences and the skin, and the Radio page's tuner
+#: (2026-10-17) - see prefs_sync.py
+PREFS = "prefs"
+TUNER = "tuner"
+CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS, RADIO, PROFILES, TOP_TRACKS,
+              SIMILAR, PREFS, TUNER)
+#: off until switched on: each PC may want its own
+DEFAULT_OFF = frozenset({PREFS})
 #: the ones kept in library-state.json.gz itself
-_STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, RADIO, PROFILES, TOP_TRACKS)
+_STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, RADIO, PROFILES, TOP_TRACKS,
+                     SIMILAR, PREFS, TUNER)
 #: keyed by artist name_key - see carry_artist_data
-_ARTIST_CATEGORIES = (PROFILES, TOP_TRACKS)
+_ARTIST_CATEGORIES = (PROFILES, TOP_TRACKS, SIMILAR)
+#: flat {key: value} dicts that a drive from an older MusicMgr won't have
+_NEWER_CATEGORIES = _ARTIST_CATEGORIES + (PREFS, TUNER)
 #: what a station carries (keyed by its stream address)
 _STATION_FIELDS = ("name", "band", "dial_order", "homepage", "favicon_url", "country",
                    "tags", "codec", "bitrate", "rb_uuid")
@@ -462,7 +479,14 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: read_images(db), FOLDERS: {path: True for path in _folders_by_path(db)},
             RADIO: read_stations(db), OTR: _read_otr(db), PROFILES: read_profiles(db),
-            TOP_TRACKS: read_top_tracks(db)}
+            TOP_TRACKS: read_top_tracks(db), SIMILAR: read_similar(db),
+            PREFS: _prefs_sync().read_prefs(db), TUNER: _prefs_sync().read_tuner(db)}
+
+
+def _prefs_sync():
+    from . import prefs_sync
+
+    return prefs_sync
 
 
 def _read_otr(db: Session) -> dict:
@@ -632,6 +656,55 @@ def apply_top_tracks(db: Session, merged: dict, notes: "MergeNotes",
     db.flush()
 
 
+def _similar_value(fetched, entries: list) -> Optional[dict]:
+    return {"fetched": _iso(fetched), "similar": entries} if fetched is not None else None
+
+
+def read_similar(db: Session) -> dict[str, dict]:
+    """Every artist whose Last.fm similar artists were fetched, by name_key:
+    `{"fetched": iso, "similar": [[name, name_key, match], ...]}` - an empty
+    list is Last.fm knowing none, which is worth carrying too."""
+    entries: dict[int, list] = {}
+    for row in db.scalars(select(ArtistSimilar).order_by(ArtistSimilar.artist_id,
+                                                         ArtistSimilar.match.desc(),
+                                                         ArtistSimilar.id)):
+        entries.setdefault(row.artist_id, []).append([row.name, row.name_key, row.match])
+    out: dict[str, dict] = {}
+    for artist_id, key, fetched in db.execute(
+            select(Artist.id, Artist.name_key, Artist.similar_fetched_at)
+            .where(Artist.similar_fetched_at.is_not(None)).order_by(Artist.id)):
+        if key and key not in out:
+            out[key] = _similar_value(fetched, entries.get(artist_id, []))
+    return out
+
+
+def apply_similar(db: Session, merged: dict, notes: "MergeNotes",
+                  carried: set[str] = frozenset()) -> None:
+    """Replace the similar-artist lists that changed on the drive."""
+    want = merged.get(SIMILAR) or {}
+    by_key = {a.name_key: a for a in db.scalars(select(Artist))}
+    for key in set(notes.similar_in) | set(carried) | set(notes.similar_removed):
+        artist = by_key.get(key)
+        if artist is None:
+            continue
+        value = want.get(key)
+        current = _similar_value(artist.similar_fetched_at, [
+            [r.name, r.name_key, r.match] for r in db.scalars(
+                select(ArtistSimilar).where(ArtistSimilar.artist_id == artist.id)
+                .order_by(ArtistSimilar.match.desc(), ArtistSimilar.id))])
+        if value == current:
+            continue
+        db.execute(delete(ArtistSimilar).where(ArtistSimilar.artist_id == artist.id))
+        if value is None:
+            artist.similar_fetched_at = None
+            continue
+        for name, name_key, match in value.get("similar") or []:
+            db.add(ArtistSimilar(artist_id=artist.id, name=name, name_key=name_key, match=match))
+        artist.similar_fetched_at = _parse(value.get("fetched"))
+        notes.similar_set += 1
+    db.flush()
+
+
 # --------------------------------------------------------------------------
 # playlist / folder images (2026-09-28)
 # --------------------------------------------------------------------------
@@ -750,7 +823,8 @@ def _set(db: Session, key: str, value: str) -> None:
 def empty_state() -> dict:
     return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": [],
             IMAGES: {}, "images_unplaced": [], FOLDERS: {}, RADIO: {}, OTR: {},
-            PROFILES: {}, "profiles_unplaced": [], TOP_TRACKS: {}, "top_tracks_unplaced": []}
+            PROFILES: {}, "profiles_unplaced": [], TOP_TRACKS: {}, "top_tracks_unplaced": [],
+            SIMILAR: {}, "similar_unplaced": [], PREFS: {}, TUNER: {}}
 
 
 def load_state(path: Path) -> Optional[dict]:
@@ -776,9 +850,9 @@ def load_state(path: Path) -> Optional[dict]:
         state[RADIO] = None
     if OTR not in data:
         state[OTR] = None
-    for cat in _ARTIST_CATEGORIES:
+    for cat in _NEWER_CATEGORIES:
         if cat not in data:
-            # ...and artist profiles / top songs (2026-10-17)
+            # ...and everything added 2026-10-17
             state[cat] = None
     if data.get("playlist_keys") != PLAYLIST_KEYS:
         if state["playlists"]:
@@ -796,7 +870,8 @@ def save_state(path: Path, state: dict, pc_id: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = dict(state)
     data.pop(OLD_BUILD, None)
-    for key in ("unresolved", "images_unplaced", "profiles_unplaced", "top_tracks_unplaced"):
+    for key in ("unresolved", "images_unplaced",
+                *(f"{cat}_unplaced" for cat in _ARTIST_CATEGORIES)):
         if key in data and not data[key]:
             data.pop(key)
     data["format"] = FORMAT
@@ -884,6 +959,18 @@ class MergeNotes:
     top_tracks_out: int = 0
     top_tracks_set: int = 0
     top_tracks_cleared: int = 0
+    #: similar artists (2026-10-17), the same way
+    similar_in: list[str] = field(default_factory=list)
+    similar_removed: list[str] = field(default_factory=list)
+    similar_out: int = 0
+    similar_set: int = 0
+    #: playback & look, and the tuner (2026-10-17): settings changed here /
+    #: sent; `look_in` - a new skin or finish waits for a restart
+    prefs_in: int = 0
+    prefs_out: int = 0
+    look_in: bool = False
+    tuner_in: int = 0
+    tuner_out: int = 0
 
     def received(self) -> bool:
         """Did anything change in this library? (Views refresh if so.)"""
@@ -892,7 +979,8 @@ class MergeNotes:
                     or self.folders_removed or self.board_in
                     or self.stations_in or self.stations_removed or self.otr_in
                     or self.nested_cleaned or self.profiles_set or self.profiles_cleared
-                    or self.top_tracks_set or self.top_tracks_cleared
+                    or self.top_tracks_set or self.top_tracks_cleared or self.similar_set
+                    or self.prefs_in or self.tuner_in
                     or (self.charts is not None
                         and (self.charts.charts_in or self.charts.charts_removed)))
 
@@ -949,6 +1037,14 @@ class MergeNotes:
         if self.top_tracks_cleared:
             n = self.top_tracks_cleared
             parts.append(f"top songs cleared for {n:,} artist{'s' if n != 1 else ''}")
+        if self.similar_set:
+            n = self.similar_set
+            parts.append(f"similar artists updated for {n:,} artist{'s' if n != 1 else ''}")
+        if self.prefs_in:
+            parts.append("playback & look settings updated"
+                         + (" — restart MusicMgr to see the new look" if self.look_in else ""))
+        if self.tuner_in:
+            parts.append("radio dial updated")
         ch = self.charts
         if ch is not None:
             if ch.charts_in:
@@ -995,6 +1091,13 @@ class MergeNotes:
         if self.top_tracks_out:
             n = self.top_tracks_out
             sent.append(f"top songs for {n:,} artist{'s' if n != 1 else ''}")
+        if self.similar_out:
+            n = self.similar_out
+            sent.append(f"similar artists for {n:,} artist{'s' if n != 1 else ''}")
+        if self.prefs_out:
+            sent.append("playback & look settings")
+        if self.tuner_out:
+            sent.append("the radio dial")
         if ch is not None and ch.charts_out:
             n = ch.charts_out
             sent.append(f"{n} chart{'s' if n != 1 else ''}")
@@ -1154,9 +1257,31 @@ def merge(local: dict, usb: dict, base: dict,
     notes.top_tracks_removed = sorted(k for k in local_tt if k not in top)
     notes.top_tracks_out = _changed(top, usb.get(TOP_TRACKS) or {})
 
+    # similar artists: three-way per artist; changed on both -> the newer fetch
+    local_sim, usb_sim = local.get(SIMILAR) or {}, usb.get(SIMILAR) or {}
+
+    def sim_usb_newer(key: str) -> bool:
+        lf = _parse((local_sim[key] or {}).get("fetched"))
+        uf = _parse((usb_sim[key] or {}).get("fetched"))
+        return bool(lf and uf and uf > lf)
+
+    similar, taken_sim = _merge_dict(local_sim, usb_sim, base.get(SIMILAR) or {},
+                                     newer=sim_usb_newer)
+    notes.similar_in = sorted(k for k in taken_sim if similar[k] != local_sim.get(k))
+    notes.similar_removed = sorted(k for k in local_sim if k not in similar)
+    notes.similar_out = _changed(similar, usb_sim)
+
+    # playback & look, and the tuner: three-way per setting; changed on
+    # both -> this PC's
+    prefs, _ = _merge_dict(local.get(PREFS) or {}, usb.get(PREFS) or {}, base.get(PREFS) or {})
+    notes.prefs_out = _changed(prefs, usb.get(PREFS) or {})
+    tuner, _ = _merge_dict(local.get(TUNER) or {}, usb.get(TUNER) or {}, base.get(TUNER) or {})
+    notes.tuner_out = _changed(tuner, usb.get(TUNER) or {})
+
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: images, FOLDERS: folders, RADIO: stations, OTR: otr,
-            PROFILES: profiles, TOP_TRACKS: top}, notes
+            PROFILES: profiles, TOP_TRACKS: top, SIMILAR: similar,
+            PREFS: prefs, TUNER: tuner}, notes
 
 
 # --------------------------------------------------------------------------
@@ -1509,13 +1634,14 @@ def revive(merged: dict, base: dict, idx: TrackIndex, notes: "MergeNotes") -> No
 
 
 def enabled_categories(db: Session) -> frozenset:
-    """Which of plays/ratings/playlists/Jukebox/charts/radio/profiles/top songs this PC syncs (Settings →
-    USB sync checkboxes, all on by default - 2026-09-24)."""
-    return frozenset(
-        cat for cat in CATEGORIES
-        if (db.get(Setting, PREF_PREFIX + cat) is None
-            or db.get(Setting, PREF_PREFIX + cat).value != "0")
-    )
+    """Which categories this PC syncs (Settings → USB sync checkboxes, all
+    on by default - 2026-09-24 - except DEFAULT_OFF, 2026-10-17)."""
+    chosen = set()
+    for cat in CATEGORIES:
+        row = db.get(Setting, PREF_PREFIX + cat)
+        if (row.value != "0") if row is not None else (cat not in DEFAULT_OFF):
+            chosen.add(cat)
+    return frozenset(chosen)
 
 
 def set_category_enabled(db: Session, category: str, enabled: bool) -> None:
@@ -1584,11 +1710,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         base[OTR] = {}
     if usb[OTR] is None:
         usb[OTR] = copy.deepcopy(base[OTR])
-    for cat in _ARTIST_CATEGORIES:
+    for cat in _NEWER_CATEGORIES:
         if base[cat] is None:
             base[cat] = {}
         if usb[cat] is None:
-            # ...or artist profiles / top songs
+            # ...or anything added 2026-10-17
             usb[cat] = copy.deepcopy(base[cat])
     original_base = dict(base)
     for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS + _WITH_RADIO:
@@ -1639,6 +1765,12 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         notes.profiles_in, notes.profiles_removed, notes.profiles_out = [], [], 0
     if TOP_TRACKS not in include:
         notes.top_tracks_in, notes.top_tracks_removed, notes.top_tracks_out = [], [], 0
+    if SIMILAR not in include:
+        notes.similar_in, notes.similar_removed, notes.similar_out = [], [], 0
+    if PREFS not in include:
+        notes.prefs_out = 0
+    if TUNER not in include:
+        notes.tuner_out = 0
     apply_state(db, idx, local, merged, notes, include)
     if RADIO in include:
         apply_stations(db, merged, local, notes)
@@ -1650,6 +1782,13 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         apply_profiles(db, merged, local, notes, carried_artist[PROFILES])
     if TOP_TRACKS in include:
         apply_top_tracks(db, merged, notes, carried_artist[TOP_TRACKS])
+    if SIMILAR in include:
+        apply_similar(db, merged, notes, carried_artist[SIMILAR])
+    if PREFS in include:
+        notes.prefs_in, notes.look_in = _prefs_sync().apply_prefs(db, merged[PREFS], local[PREFS])
+    if TUNER in include:
+        # after apply_stations, so a station that just arrived can be tuned
+        notes.tuner_in = _prefs_sync().apply_tuner(db, merged[TUNER], local[TUNER])
     if notes.lost_board is not None:
         from .usb_sync import usb_deleted_dir
 
