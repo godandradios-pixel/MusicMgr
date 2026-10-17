@@ -773,6 +773,20 @@ class CoverGrid(QWidget):
         else:
             self.tileActivated.emit(tile.key)
 
+    def item_keys(self, filtered: bool = True) -> list:
+        """Keys of the grid's own tiles (an artist's id in Artists, a
+        release's in Albums - never a woven-in video) in the exact order
+        they're on screen right now. `filtered=False` ignores the search box
+        and returns every tile in the active sort order instead.
+
+        2026-10-17 - James: "When I'm on an artist page ... I would like a
+        way to click a right arrow for next artist and < for a previous
+        artist" - LibraryView._artist_neighbors walks this list so the
+        artist page's ‹ › arrows step through artists in the same order the
+        Artists grid shows them (including a live search filter)."""
+        tiles = self._ordered_cache if filtered else self._sorted()
+        return [t.key for t in tiles if t.kind == "item"]
+
     def count(self) -> int:
         return self.view.count()
 

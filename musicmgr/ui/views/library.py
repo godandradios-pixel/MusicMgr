@@ -159,6 +159,10 @@ class LibraryView(BaseView):
         #: this page only ever has the one leading crumb before the
         #: artist's own name.
         self._artist_breadcrumb_actions: list[Callable[[], None]] = []
+        #: the `root` the artist page was last opened with, so the ‹ ›
+        #: arrows (2026-10-17) keep the same leading crumb while stepping
+        #: from one artist to the next
+        self._artist_root: Optional[tuple[str, Callable[[], None]]] = None
         self._search_text = ""
 
         self.stats = dim_label("")
@@ -344,7 +348,56 @@ class LibraryView(BaseView):
         # uses for its own (longer) ancestor chain.
         self.artist_detail.breadcrumb.crumbActivated.connect(self._on_artist_breadcrumb)
         self.artist_detail.releaseActivated.connect(self._open_release_from_artist)
+        self.artist_detail.previousArtistRequested.connect(lambda: self._step_artist(-1))
+        self.artist_detail.nextArtistRequested.connect(lambda: self._step_artist(1))
         return self.artist_detail
+
+    def _artist_order(self, artist_id: int) -> list:
+        """The artist ids the page's ‹ › arrows step through - the Artists
+        grid's own on-screen order (so a live search narrows it too), or
+        the whole grid in that same sort order when the current artist
+        isn't among the filtered results (opened from Now Playing or the
+        Missing metadata dashboard while a search happened to be active)."""
+        if BROWSE_ARTIST not in self._loaded:
+            self._load_artists()
+        order = self.artist_grid.item_keys()
+        if artist_id not in order:
+            order = self.artist_grid.item_keys(filtered=False)
+        return order
+
+    def _artist_neighbors(self, artist_id: int) -> tuple[Optional[int], Optional[int]]:
+        order = self._artist_order(artist_id)
+        try:
+            i = order.index(artist_id)
+        except ValueError:
+            return None, None
+        prev_id = order[i - 1] if i > 0 else None
+        next_id = order[i + 1] if i + 1 < len(order) else None
+        return prev_id, next_id
+
+    def _step_artist(self, direction: int) -> None:
+        current = self.artist_detail.artist_id
+        if current is None:
+            return
+        prev_id, next_id = self._artist_neighbors(current)
+        target = prev_id if direction < 0 else next_id
+        if target is not None:
+            self._open_artist(target, root=self._artist_root)
+
+    def _update_artist_arrows(self, artist_id: int) -> None:
+        prev_id, next_id = self._artist_neighbors(artist_id)
+        names: dict[int, str] = {}
+        wanted = [i for i in (prev_id, next_id) if i is not None]
+        if wanted:
+            with self.ctx.session() as session:
+                for row_id, name in session.execute(
+                    select(Artist.id, Artist.name).where(Artist.id.in_(wanted))
+                ):
+                    names[row_id] = name
+        self.artist_detail.set_neighbors(
+            names.get(prev_id) if prev_id is not None else None,
+            names.get(next_id) if next_id is not None else None,
+        )
 
     def _on_artist_breadcrumb(self, index: int) -> None:
         if 0 <= index < len(self._artist_breadcrumb_actions):
@@ -717,9 +770,11 @@ class LibraryView(BaseView):
         _open_artist_from_missing_metadata below for the one other case
         today, the artist-page equivalent of _open_release's own
         `ancestors` list."""
+        self._artist_root = root
         label, action = root or ("Artists", lambda: self.panes.setCurrentIndex(PANE_ARTIST_GRID))
         self._artist_breadcrumb_actions = [action]
         self.artist_detail.set_artist(artist_id, root_label=label)
+        self._update_artist_arrows(artist_id)
         self.panes.setCurrentIndex(PANE_ARTIST_DETAIL)
 
     def _activate_video(self, video_id: int) -> None:

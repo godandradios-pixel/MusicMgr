@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QStackedWidget,
     QVBoxLayout,
@@ -264,6 +265,11 @@ class ArtistDetailPanel(QWidget):
     """
 
     releaseActivated = Signal(int)
+    #: the ‹ / › arrows beside the breadcrumb (2026-10-17) - LibraryView
+    #: decides which artist is "previous"/"next" (see _artist_neighbors)
+    #: and hands the answer back through set_neighbors()
+    previousArtistRequested = Signal()
+    nextArtistRequested = Signal()
 
     def __init__(self, ctx, parent=None) -> None:
         super().__init__(parent)
@@ -356,7 +362,31 @@ class ArtistDetailPanel(QWidget):
         # page needs: back to the Artists grid, or wherever _open_artist's
         # `root` says). Folded into the header card 2026-09-26 (see above).
         self.breadcrumb = Breadcrumb()
-        meta.addWidget(self.breadcrumb)
+        # 2026-10-17 - James: "When I'm on an artist page, I see the
+        # breadcrumb Artist > Big Country. I would like a way to click a
+        # right arrow for next artist and < for a previous artist." The two
+        # arrows sit right after the trail (not pushed to the card's far
+        # edge - the trailing stretch keeps them hugging the crumbs), using
+        # the same small round #RowPageArrow style as the cover rows' own
+        # ‹ › page buttons. Disabled at either end of the list; tooltips
+        # name the artist each one leads to.
+        crumb_row = QHBoxLayout()
+        crumb_row.setSpacing(6)
+        crumb_row.addWidget(self.breadcrumb, 0)
+        self.prev_artist_btn = QPushButton("‹")
+        self.prev_artist_btn.setObjectName("RowPageArrow")
+        self.prev_artist_btn.setCursor(Qt.PointingHandCursor)
+        self.prev_artist_btn.clicked.connect(self.previousArtistRequested.emit)
+        self.next_artist_btn = QPushButton("›")
+        self.next_artist_btn.setObjectName("RowPageArrow")
+        self.next_artist_btn.setCursor(Qt.PointingHandCursor)
+        self.next_artist_btn.clicked.connect(self.nextArtistRequested.emit)
+        crumb_row.addSpacing(6)
+        crumb_row.addWidget(self.prev_artist_btn, 0, Qt.AlignVCenter)
+        crumb_row.addWidget(self.next_artist_btn, 0, Qt.AlignVCenter)
+        crumb_row.addStretch(1)
+        meta.addLayout(crumb_row)
+        self.set_neighbors(None, None)
 
         self.name = QLabel("")
         self.name.setStyleSheet("font-size: 26px; font-weight: 700;")
@@ -506,6 +536,17 @@ class ArtistDetailPanel(QWidget):
     @property
     def tracks(self) -> list:
         return self._tracks
+
+    def set_neighbors(self, previous_name: Optional[str], next_name: Optional[str]) -> None:
+        """Enable/label the ‹ › arrows beside the breadcrumb - None means
+        there's no artist in that direction (first/last in the list), which
+        greys that arrow out."""
+        for btn, name, word in (
+            (self.prev_artist_btn, previous_name, "Previous"),
+            (self.next_artist_btn, next_name, "Next"),
+        ):
+            btn.setEnabled(name is not None)
+            btn.setToolTip(f"{word} artist: {name}" if name else "")
 
     def set_artist(self, artist_id: Optional[int], root_label: str = "Artists") -> None:
         """`root_label` names the breadcrumb's leading crumb - "Artists"
