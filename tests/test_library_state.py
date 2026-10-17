@@ -1031,3 +1031,108 @@ class TestArtistProfiles:
         assert notes.profiles_cleared == 0
         with db_session.session_scope() as s:
             assert self._artist(s).profile
+
+
+class TestTopSongs:
+    """James: "Please also add the Last.fm top-tracks as a sync option"
+    (2026-10-17). Hand-picked top songs ride along."""
+
+    def _top(self, s, name="Rush"):
+        from musicmgr.db.models import ArtistTopPick, ArtistTopTrack
+
+        artist = s.scalar(select(Artist).where(Artist.name == name))
+        chart = [(t.title, t.playcount) for t in s.scalars(
+            select(ArtistTopTrack).where(ArtistTopTrack.artist_id == artist.id)
+            .order_by(ArtistTopTrack.rank))]
+        picks = list(s.scalars(select(ArtistTopPick.title)
+                               .where(ArtistTopPick.artist_id == artist.id)
+                               .order_by(ArtistTopPick.position)))
+        return artist, chart, picks
+
+    def _set_chart(self, s, artist, titles):
+        from musicmgr.db.models import ArtistTopTrack
+
+        s.execute(ArtistTopTrack.__table__.delete().where(ArtistTopTrack.artist_id == artist.id))
+        for i, (title, plays) in enumerate(titles, start=1):
+            s.add(ArtistTopTrack(artist_id=artist.id, rank=i, title=title, playcount=plays))
+
+    def test_chart_and_picks_travel_and_changes_follow(self, two_pcs):
+        from musicmgr.services import top_songs
+
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            artist, _, _ = self._top(s)
+            self._set_chart(s, artist, [("Tom Sawyer", 900), ("Limelight", 500)])
+        notes = pc1.sync()
+        assert notes.top_tracks_out == 1 and "top songs for 1 artist" in notes.summary()
+
+        notes = pc2.sync()
+        assert notes.top_tracks_set == 1 and notes.received()
+        with db_session.session_scope() as s:
+            artist, chart, picks = self._top(s)
+            assert chart == [("Tom Sawyer", 900), ("Limelight", 500)] and picks == []
+            top_songs.set_picks(s, artist.id, ["Subdivisions", "Limelight"])
+        pc2.sync()
+        assert pc1.sync().top_tracks_set == 1
+        with db_session.session_scope() as s:
+            assert self._top(s)[2] == ["Subdivisions", "Limelight"]
+        assert pc1.sync().summary() == "Library data already in sync"
+        assert pc2.sync().summary() == "Library data already in sync"
+
+    def test_switched_off_top_songs_stay_put(self, two_pcs):
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            artist, _, _ = self._top(s)
+            self._set_chart(s, artist, [("Tom Sawyer", 900)])
+        pc1.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            ls.set_category_enabled(s, ls.TOP_TRACKS, False)
+        assert pc2.sync().top_tracks_set == 0
+        with db_session.session_scope() as s:
+            assert self._top(s)[1] == []
+            ls.set_category_enabled(s, ls.TOP_TRACKS, True)
+        assert pc2.sync().top_tracks_set == 1
+
+    def test_an_artist_this_pc_lacks_gets_its_top_songs_when_it_arrives(self, two_pcs):
+        from musicmgr.db.models import ArtistTopTrack
+
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            boston = Artist(name="Boston", name_key="boston")
+            s.add(boston)
+            s.flush()
+            s.add(ArtistTopTrack(artist_id=boston.id, rank=1, title="More Than a Feeling",
+                                 playcount=1000))
+        pc1.sync()
+        assert pc2.sync().top_tracks_set == 0
+        pc1.use()
+        with db_session.session_scope() as s:
+            assert s.scalars(select(ArtistTopTrack)).all()
+        pc1.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            s.add(Artist(name="Boston", name_key="boston"))
+        assert pc2.sync().top_tracks_set == 1
+        with db_session.session_scope() as s:
+            assert self._top(s, "Boston")[1] == [("More Than a Feeling", 1000)]
+
+    def test_a_drive_written_before_top_song_sync_clears_nothing(self, two_pcs):
+        pc1, _pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            artist, _, _ = self._top(s)
+            self._set_chart(s, artist, [("Tom Sawyer", 900)])
+        pc1.sync()
+        path = ls.usb_state_path(pc1.drive)
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            data = json.load(fh)
+        data.pop(ls.TOP_TRACKS, None)
+        with gzip.open(path, "wt", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        assert pc1.sync().top_tracks_cleared == 0
+        with db_session.session_scope() as s:
+            assert self._top(s)[1] == [("Tom Sawyer", 900)]

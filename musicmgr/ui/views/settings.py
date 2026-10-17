@@ -1364,6 +1364,9 @@ class SettingsView(BaseView):
             # 2026-10-17 - James: "I would like the Artist profiles to sync
             # with the USB"
             (library_state.PROFILES, "Artist profiles"),
+            # 2026-10-17 - James: "Please also add the Last.fm top-tracks
+            # as a sync option"
+            (library_state.TOP_TRACKS, "Top songs"),
         ):
             cb = QCheckBox(text)
             if cat == library_state.PLAYLISTS:
@@ -1380,6 +1383,9 @@ class SettingsView(BaseView):
             if cat == library_state.PROFILES:
                 cb.setToolTip("The biography on each artist's page and the links it came "
                               "from. Artist photos travel with the artwork files")
+            if cat == library_state.TOP_TRACKS:
+                cb.setToolTip("Each artist's Last.fm top tracks, and the top songs "
+                              "chosen by hand to show instead")
             cb.toggled.connect(lambda on, cat=cat: self._save_usb_data_choice(cat, on))
             self.usb_data_cbs[cat] = cb
             data_row.addWidget(cb)
