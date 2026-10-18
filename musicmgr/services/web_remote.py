@@ -60,7 +60,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from .. import config
-from ..db.models import Playlist, RadioShow, RadioStation, Release, Setting, Track
+from ..db.models import Artist, Playlist, RadioShow, RadioStation, Release, Setting, Track
 from . import voice_ask
 
 log = logging.getLogger(__name__)
@@ -425,6 +425,13 @@ def _track_dict(track: Track) -> dict:
     }
 
 
+def _letter(sort_key: str) -> str:
+    """The A-Z strip's letter for a sort key: A-Z, else '#' (digits, symbols,
+    accented or non-Latin first letters)."""
+    first = (sort_key or "").strip()[:1].upper()
+    return first if "A" <= first <= "Z" else "#"
+
+
 class RemoteApi:
     """Everything the phone can ask for or do. Main thread only."""
 
@@ -571,6 +578,103 @@ class RemoteApi:
                 "tracks": [_track_dict(t) for t in tracks],
             }
 
+    # 2026-10-18 - Artists and Albums tabs (James: "I would like Artist and
+    # album to appear as an option"). Same rules as the desktop Library
+    # grids (ui/views/library.py _load_artists/_load_albums): an artist is
+    # someone a non-compilation release is filed under, and their page shows
+    # only those releases, so the list's count and the page always agree.
+
+    def artists(self) -> dict:
+        with self.ctx.session() as s:
+            rows = s.execute(
+                select(
+                    Artist,
+                    func.count(func.distinct(Release.id)),
+                    func.count(func.distinct(Track.id)),
+                )
+                .join(Release, Release.album_artist_id == Artist.id)
+                .outerjoin(Track, Track.release_id == Release.id)
+                .where(Release.is_compilation.is_(False))
+                .group_by(Artist.id)
+            ).all()
+            # no portrait? borrow the earliest release's cover, like the desktop
+            covers: dict[int, tuple[int, str]] = {}
+            for artist_id, rid, cover in s.execute(
+                select(Release.album_artist_id, Release.id, Release.cover_path)
+                .where(Release.cover_path.is_not(None), Release.album_artist_id.is_not(None))
+                .order_by(func.coalesce(Release.year, 9999), Release.id)
+            ):
+                covers.setdefault(artist_id, (rid, cover))
+            out = []
+            for artist, releases, tracks in rows:
+                key = (artist.name_sort or artist.name_key or artist.name or "").lower()
+                if artist.image_path:
+                    cover = _art_url("artist", artist.id, artist.image_path)
+                elif artist.id in covers:
+                    cover = _art_url("release", *covers[artist.id])
+                else:
+                    cover = None
+                out.append({"id": artist.id, "name": artist.name, "letter": _letter(key),
+                            "releases": releases or 0, "tracks": tracks or 0,
+                            "cover": cover, "_key": key})
+        out.sort(key=lambda a: a["_key"])
+        for a in out:
+            del a["_key"]
+        return {"artists": out}
+
+    def artist(self, artist_id: int) -> dict:
+        with self.ctx.session() as s:
+            artist = s.get(Artist, artist_id)
+            if artist is None:
+                raise LookupError("No such artist")
+            rows = s.execute(
+                select(Release, func.count(Track.id))
+                .outerjoin(Track, Track.release_id == Release.id)
+                .where(Release.album_artist_id == artist_id, Release.is_compilation.is_(False))
+                .group_by(Release.id)
+                .order_by(func.coalesce(Release.year, 9999), func.lower(Release.title))
+            ).all()
+            if artist.image_path:
+                cover = _art_url("artist", artist.id, artist.image_path)
+            else:   # no portrait: the first album with a cover, as the list shows
+                first = next(((r.id, r.cover_path) for r, _n in rows if r.cover_path), None)
+                cover = _art_url("release", *first) if first else None
+            return {
+                "id": artist.id,
+                "name": artist.name,
+                "cover": cover,
+                "albums": [
+                    {"id": r.id, "title": r.title, "year": r.year, "tracks": n or 0,
+                     "cover": _art_url("release", r.id, r.cover_path)}
+                    for r, n in rows
+                ],
+            }
+
+    def albums(self) -> dict:
+        """Every release, lightest fields only - about 6,000 on PC1. Sorted by
+        title here; the phone re-sorts by artist or newest without asking again."""
+        with self.ctx.session() as s:
+            rows = s.execute(
+                select(Release.id, Release.title, Release.title_key, Release.artist_display,
+                       Release.year, Release.cover_path)
+                .order_by(Release.created_at.desc(), Release.id.desc())
+            ).all()
+        out = []
+        for n, (rid, title, title_key, artist, year, cover) in enumerate(rows):
+            key = (title_key or title or "").lower()
+            akey = (artist or "").lower()
+            out.append({"id": rid, "title": title, "artist": artist or "", "year": year,
+                        "cover": _art_url("release", rid, cover),
+                        "letter": _letter(key), "aletter": _letter(akey), "new": n,
+                        "_k": key, "_a": akey})
+        out.sort(key=lambda a: a["_k"])
+        # sort ranks the phone uses instead of string compares on 6,000 rows
+        for rank, a in enumerate(sorted(out, key=lambda a: (a["_a"], a["year"] or 9999, a["_k"]))):
+            a["by_artist"] = rank
+        for a in out:
+            del a["_k"], a["_a"]
+        return {"albums": out}
+
     def radio(self) -> dict:
         from . import otr, stations
 
@@ -596,6 +700,7 @@ class RemoteApi:
             return item.cover_path if item is not None else None
         model = {
             "release": (Release, "cover_path"),
+            "artist": (Artist, "image_path"),
             "playlist": (Playlist, "cover_path"),
             "folder": (PlaylistFolder, "cover_path"),
             "station": (RadioStation, "favicon_path"),
@@ -919,6 +1024,13 @@ class _Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/search":
                 text = q.get("q", "")
                 self._json(self._main(lambda: api.search(text)))
+            elif url.path == "/api/artists":
+                self._json(self._main(api.artists))
+            elif url.path == "/api/artist":
+                aid = int(q.get("id", 0))
+                self._json(self._main(lambda: api.artist(aid)))
+            elif url.path == "/api/albums":
+                self._json(self._main(api.albums))
             elif url.path == "/api/radio":
                 self._json(self._main(api.radio))
             elif url.path == "/api/art":

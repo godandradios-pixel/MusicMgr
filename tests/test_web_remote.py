@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
+from sqlalchemy import select
 
 from musicmgr.db.models import MediaFile, Playlist, Track
 from musicmgr.services import library as lib
@@ -154,6 +155,74 @@ class TestApi:
             api.release(999)
 
 
+class TestArtistsAndAlbums:
+    """2026-10-18 - the phone's Artists and Albums tabs."""
+
+    @pytest.fixture
+    def shelf(self, session, tmp_path, album):
+        women = album[0]
+        women.release.year = 1987
+        women.release.cover_path = str(tmp_path / "hysteria.jpg")
+        pyro = make_track(session, tmp_path, "Photograph", album="Pyromania", artist="Def Leppard")
+        pyro.release.year = 1983
+        abba = make_track(session, tmp_path, "Waterloo", album="Waterloo", artist="ABBA")
+        abba.release.year = 1974
+        sixties = make_track(session, tmp_path, "Twist", album="1962 Hits", artist="Chubby Checker")
+        comp = make_track(session, tmp_path, "Song", album="Now 12", artist="Various Artists")
+        comp.release.is_compilation = True
+        session.commit()
+        return {"hysteria": women.release_id, "pyromania": pyro.release_id,
+                "waterloo": abba.release_id, "1962": sixties.release_id, "now": comp.release_id}
+
+    def test_artists_are_album_artists_in_order_with_counts(self, api, shelf):
+        rows = api.artists()["artists"]
+        names = [a["name"] for a in rows]
+        assert names == ["ABBA", "Chubby Checker", "Def Leppard"]   # no compilation artist
+        lep = rows[2]
+        assert (lep["letter"], lep["releases"], lep["tracks"]) == ("D", 2, 4)
+
+    def test_artist_without_portrait_borrows_earliest_cover(self, api, shelf):
+        lep = next(a for a in api.artists()["artists"] if a["name"] == "Def Leppard")
+        # only Hysteria has a cover, so it's borrowed even though Pyromania is older
+        assert lep["cover"].startswith(f"/api/art?kind=release&id={shelf['hysteria']}&")
+        abba = next(a for a in api.artists()["artists"] if a["name"] == "ABBA")
+        assert abba["cover"] is None
+
+    def test_artist_page_lists_their_albums_oldest_first(self, api, shelf):
+        lep_id = next(a["id"] for a in api.artists()["artists"] if a["name"] == "Def Leppard")
+        page = api.artist(lep_id)
+        assert page["name"] == "Def Leppard"
+        assert page["cover"].startswith(f"/api/art?kind=release&id={shelf['hysteria']}&")
+        assert [(r["title"], r["year"], r["tracks"]) for r in page["albums"]] == [
+            ("Pyromania", 1983, 1), ("Hysteria", 1987, 3)]
+
+    def test_missing_artist(self, api):
+        with pytest.raises(LookupError):
+            api.artist(999)
+
+    def test_albums_sorted_with_letters_and_artist_rank(self, api, shelf):
+        rows = api.albums()["albums"]
+        assert [a["title"] for a in rows] == ["1962 Hits", "Hysteria", "Now 12", "Pyromania", "Waterloo"]
+        assert [a["letter"] for a in rows] == ["#", "H", "N", "P", "W"]
+        by_artist = [a["title"] for a in sorted(rows, key=lambda a: a["by_artist"])]
+        assert by_artist == ["Waterloo", "1962 Hits", "Pyromania", "Hysteria", "Now 12"]
+        assert {a["title"]: a["aletter"] for a in rows}["Waterloo"] == "A"
+        newest = [a["title"] for a in sorted(rows, key=lambda a: a["new"])]
+        assert newest[-1] == "Hysteria"   # added first
+
+    def test_letter_helper(self):
+        assert [web_remote._letter(k) for k in ["abba", "1962", "", "élan", "zz"]] == ["A", "#", "#", "#", "Z"]
+
+    def test_artist_portrait_is_served(self, api, session, shelf, tmp_path):
+        from musicmgr.db.models import Artist
+        abba = session.scalars(select(Artist).where(Artist.name == "ABBA")).one()
+        abba.image_path = str(tmp_path / "abba.jpg")
+        session.commit()
+        row = next(a for a in api.artists()["artists"] if a["name"] == "ABBA")
+        assert row["cover"].startswith(f"/api/art?kind=artist&id={abba.id}&")
+        assert api.art_path("artist", abba.id) == abba.image_path
+
+
 def _pump_until(qapp, done: threading.Event, timeout: float = 10.0) -> None:
     end = time.time() + timeout
     while not done.is_set() and time.time() < end:
@@ -211,6 +280,18 @@ class TestServer:
             assert json.loads(body)["state"]["item"]["title"] == "Women"
 
             status, _ = _request(qapp, base + "/api/release?id=999")
+            assert status == 404
+
+            # Artists and Albums tabs (2026-10-18)
+            status, body = _request(qapp, base + "/api/artists")
+            assert status == 200
+            artists = json.loads(body)["artists"]
+            assert [a["name"] for a in artists] == ["Def Leppard"]
+            status, body = _request(qapp, base + f"/api/artist?id={artists[0]['id']}")
+            assert status == 200 and json.loads(body)["albums"][0]["title"] == "Hysteria"
+            status, body = _request(qapp, base + "/api/albums")
+            assert status == 200 and json.loads(body)["albums"][0]["title"] == "Hysteria"
+            status, _ = _request(qapp, base + "/api/artist?id=999")
             assert status == 404
         finally:
             server.stop()
