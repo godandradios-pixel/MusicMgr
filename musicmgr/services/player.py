@@ -114,6 +114,14 @@ class QueueItem:
     #: start playback here (ms) - an episode resuming where it was left
     start_ms: int = 0
 
+    def __post_init__(self) -> None:
+        # a 78 side with its own label shows that, not the record's cover
+        # (2026-10-17, services/artwork_names.side_cover)
+        if self.kind == "track" and self.position and self.cover_path:
+            from .artwork_names import side_cover
+
+            self.cover_path = side_cover(self.cover_path, self.position)
+
     @property
     def is_track(self) -> bool:
         return self.kind == "track"

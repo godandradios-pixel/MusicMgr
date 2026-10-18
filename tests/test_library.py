@@ -299,3 +299,16 @@ def test_a_failing_repair_never_blocks_startup(db, monkeypatch):
 
     with session_scope() as s:
         assert updater.get_pref(s, app.FOLDER_ARTIST_REPAIR_PREF) != "1"  # tried again next start
+
+
+def test_side_covers_run_once_per_library(db, monkeypatch):
+    """2026-10-17: each 78 side's own label, once, for already-scanned files."""
+    from musicmgr.services import scanner
+    from musicmgr.ui import app
+
+    calls = []
+    monkeypatch.setattr(scanner, "save_side_covers", lambda s: calls.append(1) or 0)
+    monkeypatch.setattr(app, "init_engine", lambda *a, **k: None)
+    app.bootstrap_database()
+    app.bootstrap_database()
+    assert calls == [1]

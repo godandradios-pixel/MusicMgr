@@ -469,6 +469,7 @@ class MainWindow(QMainWindow):
 #: settings key: the one-time compilation merge has run on this library
 COMPILATION_MERGE_PREF = "compilation_merge_done"
 FOLDER_ARTIST_REPAIR_PREF = "folder_album_artist_repair_done"
+SIDE_COVERS_PREF = "side_covers_done"
 
 
 def bootstrap_database() -> None:
@@ -511,6 +512,17 @@ def bootstrap_database() -> None:
                     logging.getLogger(__name__).info(
                         "put %d albums back under their own album artist / cover", fixed)
                 updater.set_pref(session, FOLDER_ARTIST_REPAIR_PREF, "1")
+        # 2026-10-17: each 78 side's own label, for files already scanned
+        # (once per data folder - it reads the 78s' pictures)
+        if updater.get_pref(session, SIDE_COVERS_PREF) != "1":
+            try:
+                saved = scanner_svc.save_side_covers(session)
+            except Exception:  # never block startup on it - tried again next start
+                logging.getLogger(__name__).exception("side covers failed")
+            else:
+                if saved:
+                    logging.getLogger(__name__).info("saved %d 78 side labels", saved)
+                updater.set_pref(session, SIDE_COVERS_PREF, "1")
 
 
 def _build_splash() -> Optional[QSplashScreen]:

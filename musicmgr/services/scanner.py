@@ -40,7 +40,7 @@ from ..db.models import (
 from . import library as lib
 from . import radio_folder
 from . import replaygain
-from .tracknum import parse_side
+from .tracknum import is_side, parse_side
 from .matching import normalize, split_artists
 
 log = logging.getLogger(__name__)
@@ -813,6 +813,11 @@ def import_file(
         else (str(tags.track_no) if tags.track_no else None)
     )
     track.artist_display = tags.artist
+    # a 78 side whose file carries its own label keeps it (2026-10-17)
+    if tags.cover and release.cover_path and is_side(track.position):
+        from . import artwork_names
+
+        artwork_names.save_side_cover(release.cover_path, track.position, tags.cover)
     track.duration_ms = tags.duration_ms
     track.isrc = tags.isrc or None
     track.bpm = tags.bpm
@@ -1432,6 +1437,37 @@ def _live_twin(session: Session, track: Track, playable_track_ids) -> Optional[T
     by_artist = [t for t in same_song
                  if t.release is not None and t.release.album_artist_id == release.album_artist_id]
     return by_artist[0] if len(by_artist) == 1 else None
+
+
+def save_side_covers(session: Session) -> int:
+    """Give every 78 side its own label picture from its file (2026-10-17 -
+    James: "I need the 78s to show each label A and B"). The scanner does
+    this for new and changed files; this does it once for the files already
+    in the library. Only songs with a side (A, B, A1...) are read. Returns
+    how many side pictures were saved."""
+    from . import artwork_names
+
+    saved = 0
+    rows = session.execute(
+        select(Track.id, Track.position, Release.cover_path)
+        .join(Release, Release.id == Track.release_id)
+        .where(Track.position.is_not(None), Release.cover_path.is_not(None))
+    ).all()
+    for track_id, position, cover_path in rows:
+        if not is_side(position):
+            continue
+        track = session.get(Track, track_id)
+        mf = track.primary_file if track is not None else None
+        if mf is None or not Path(mf.path).is_file():
+            continue
+        try:
+            cover = read_tags(Path(mf.path)).cover
+        except Exception:  # an unreadable file keeps what it has
+            log.warning("side cover: couldn't read %s", mf.path, exc_info=True)
+            continue
+        if cover and artwork_names.save_side_cover(cover_path, position, cover):
+            saved += 1
+    return saved
 
 
 def repair_folder_album_artists(session: Session) -> int:

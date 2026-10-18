@@ -260,6 +260,73 @@ def save_release_cover(release: Release, data: bytes, *, ext_hint: Optional[str]
         return None
 
 
+# --------------------------------------------------------------------------
+# a 78's own label per side (2026-10-17)
+# --------------------------------------------------------------------------
+#
+# James: "I need the 78s to show each label A and B". A record is one album
+# with one cover, so both sides showed whichever label was saved first -
+# "Marie" (25523-B) showed the Song of India label (25523-A). A side whose
+# file carries a different picture now gets its own image next to the
+# record's cover, named after it plus the side:
+#
+#     artwork\Tommy Dorsey And His Orchestra - Victor - 25523.jpg      (record)
+#     artwork\Tommy Dorsey And His Orchestra - Victor - 25523 - B.jpg  (side B)
+#
+# Nothing in the database points at it - the name is enough - so it needs
+# no migration, travels with the artwork folder by USB sync, and every
+# place that plays a song picks it up through QueueItem (see side_cover).
+
+
+def _side_stem(cover_path: str, side: str) -> str:
+    return safe_image_name(f"{Path(cover_path).stem} - {side}")
+
+
+def side_cover(cover_path: Optional[str], position: Optional[str]) -> Optional[str]:
+    """The picture to show for a song: its side's own label if it has one,
+    else the record's cover (`cover_path`, returned unchanged)."""
+    if not cover_path or not position:
+        return cover_path
+    from .tracknum import parse_side
+
+    parsed = parse_side(position)
+    if parsed is None:
+        return cover_path
+    # (a cover_path that's already a side picture - an item copied with
+    # dataclasses.replace - finds no "... - B - B" and stays as it is)
+    own = find_image(Path(cover_path).parent, _side_stem(cover_path, parsed[1]))
+    return str(own) if own is not None else cover_path
+
+
+def save_side_cover(cover_path: str, position: str, data: bytes) -> Optional[str]:
+    """Save `data` as this side's own label next to the record's cover
+    `cover_path` - unless it's the same picture as the record's cover, when
+    no separate file is needed (and an old one is set aside). Replaces an
+    earlier side picture: the file's own picture is where it comes from."""
+    from .tracknum import parse_side
+
+    parsed = parse_side(position)
+    if not data or not cover_path or parsed is None:
+        return None
+    record = Path(cover_path)
+    folder, stem = record.parent, _side_stem(cover_path, parsed[1])
+    try:
+        same = record.is_file() and record.read_bytes() == data
+    except OSError:
+        same = False
+    if same:
+        old = find_image(folder, stem)
+        if old is not None:
+            _set_aside(old)
+        return None
+    try:
+        path = _save(folder, stem, data, None, overwrite=True)
+    except Exception as exc:  # pragma: no cover - disk trouble
+        log.warning("side cover save failed for %s %s: %s", cover_path, position, exc)
+        return None
+    return str(path) if path else None
+
+
 def save_artist_image(artist: Artist, source: Path) -> str:
     """Copy an image file in as this artist's photo (always replaces)."""
     data = Path(source).read_bytes()

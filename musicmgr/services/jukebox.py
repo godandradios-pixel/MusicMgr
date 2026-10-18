@@ -127,6 +127,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..db.models import JukeboxSlot, Release, Setting, Track
+from . import artwork_names
 from .matching import normalize
 
 #: how many title strips make up one page of the selector - a small enough
@@ -802,7 +803,9 @@ def slot_to_dict(slot: JukeboxSlot) -> dict:
             "track_id": track.id,
             "title": track.title,
             "duration_ms": track.duration_ms,
-            "cover_path": track.release.cover_path if track.release else None,
+            # each side its own label when it has one (2026-10-17)
+            "cover_path": artwork_names.side_cover(
+                track.release.cover_path if track.release else None, track.position),
         }
 
     return {
