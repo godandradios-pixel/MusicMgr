@@ -26,6 +26,7 @@ from musicmgr.db.models import (
     Chart,
     ChartEntry,
     ChartIssue,
+    Credit,
     JukeboxSlot,
     MediaFile,
     PlayEvent,
@@ -36,6 +37,7 @@ from musicmgr.db.models import (
     WatchedFolder,
 )
 from musicmgr.services import scanner
+from musicmgr.services.matching import normalize
 
 
 def make_silent_wav(path: Path, seconds: float = 0.2) -> None:
@@ -982,3 +984,117 @@ class TestOrphansFindTheirFileAgain:
 
         session.expire_all()
         assert session.scalar(select(PlayEvent)).track_id == track.id
+
+
+class TestRepairFolderAlbumArtists:
+    """2026-10-17 - James: the 78s in D:\\Music\\Old78Records "now there are
+    many that are blank". The old folder-wide rule had filed all 179 records
+    under Bing Crosby, and their covers were then looked for under
+    "Bing Crosby - <record>.jpg", which doesn't exist. An unchanged file is
+    never re-read, so repair_folder_album_artists puts the rows right."""
+
+    def _library(self, session, tmp_path, monkeypatch):
+        from musicmgr import config
+        from musicmgr.services import library as lib_svc
+
+        art = tmp_path / "artwork"
+        art.mkdir()
+        monkeypatch.setattr(config, "ART_DIR", art)
+        folder = tmp_path / "Old78Records"
+        make_tagged_mp3(folder / "Bing Crosby - White Christmas.mp3", "White Christmas",
+                        "Bing Crosby", "DECCA - 18429", album_artist="Bing Crosby")
+        make_tagged_mp3(folder / "Bing Crosby - Silent Night.mp3", "Silent Night",
+                        "Bing Crosby", "DECCA - 18429", album_artist="Bing Crosby")
+        make_tagged_mp3(folder / "Abe Lyman - Help Me.mp3", "Help Me",
+                        "Abe Lyman and his Californians", "Bluebird - B-10887",
+                        album_artist="Abe Lyman and his Californians")
+        make_tagged_mp3(folder / "Dinah Shore - Sleepy Lagoon.mp3", "Sleepy Lagoon",
+                        "Dinah Shore", "Victor - 27875", album_artist="Dinah Shore")
+        scanner.scan_folder(session, tmp_path)
+        # the pictures saved back when the albums were filed right
+        (art / "Abe Lyman and his Californians - Bluebird - B-10887.jpg").write_bytes(b"abe")
+        (art / "Dinah Shore - Victor - 27875.jpg").write_bytes(b"dinah")
+        (art / "Bing Crosby - DECCA - 18429.jpg").write_bytes(b"bing")
+        # ...then the old folder-wide rule: everything under Bing Crosby,
+        # covers pointing at "Bing Crosby - <record>.jpg"
+        bing = lib_svc.get_or_create_artist(session, "Bing Crosby")
+        for release in session.scalars(select(Release)):
+            release.artist_display = "Bing Crosby"
+            release.album_artist_id = bing.id
+            release.cover_path = str(art / f"Bing Crosby - {release.title}.jpg")
+        session.flush()
+        return art
+
+    def test_records_go_back_to_their_artists_with_their_covers(self, session, tmp_path, monkeypatch):
+        art = self._library(session, tmp_path, monkeypatch)
+
+        # Bing's own record was right all along
+        assert scanner.repair_folder_album_artists(session) == 2
+
+        rel = {r.title: r for r in session.scalars(select(Release))}
+        assert rel["Bluebird - B-10887"].artist_display == "Abe Lyman and his Californians"
+        assert rel["Bluebird - B-10887"].album_artist.name == "Abe Lyman and his Californians"
+        assert rel["Victor - 27875"].album_artist.name == "Dinah Shore"
+        assert rel["DECCA - 18429"].artist_display == "Bing Crosby"
+        assert Path(rel["Bluebird - B-10887"].cover_path) == art / "Abe Lyman and his Californians - Bluebird - B-10887.jpg"
+        assert Path(rel["Victor - 27875"].cover_path).read_bytes() == b"dinah"
+        assert Path(rel["DECCA - 18429"].cover_path).read_bytes() == b"bing"
+        # Bing's page no longer claims the other records
+        mains = session.scalars(select(Credit).where(
+            Credit.role == Credit.ROLE_MAIN, Credit.track_id.is_(None),
+            Credit.release_id == rel["Victor - 27875"].id)).all()
+        assert [c.artist.name for c in mains] == ["Dinah Shore"]
+
+    def test_running_again_changes_nothing(self, session, tmp_path, monkeypatch):
+        self._library(session, tmp_path, monkeypatch)
+        scanner.repair_folder_album_artists(session)
+        assert scanner.repair_folder_album_artists(session) == 0
+
+    def test_joins_the_artists_existing_copy_of_the_album(self, session, tmp_path, monkeypatch):
+        art = self._library(session, tmp_path, monkeypatch)
+        # the album as it was before, left behind empty under its right artist
+        old = Release(title="Victor - 27875", title_key=normalize("Victor - 27875"),
+                      artist_display="Dinah Shore",
+                      cover_path=str(art / "Dinah Shore - Victor - 27875.jpg"))
+        session.add(old)
+        session.flush()
+
+        scanner.repair_folder_album_artists(session)
+
+        victor = session.scalars(select(Release).where(Release.title == "Victor - 27875")).all()
+        assert [r.id for r in victor] == [old.id]
+        assert [t.title for t in victor[0].tracks] == ["Sleepy Lagoon"]
+
+    def test_a_missing_cover_comes_back_from_the_files(self, session, tmp_path, monkeypatch):
+        art = self._library(session, tmp_path, monkeypatch)
+        (art / "Dinah Shore - Victor - 27875.jpg").unlink()
+        monkeypatch.setattr(scanner, "read_tags", _with_cover(scanner.read_tags, b"\xff\xd8embedded"))
+
+        scanner.repair_folder_album_artists(session)
+
+        victor = session.scalar(select(Release).where(Release.title == "Victor - 27875"))
+        assert Path(victor.cover_path).is_file()
+        assert Path(victor.cover_path).read_bytes() == b"\xff\xd8embedded"
+
+    def test_a_folder_name_guess_never_becomes_an_album_artist(self, session, tmp_path, monkeypatch):
+        """Untagged files (no album-artist tag) are left with what they have."""
+        from musicmgr import config
+
+        monkeypatch.setattr(config, "ART_DIR", tmp_path / "artwork")
+        folder = tmp_path / "2000-09" / "2008"
+        make_tagged_mp3(folder / "a.mp3", "One", "Performer One", "2008")
+        make_tagged_mp3(folder / "b.mp3", "Two", "Performer Two", "Other")
+        scanner.scan_folder(session, tmp_path)
+        before = {r.title: r.artist_display for r in session.scalars(select(Release))}
+
+        scanner.repair_folder_album_artists(session)
+
+        assert {r.title: r.artist_display for r in session.scalars(select(Release))} == before
+
+
+def _with_cover(read_tags, data):
+    def wrapped(path):
+        tags = read_tags(path)
+        tags.cover = data
+        return tags
+    return wrapped

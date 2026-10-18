@@ -270,3 +270,32 @@ def test_compilation_merge_runs_once_per_library(db, monkeypatch):
     app.bootstrap_database()
     app.bootstrap_database()
     assert calls == [1]
+
+
+def test_folder_album_artist_repair_runs_once_per_library(db, monkeypatch):
+    """2026-10-17: the Old78Records repair reads tags, so it runs once."""
+    from musicmgr.services import scanner
+    from musicmgr.ui import app
+
+    calls = []
+    monkeypatch.setattr(scanner, "repair_folder_album_artists", lambda s: calls.append(1) or 0)
+    monkeypatch.setattr(app, "init_engine", lambda *a, **k: None)
+    app.bootstrap_database()
+    app.bootstrap_database()
+    assert calls == [1]
+
+
+def test_a_failing_repair_never_blocks_startup(db, monkeypatch):
+    from musicmgr.services import scanner, updater
+    from musicmgr.ui import app
+
+    def boom(_session):
+        raise RuntimeError("disk trouble")
+
+    monkeypatch.setattr(scanner, "repair_folder_album_artists", boom)
+    monkeypatch.setattr(app, "init_engine", lambda *a, **k: None)
+    app.bootstrap_database()  # no exception
+    from musicmgr.db.session import session_scope
+
+    with session_scope() as s:
+        assert updater.get_pref(s, app.FOLDER_ARTIST_REPAIR_PREF) != "1"  # tried again next start

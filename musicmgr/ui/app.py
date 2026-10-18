@@ -29,6 +29,7 @@ from ..services import artwork_names
 from ..services import charts as chart_svc
 from ..services import library as lib_svc
 from ..services import playlists as pl_svc
+from ..services import scanner as scanner_svc
 from ..services import updater
 from ..services.player import PlayerController, stop_background_measuring
 from .context import AppContext
@@ -467,6 +468,7 @@ class MainWindow(QMainWindow):
 
 #: settings key: the one-time compilation merge has run on this library
 COMPILATION_MERGE_PREF = "compilation_merge_done"
+FOLDER_ARTIST_REPAIR_PREF = "folder_album_artist_repair_done"
 
 
 def bootstrap_database() -> None:
@@ -494,6 +496,21 @@ def bootstrap_database() -> None:
         if updater.get_pref(session, COMPILATION_MERGE_PREF) != "1":
             lib_svc.merge_compilation_duplicates(session)
             updater.set_pref(session, COMPILATION_MERGE_PREF, "1")
+        # 2026-10-17: records and singles the old folder-wide album-artist
+        # rule filed under one artist (all of Old78Records under Bing
+        # Crosby, their covers blank) go back to their own artists and
+        # covers - once per data folder (it reads some files' tags)
+        if updater.get_pref(session, FOLDER_ARTIST_REPAIR_PREF) != "1":
+            try:
+                with session.begin_nested():
+                    fixed = scanner_svc.repair_folder_album_artists(session)
+            except Exception:  # never block startup on it - tried again next start
+                logging.getLogger(__name__).exception("album-artist repair failed")
+            else:
+                if fixed:
+                    logging.getLogger(__name__).info(
+                        "put %d albums back under their own album artist / cover", fixed)
+                updater.set_pref(session, FOLDER_ARTIST_REPAIR_PREF, "1")
 
 
 def _build_splash() -> Optional[QSplashScreen]:

@@ -1434,6 +1434,172 @@ def _live_twin(session: Session, track: Track, playable_track_ids) -> Optional[T
     return by_artist[0] if len(by_artist) == 1 else None
 
 
+def repair_folder_album_artists(session: Session) -> int:
+    """Put right the albums the old folder-wide album-artist rule mis-filed
+    (2026-10-17 - James: "make sure each one of these MP3's has an song
+    image ... now there are many that are blank", D:\\Music\\Old78Records).
+
+    Before 2026-10-16 a scan gave every album in one folder the folder's most
+    common album artist. James's Old78Records folder holds 179 records, one
+    album each ("Bluebird - B-10887"), so every one of them was filed under
+    Bing Crosby - on Bing Crosby's page, missing from the real artists'
+    pages - and the covers were then looked for under
+    "Bing Crosby - <record>.jpg", which doesn't exist, so the records showed
+    blank. The scanner decides per album now (see `_scan_files`), but an
+    unchanged file is never re-read, so the existing rows stay wrong.
+
+    This looks only at folders holding more than one album, re-reads the
+    tags of the files there, makes the same per-album decision the scanner
+    now makes, and for each album that differs moves it to the right album
+    artist (credit, master and all - or onto that artist's existing copy of
+    the album). Each album there whose cover file is missing gets its
+    picture back: the existing "<album artist> - <title>" image if there is
+    one, else the picture embedded in its files. Returns how many albums
+    changed. One-time (bootstrap_database runs it once per data folder);
+    running it again changes nothing."""
+    from . import artwork_names
+
+    by_folder: dict[str, list[tuple[int, str, int]]] = {}
+    for mf_path, track_id, release_id in session.execute(
+        select(MediaFile.path, MediaFile.track_id, Track.release_id)
+        .join(Track, Track.id == MediaFile.track_id)
+        .where(MediaFile.is_missing.is_(False))
+    ):
+        folder = os.path.dirname(mf_path)
+        by_folder.setdefault(folder, []).append((release_id, mf_path, track_id))
+
+    # only folders where something looks wrong get their files read: an
+    # album whose album artist performs none of its songs, or whose cover
+    # file is gone - reading every multi-album folder (the Billboard year
+    # folders hold thousands of songs) would make this slow for nothing
+    suspect: set[int] = set()     # cover missing or album artist suspect
+    misfiled: set[int] = set()    # album artist performs none of its songs
+    multi = {folder: rows for folder, rows in by_folder.items()
+             if len({r for r, _, _ in rows}) > 1}
+    ids = {r for rows in multi.values() for r, _, _ in rows}
+    for release in session.scalars(select(Release).where(Release.id.in_(ids))):
+        if release.cover_path and not Path(release.cover_path).is_file():
+            suspect.add(release.id)
+        if release.is_compilation:
+            continue
+        owner = normalize(release.artist_display or "")
+        performers = [normalize(a or "") for a in session.scalars(
+            select(Track.artist_display).where(Track.release_id == release.id).distinct())]
+        if owner and performers and not any(owner in p or p in owner for p in performers if p):
+            suspect.add(release.id)
+            misfiled.add(release.id)
+
+    changed: set[int] = set()
+    emptied: set[int] = set()
+    for folder, rows in multi.items():
+        if not suspect & {r for r, _, _ in rows}:
+            continue
+        releases = {r.id: r for r in session.scalars(
+            select(Release).where(Release.id.in_({r for r, _, _ in rows})))}
+        tags: dict[Path, TrackTags] = {}
+        release_of: dict[Path, int] = {}
+        for release_id, mf_path, _track_id in rows:
+            path = Path(mf_path)
+            if not path.is_file():
+                continue
+            try:
+                tags[path] = _fallback_from_path(path, read_tags(path))
+            except Exception:  # an unreadable file keeps what it has
+                log.warning("repair: couldn't read %s", path, exc_info=True)
+                continue
+            release_of[path] = release_id
+        by_album: dict[str, dict[Path, TrackTags]] = {}
+        for path, t in tags.items():
+            by_album.setdefault(normalize(t.album), {})[path] = t
+        for album_tags in by_album.values():
+            artist, is_compilation = _folder_album_artist(album_tags)
+            # only an album artist the files themselves name - never one
+            # guessed from folder names - and only for a mis-filed album
+            explicit = any(t.had_explicit_album_artist for t in album_tags.values())
+            for release_id in {release_of[p] for p in album_tags}:
+                release = releases.get(release_id)
+                if release is None or release.id in emptied or release.id not in suspect:
+                    continue
+                files = [p for p in album_tags if release_of[p] == release_id]
+                target = release
+                if (explicit and release.id in misfiled
+                        and (release.artist_display or "") != artist):
+                    target = _refile_release(session, release, artist, is_compilation)
+                    if target is not release:
+                        emptied.add(release.id)
+                    changed.add(target.id)
+                if _restore_cover(target, [album_tags[p] for p in files], artwork_names):
+                    changed.add(target.id)
+    if emptied:
+        purge_empty_releases(session, emptied)
+    session.flush()
+    return len(changed)
+
+
+def _refile_release(session: Session, release: Release, artist: str,
+                    is_compilation: bool) -> Release:
+    """Move `release` to album artist `artist`; if that artist already has
+    this album, its tracks join that one instead (and the returned release
+    is that one; `release` is left empty for purge_empty_releases)."""
+    existing = session.scalar(
+        select(Release).where(Release.id != release.id,
+                              Release.title_key == release.title_key,
+                              Release.artist_display == artist))
+    if existing is not None:
+        for track in list(release.tracks):
+            track.release_id = existing.id
+        session.flush()
+        session.expire(release, ["tracks"])
+        return existing
+    old_artist_id = release.album_artist_id
+    release.artist_display = artist
+    release.is_compilation = is_compilation
+    aa = lib.get_or_create_artist(session, artist)
+    if old_artist_id is not None and old_artist_id != aa.id:
+        session.execute(delete(Credit).where(
+            Credit.release_id == release.id, Credit.track_id.is_(None),
+            Credit.artist_id == old_artist_id, Credit.role == Credit.ROLE_MAIN))
+    lib.add_credit(session, aa, Credit.ROLE_MAIN, release=release)
+    release.album_artist_id = aa.id
+    master = lib.get_or_create_master(session, release.title, artist, release.year)
+    old_master_id = release.master_id
+    release.master_id = master.id
+    if master.main_release_id is None:
+        master.main_release_id = release.id
+    session.flush()
+    if old_master_id and old_master_id != master.id:
+        from ..db.models import Master
+
+        rest = session.scalars(select(Release.id).where(Release.master_id == old_master_id)).first()
+        old = session.get(Master, old_master_id)
+        if old is not None:
+            if rest is None:
+                session.delete(old)
+            elif old.main_release_id == release.id:
+                old.main_release_id = rest
+    return release
+
+
+def _restore_cover(release: Release, tags: Sequence[TrackTags], artwork_names) -> bool:
+    """Give `release` a cover file that exists: the image already saved
+    under its "<album artist> - <title>" name, else one embedded in its
+    files. A cover that's there is left alone. True if it changed."""
+    current = Path(release.cover_path) if release.cover_path else None
+    if current is not None and current.is_file():
+        return False
+    own = artwork_names.find_image(config.ART_DIR, artwork_names.release_stem(release))
+    if own is not None and own.is_file():
+        release.cover_path = str(own)
+        return True
+    for t in tags:
+        if t.cover:
+            saved = artwork_names.save_release_cover(release, t.cover, overwrite=False)
+            if saved:
+                release.cover_path = saved
+                return True
+    return False
+
+
 def purge_empty_releases(session: Session, release_ids: Optional[Iterable[int]] = None) -> int:
     """Delete releases left with no tracks (2026-10-16). A rescan that files
     an album's tracks under a different release - a retag changed its album
