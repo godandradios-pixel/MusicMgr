@@ -614,10 +614,10 @@ class TestPurgeOrphanedTracks:
 
 
 def make_tagged_mp3(path: Path, title: str, artist: str, album: str, *,
-                    album_artist: str = "", catalog: str = "") -> None:
+                    album_artist: str = "", catalog: str = "", track: str = "") -> None:
     """A tiny silent MP3 with title/artist/album tags (and, if given, an
-    album artist and catalog number)."""
-    from mutagen.id3 import TALB, TIT2, TPE1, TPE2, TXXX
+    album artist, catalog number and track number)."""
+    from mutagen.id3 import TALB, TIT2, TPE1, TPE2, TRCK, TXXX
     from mutagen.mp3 import MP3
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -635,6 +635,8 @@ def make_tagged_mp3(path: Path, title: str, artist: str, album: str, *,
         audio.tags.add(TPE2(encoding=3, text=[album_artist]))
     if catalog:
         audio.tags.add(TXXX(encoding=3, desc="CATALOGNUMBER", text=[catalog]))
+    if track:
+        audio.tags.add(TRCK(encoding=3, text=[track]))
     audio.save()
 
 
@@ -761,6 +763,98 @@ class TestSameSongByDifferentArtists:
         # a file that's already its own track just comes back as it is
         again = scanner.import_single(session, folder / "Perry Como - Forever And Ever.mp3")
         assert again.id == track.id
+
+
+class TestVersionsAtDifferentTrackNumbers:
+    """2026-10-18 - James: "Why is 2. Lover missing from the Michael Stanley
+    Band Heartland album". The title key ignores "(Live)", so 02 Lover and
+    12 Lover (Live) were one track with two files."""
+
+    ALBUM, BAND = "Heartland", "The Michael Stanley Band"
+
+    def _album(self, root: Path) -> Path:
+        folder = root / self.BAND / self.ALBUM
+        make_tagged_mp3(folder / "01 I'll Never Need Anyone More.mp3", "I'll Never Need Anyone More",
+                        self.BAND, self.ALBUM, track="1/13")
+        make_tagged_mp3(folder / "02 Lover.mp3", "Lover", self.BAND, self.ALBUM, track="2/13")
+        make_tagged_mp3(folder / "12 Lover (Live).mp3", "Lover (Live)", self.BAND, self.ALBUM, track="12/13")
+        return folder
+
+    def _lovers(self, session):
+        return {t.track_no: t for t in session.scalars(
+            select(Track).where(Track.title.like("Lover%"))).all()}
+
+    def test_a_live_version_at_another_number_is_its_own_track(self, session, tmp_path):
+        self._album(tmp_path)
+        scanner.scan_folder(session, tmp_path)
+        lovers = self._lovers(session)
+        assert set(lovers) == {2, 12}
+        assert lovers[2].title == "Lover" and lovers[12].title == "Lover (Live)"
+        assert [Path(m.path).name for m in lovers[2].files] == ["02 Lover.mp3"]
+        assert [Path(m.path).name for m in lovers[12].files] == ["12 Lover (Live).mp3"]
+        assert lovers[2].release_id == lovers[12].release_id
+
+    def test_two_copies_at_the_same_number_still_share_a_track(self, session, tmp_path):
+        folder = tmp_path / "Album"
+        make_tagged_mp3(folder / "03 Lover.mp3", "Lover", self.BAND, self.ALBUM, track="3")
+        make_tagged_mp3(folder / "03 Lover copy.mp3", "Lover", self.BAND, self.ALBUM, track="3/13")
+        scanner.scan_folder(session, tmp_path)
+        tracks = session.scalars(select(Track)).all()
+        assert len(tracks) == 1 and len(tracks[0].files) == 2
+
+    def test_a_999_copy_joins_the_numbered_one(self, session, tmp_path):
+        # the Billboard folders' extra copies are tagged 999 - not a position
+        folder = tmp_path / "1950"
+        make_tagged_mp3(folder / "Ames Bros - Rag Mop.mp3", "Rag Mop", "Ames Bros",
+                        "1950 Billboard Top Hits", track="23")
+        make_tagged_mp3(folder / "Ames Bros (original) - Rag Mop.mp3", "Rag Mop", "Ames Bros",
+                        "1950 Billboard Top Hits", track="999")
+        scanner.scan_folder(session, tmp_path)
+        tracks = session.scalars(select(Track)).all()
+        assert len(tracks) == 1 and len(tracks[0].files) == 2 and tracks[0].track_no == 23
+
+    def test_a_rescan_separates_versions_folded_together_before(self, session, tmp_path):
+        self._album(tmp_path)
+        scanner.scan_folder(session, tmp_path)
+        # recreate PC1's state: both files on the live track, which keeps
+        # its playlist place
+        lovers = self._lovers(session)
+        keep, studio = lovers[12], lovers[2]
+        for mf in list(studio.files):
+            mf.track = keep
+        session.delete(studio)
+        playlist = Playlist(name="MSB")
+        session.add(playlist)
+        session.flush()
+        session.add(PlaylistItem(playlist_id=playlist.id, track_id=keep.id, position=0))
+        session.flush()
+        session.expire_all()
+        assert set(self._lovers(session)) == {12}
+
+        result = scanner.scan_folder(session, tmp_path)  # files unchanged on disk
+
+        assert result.separated == 1
+        session.expire_all()
+        lovers = self._lovers(session)
+        assert set(lovers) == {2, 12}
+        assert lovers[12].id == keep.id
+        assert [Path(m.path).name for m in lovers[2].files] == ["02 Lover.mp3"]
+        assert session.scalar(select(PlaylistItem)).track_id == keep.id
+
+        again = scanner.scan_folder(session, tmp_path)
+        assert again.separated == 0 and again.unchanged == 3
+
+    def test_renumbering_a_lone_file_keeps_its_track(self, session, tmp_path):
+        folder = self._album(tmp_path)
+        scanner.scan_folder(session, tmp_path)
+        studio_id = self._lovers(session)[2].id
+        path = folder / "02 Lover.mp3"
+        make_tagged_mp3(path, "Lover", self.BAND, self.ALBUM, track="4/13")
+        _touch_newer(path)
+        scanner.scan_folder(session, tmp_path)
+        session.expire_all()
+        lovers = self._lovers(session)
+        assert set(lovers) == {4, 12} and lovers[4].id == studio_id
 
 
 def _touch_newer(path: Path) -> None:

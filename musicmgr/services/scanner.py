@@ -657,6 +657,14 @@ def _quality_score(tags: TrackTags) -> int:
     return int(100 * filled / len(fields))
 
 
+#: track numbers that aren't a position on the album - see import_file
+_PLACEHOLDER_TRACK_NOS = frozenset({0, 999})
+
+
+def _real_track_no(track_no: Optional[int]) -> Optional[int]:
+    return track_no if track_no and track_no not in _PLACEHOLDER_TRACK_NOS else None
+
+
 def import_file(
     session: Session,
     path: Path,
@@ -791,11 +799,33 @@ def import_file(
         key = normalize(t.artist_display or "")
         return not key or not artist_key or key == artist_key
 
+    # 2026-10-18 - nor is it the same track when the two files sit at
+    # different track numbers on the album. The title key drops "(Live)",
+    # "(Remastered)", "(Mono)" and the like, so a live or mono bonus version
+    # was folded into the studio track and vanished from the album (James:
+    # "Why is 2. Lover missing from the Michael Stanley Band Heartland
+    # album" - 02 Lover and 12 Lover (Live) were one track; 442 such tracks
+    # on PC1). An MP3 and a FLAC of one recording still share a track: same
+    # number. 999 and 0 aren't positions (the Billboard folders' extra
+    # copies are tagged 999), so they never split a track.
+    this_no = _real_track_no(tags.track_no)
+
+    def same_number(t: Track) -> bool:
+        other = _real_track_no(t.track_no)
+        if this_no is None or other is None or other == this_no:
+            return True
+        # this file alone on its own track: a renumbered file, same song
+        return (existing is not None and existing.track is t
+                and all(f is existing for f in t.files))
+
+    def same_track(t: Track) -> bool:
+        return same_artist(t) and same_number(t)
+
     track = None
-    if existing is not None and existing.track in candidates and same_artist(existing.track):
+    if existing is not None and existing.track in candidates and same_track(existing.track):
         track = existing.track
     if track is None:
-        track = next((c for c in candidates if same_artist(c)), None)
+        track = next((c for c in candidates if same_track(c)), None)
     if track is None:
         track = Track(release_id=release.id, title=tags.title, title_key=title_key)
         session.add(track)
