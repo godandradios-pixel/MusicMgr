@@ -446,6 +446,7 @@ class ScanThread(QThread):
                 # 2026-10-13: old-time radio files an older scan added
                 audio_result.radio_removed = scanner.remove_radio_files(session)
                 audio_result.skipped_removed = scanner.remove_skipped_folder_files(session)
+                audio_result.case_duplicates_removed = scanner.merge_case_duplicate_files(session)
                 audio_result.missing = scanner.mark_missing_files(session)
                 audio_result.removed = scanner.purge_orphaned_tracks(session)
             # 2026-09-22 - James: "add a real cancel button that stops any

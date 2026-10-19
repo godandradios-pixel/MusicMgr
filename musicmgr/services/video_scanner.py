@@ -25,7 +25,7 @@ from .. import config
 from ..db.models import Video, WatchedFolder
 from . import library as lib
 from .matching import normalize
-from .scanner import ProgressFn, ScanResult
+from .scanner import ProgressFn, ScanResult, path_matches
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def iter_video_files(root: Path) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if not config.is_skipped_dir(d)]
         for name in sorted(filenames):
-            if name.startswith("."):
+            if config.is_hidden_name(name):
                 continue
             p = Path(dirpath) / name
             if p.suffix.lower() in config.VIDEO_EXTENSIONS:
@@ -91,6 +91,14 @@ def import_video_file(
     """
     stat = path.stat()
     existing = session.scalar(select(Video).where(Video.path == str(path)))
+    if existing is None and config.CASE_INSENSITIVE_PATHS:
+        # 2026-10-19: same file under another capitalization (see
+        # scanner.find_media_file) - keep the row, follow the new spelling
+        existing = session.scalar(
+            select(Video).where(path_matches(Video.path, path)).limit(1)
+        )
+        if existing is not None:
+            existing.path = str(path)
     if existing is not None:
         if not force and existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size:
             existing.is_missing = False

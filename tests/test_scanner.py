@@ -1250,3 +1250,72 @@ def _with_cover(read_tags, data):
         tags.cover = data
         return tags
     return wrapped
+
+
+class TestEllipsisFoldersAndCaseOnlyRenames:
+    """2026-10-19: album folders whose names start with "..." were skipped
+    as hidden, and on Windows a file could be imported twice when only its
+    capitalization changed."""
+
+    def test_ellipsis_names_are_scanned_but_dot_names_are_not(self, tmp_path):
+        album = tmp_path / "Phil Collins" / "...But Seriously" / "01 Hang in Long Enough.wav"
+        song = tmp_path / "Taylor Swift" / "Reputation" / "...Ready for It.wav"
+        hidden = tmp_path / ".hidden" / "01 Nope.wav"
+        dotfile = tmp_path / "Artist" / ".01 Nope.wav"
+        for p in (album, song, hidden, dotfile):
+            make_silent_wav(p)
+
+        found = set(scanner.iter_audio_files(tmp_path))
+
+        assert found == {album, song}
+
+    def test_usb_sync_does_not_skip_ellipsis_folders(self):
+        from musicmgr.services import usb_sync
+
+        assert not usb_sync._skip_dir("...And Out Come The Wolves")
+        assert usb_sync._skip_dir(".git")
+        assert not usb_sync._skip_file("...Ready for It.mp3")
+
+    def test_a_case_only_rename_reuses_the_same_row(self, session, tmp_path, monkeypatch):
+        monkeypatch.setattr(scanner.config, "CASE_INSENSITIVE_PATHS", True)
+        wav = tmp_path / "Third Day" / "Miracle" / "03 Your Love Is Like a River.wav"
+        make_silent_wav(wav)
+        scanner.scan_folder(session, tmp_path)
+        mf = session.scalar(select(MediaFile))
+        # the library remembers the old capitalization
+        mf.path = str(wav).replace("Like a River", "Like A River")
+        mf.mtime = 0  # changed on disk, so it's read again
+        session.flush()
+
+        scanner.scan_folder(session, tmp_path)
+
+        assert [f.path for f in session.scalars(select(MediaFile))] == [str(wav)]
+        assert session.scalar(select(func.count(Track.id))) == 1
+
+    def test_merge_case_duplicate_files_keeps_the_newest_spelling(
+        self, session, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(scanner.config, "CASE_INSENSITIVE_PATHS", True)
+        wav = tmp_path / "Third Day" / "Miracle" / "03 Your Love Is Like a River.wav"
+        make_silent_wav(wav)
+        scanner.scan_folder(session, tmp_path)
+        track = session.scalar(select(Track))
+        old = str(wav).replace("Like a River", "Like A River")
+        session.add(MediaFile(track_id=track.id, path=old))
+        session.flush()
+
+        assert scanner.merge_case_duplicate_files(session) == 1
+        assert [f.path for f in session.scalars(select(MediaFile))] == [old]
+
+    def test_merge_case_duplicate_files_does_nothing_on_case_sensitive_systems(
+        self, session, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(scanner.config, "CASE_INSENSITIVE_PATHS", False)
+        wav = tmp_path / "A" / "B" / "01 Song.wav"
+        make_silent_wav(wav)
+        scanner.scan_folder(session, tmp_path)
+        track = session.scalar(select(Track))
+        session.add(MediaFile(track_id=track.id, path=str(wav).replace("Song", "SONG")))
+        session.flush()
+
+        assert scanner.merge_case_duplicate_files(session) == 0

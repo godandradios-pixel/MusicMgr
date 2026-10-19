@@ -53,6 +53,7 @@ from typing import Callable, Iterable, Optional
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from .. import config
 from ..db.models import Setting, SyncBaseline, SyncPair, WatchedFolder
 
 log = logging.getLogger(__name__)
@@ -445,12 +446,12 @@ class FileStat:
 
 
 def _skip_dir(name: str) -> bool:
-    return name.startswith(".") or name.casefold() in _SKIP_DIRS
+    return config.is_hidden_name(name) or name.casefold() in _SKIP_DIRS
 
 
 def _skip_file(name: str) -> bool:
     low = name.casefold()
-    return name.startswith(".") or low in _SKIP_FILES or low.endswith(TEMP_SUFFIX)
+    return config.is_hidden_name(name) or low in _SKIP_FILES or low.endswith(TEMP_SUFFIX)
 
 
 def walk(root: Path, should_stop: Optional[StopFn] = None, progress: Optional[ProgressFn] = None,

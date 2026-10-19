@@ -131,10 +131,25 @@ VIDEO_EXTENSIONS = {
 SKIP_SCAN_DIRS = {"_gsdata_", "$recycle.bin", "system volume information"}
 
 
+def is_hidden_name(name: str) -> bool:
+    """A dot-file or dot-folder (".git", ".DS_Store") - but not a name that
+    merely starts with an ellipsis. 2026-10-19: "...But Seriously" (Phil
+    Collins) and "...And Out Come The Wolves" (Rancid) were being skipped
+    as hidden, so 31 songs never made it into the library or onto the USB."""
+    return name.startswith(".") and not name.startswith("..")
+
+
 def is_skipped_dir(name: str) -> bool:
     """True for a folder name a scan leaves alone - hidden (dot) folders
     and SKIP_SCAN_DIRS."""
-    return name.startswith(".") or name.casefold() in SKIP_SCAN_DIRS
+    return is_hidden_name(name) or name.casefold() in SKIP_SCAN_DIRS
+
+
+#: Windows paths ignore letter case: "Like A River.mp3" and "Like a
+#: River.mp3" are one file there. Path lookups in the scanners compare
+#: case-insensitively on Windows (2026-10-19 - a retagged/renamed file had
+#: been imported a second time under its new capitalization).
+CASE_INSENSITIVE_PATHS = os.name == "nt"
 
 #: Touch UI sizing. Bump these if your panel is very high-DPI or very small.
 TOUCH = {

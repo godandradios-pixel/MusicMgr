@@ -112,6 +112,9 @@ _INDEX_ADDITIONS = [
     # 2026-10-13: "this song's files" (duplicates.album_copy_for during
     # chart matching, purge_orphaned_tracks, ...) scanned every row
     ("ix_media_files_track_id", "media_files", "track_id"),
+    # 2026-10-19: case-insensitive path lookups on Windows (scanner.path_matches)
+    ("ix_media_files_path_nocase", "media_files", "path COLLATE NOCASE"),
+    ("ix_videos_path_nocase", "videos", "path COLLATE NOCASE"),
 ]
 
 

@@ -104,6 +104,9 @@ class ScanResult:
     #: file rows inside a folder scans now skip (GoodSync's _gsdata_ and
     #: the like) taken back out - 2026-10-18, see remove_skipped_folder_files
     skipped_removed: int = 0
+    #: rows for a file already in the library under another capitalization
+    #: (2026-10-19, see merge_case_duplicate_files)
+    case_duplicates_removed: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -113,6 +116,9 @@ class ScanResult:
                  if self.radio_removed else "")
         skipped = (f", {self.skipped_removed} copies in sync/system folders removed"
                    if self.skipped_removed else "")
+        if self.case_duplicates_removed:
+            skipped += (f", {self.case_duplicates_removed} duplicate entries "
+                        "differing only in capitalization removed")
         return (
             f"{self.scanned} files scanned - {self.added} added, "
             f"{self.updated} updated, {self.unchanged} unchanged, "
@@ -532,7 +538,7 @@ def iter_audio_files(root: Path, skip: Sequence[str] = ()) -> Iterable[Path]:
             and not (skip and radio_folder.is_radio_path(os.path.join(dirpath, d), skip))
         ]
         for name in sorted(filenames):
-            if name.startswith("."):
+            if config.is_hidden_name(name):
                 continue
             p = Path(dirpath) / name
             if p.suffix.lower() in config.AUDIO_EXTENSIONS:
@@ -577,6 +583,24 @@ def _folder_album_artist(tags_by_path: dict[Path, TrackTags]) -> tuple[str, bool
     return "Various Artists", True
 
 
+def path_matches(column, path: Path | str):
+    """`column == path`, ignoring letter case where the file system does
+    (config.CASE_INSENSITIVE_PATHS). NOCASE uses the
+    ix_media_files_path_nocase index, so a lookup stays an index seek."""
+    if config.CASE_INSENSITIVE_PATHS:
+        return column.collate("NOCASE") == str(path)
+    return column == str(path)
+
+
+def find_media_file(session: Session, path: Path | str) -> Optional[MediaFile]:
+    """The library's row for `path`: the exact spelling first, then - on a
+    case-insensitive file system - any row differing only in letter case."""
+    mf = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+    if mf is None and config.CASE_INSENSITIVE_PATHS:
+        mf = session.scalar(select(MediaFile).where(path_matches(MediaFile.path, path)).limit(1))
+    return mf
+
+
 def _needs_import(session: Session, path: Path, force: bool = False) -> bool:
     """Cheap pre-check mirroring `import_file`'s own unchanged-file
     shortcut, used to decide which files are worth reading tags for at all
@@ -593,7 +617,7 @@ def _needs_import(session: Session, path: Path, force: bool = False) -> bool:
     if force:
         return True
     stat = path.stat()
-    existing = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+    existing = find_media_file(session, path)
     if existing is None:
         return True
     return not (existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size)
@@ -626,7 +650,7 @@ def import_single(session: Session, path: Path | str) -> Optional[Track]:
         if result.separated_from:
             _rematch_separated(session, result)
         session.flush()
-        mf = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+        mf = find_media_file(session, path)
         return mf.track if mf is not None else None
     return import_file(session, path, result)
 
@@ -634,7 +658,7 @@ def import_single(session: Session, path: Path | str) -> Optional[Track]:
 def _reimport_on_same_album(session: Session, path: Path, result: ScanResult) -> None:
     """Re-read one unchanged file and file it again - on the album it's
     already on, so only its track can change."""
-    mf = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+    mf = find_media_file(session, path)
     release = mf.track.release if mf is not None and mf.track is not None else None
     if release is None or not release.artist_display:
         import_file(session, path, result, force=True)
@@ -708,8 +732,12 @@ def import_file(
     through is safe, just slower than skipping it.
     """
     stat = path.stat()
-    existing = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+    existing = find_media_file(session, path)
     before_track_id = existing.track_id if existing is not None else None
+    if existing is not None and existing.path != str(path):
+        # same file, new capitalization (find_media_file) - keep the row
+        # and its history, just follow the new spelling
+        existing.path = str(path)
     if existing is not None:
         if not force and existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size:
             existing.is_missing = False
@@ -928,7 +956,7 @@ def hide_retitled(session: Session, items: Iterable[tuple[Path, "TrackTags"]]) -
     by_track: dict[int, list[str]] = {}
     tracks: dict[int, Track] = {}
     for path, tags in items:
-        mf = session.scalar(select(MediaFile).where(MediaFile.path == str(path)))
+        mf = find_media_file(session, path)
         if mf is None or mf.track is None:
             continue
         tracks[mf.track_id] = mf.track
@@ -1285,6 +1313,7 @@ def rescan_all(
         scan_folder(session, folder.path, progress, result, force=force)
     result.radio_removed = remove_radio_files(session)
     result.skipped_removed = remove_skipped_folder_files(session)
+    result.case_duplicates_removed = merge_case_duplicate_files(session)
     result.missing = mark_missing_files(session)
     result.removed = purge_orphaned_tracks(session)
     return result
@@ -1335,6 +1364,36 @@ def remove_skipped_folder_files(session: Session) -> int:
         mf_id for mf_id, path in session.execute(select(MediaFile.id, MediaFile.path))
         if _in_skipped_folder(path or "")
     ]
+    for start in range(0, len(doomed), 500):
+        session.execute(delete(MediaFile).where(MediaFile.id.in_(doomed[start:start + 500])))
+    if doomed:
+        session.flush()
+        session.expire_all()
+    return len(doomed)
+
+
+def merge_case_duplicate_files(session: Session) -> int:
+    """Drop library rows that are the same file as another row, differing
+    only in letter case (2026-10-19 - "03 Your Love Is Like A River.mp3"
+    and "...Like a River.mp3" were both in the library, one file on disk).
+    Only on a case-insensitive file system (config.CASE_INSENSITIVE_PATHS).
+    The most recently added row - the spelling the last scan saw - stays;
+    purge_orphaned_tracks, which every scan runs afterwards, tidies a
+    track left without a file."""
+    if not config.CASE_INSENSITIVE_PATHS:
+        return 0
+    groups: dict[str, list[int]] = {}
+    for mf_id, path in session.execute(
+        select(MediaFile.id, MediaFile.path).where(
+            func.lower(MediaFile.path).in_(
+                select(func.lower(MediaFile.path))
+                .group_by(func.lower(MediaFile.path))
+                .having(func.count(MediaFile.id) > 1)
+            )
+        )
+    ):
+        groups.setdefault((path or "").casefold(), []).append(mf_id)
+    doomed = [i for ids in groups.values() if len(ids) > 1 for i in sorted(ids)[:-1]]
     for start in range(0, len(doomed), 500):
         session.execute(delete(MediaFile).where(MediaFile.id.in_(doomed[start:start + 500])))
     if doomed:

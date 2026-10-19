@@ -35,6 +35,7 @@ def cmd_scan(args) -> int:
             )
         result.radio_removed = scanner.remove_radio_files(session)
         result.skipped_removed = scanner.remove_skipped_folder_files(session)
+        result.case_duplicates_removed = scanner.merge_case_duplicate_files(session)
         result.missing = scanner.mark_missing_files(session)
         result.removed = scanner.purge_orphaned_tracks(session)
     print("\n" + result.summary())
