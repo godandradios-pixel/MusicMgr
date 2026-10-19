@@ -39,6 +39,12 @@ Uses the app's code, so run it with the repo's Python:
     venv\\Scripts\\python tools\\fix_ghost_chart_tracks.py --db D:\\MusicMgr\\data\\library.db
     venv\\Scripts\\python tools\\fix_ghost_chart_tracks.py --db D:\\MusicMgr\\data\\library.db --apply
 
+A leftover it can't pair can be handed over by id (here the two Jerry
+Colonna copies deleted on 2026-10-18, whose plays belong to the kept
+"with Fud and his Fuddy-Bears" copies):
+
+    venv\\Scripts\\python tools\\fix_ghost_chart_tracks.py --db D:\\MusicMgr\\data\\library.db --move 99085=105336 --move 99086=105337 --apply
+
 CLOSE MUSICMGR FIRST. The first line only reports. --apply writes a backup
 next to the database (data\\backups\\library-before-ghost-fix-<time>.db)
 before changing anything.
@@ -233,6 +239,40 @@ def run(session, read_title: Callable[[str], Optional[str]], out=print) -> dict:
             "emptied": emptied}
 
 
+def move_by_hand(session, pairs: list[tuple[int, int]], out=print) -> dict:
+    """--move OLD=NEW: hand one song's history to another by id, for a
+    leftover the automatic step can't pair (a different spelling of the
+    artist, say). Only a song with no present file moves - carry_history
+    refuses anything else."""
+    from musicmgr.db.models import Track
+    from musicmgr.services import scanner
+
+    moves = {}
+    for old_id, new_id in pairs:
+        old, new = session.get(Track, old_id), session.get(Track, new_id)
+        if old is None or new is None:
+            out(f"  {old_id} -> {new_id}: no such song, skipped")
+            continue
+        if any(not f.is_missing for f in old.files):
+            out(f"  {old_id} {old.title!r}: still has a file, skipped")
+            continue
+        out(f"  {old_id} {old.title!r} - {old.artist_display}  ({_counts(session, old_id)})")
+        out(f"      -> {new_id} {new.title!r} - {new.artist_display}")
+        moves[old_id] = new_id
+    done = scanner.carry_history(session, moves)
+    emptied = scanner.purge_empty_releases(session)
+    session.flush()
+    out(f"\nMoved {len(done)}; albums left empty and removed: {emptied}")
+    return {"moves": done, "emptied": emptied}
+
+
+def _pair(text: str) -> tuple[int, int]:
+    old, sep, new = text.partition("=")
+    if not sep or not old.strip().isdigit() or not new.strip().isdigit():
+        raise argparse.ArgumentTypeError(f"expected OLD=NEW song ids, got {text!r}")
+    return int(old), int(new)
+
+
 def _tag_title(path: str) -> Optional[str]:
     from musicmgr.services import scanner
 
@@ -247,6 +287,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--db", required=True, type=Path, help="path to library.db")
     ap.add_argument("--apply", action="store_true", help="make the changes (default: report only)")
+    ap.add_argument("--move", type=_pair, action="append", metavar="OLD=NEW",
+                    help="only hand song OLD's history to song NEW (by id); repeatable")
     args = ap.parse_args(argv)
     db_path = args.db.resolve()
     if not db_path.is_file():
@@ -270,10 +312,14 @@ def main(argv=None) -> int:
     dbs.init_engine(db_path=db_path)
     session = dbs.new_session()
     try:
-        run(session, _tag_title)
+        if args.move:
+            print(f"Songs handed over by hand: {len(args.move)}")
+            move_by_hand(session, args.move)
+        else:
+            run(session, _tag_title)
         if args.apply:
             session.commit()
-            print("\nDone. Start MusicMgr; Charts' coverage now counts only songs you can play.")
+            print("\nDone.")
         else:
             session.rollback()
             print("\nReport only - nothing changed. Run again with --apply to make these changes.")
