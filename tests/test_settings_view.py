@@ -1032,3 +1032,105 @@ class TestDownloadArtistProfilesScope:
         monkeypatch.setattr(view, "_ask_profile_scope", lambda n, a: None)
         view.download_artist_profiles()
         assert started == []
+
+
+class TestLibraryBackupButtons:
+    """2026-10-19: Settings › Files & data "Back up library" / "Restore
+    library" - see services/library_backup.py (tested on its own in
+    tests/test_library_backup.py)."""
+
+    @pytest.fixture
+    def paths(self, tmp_path, monkeypatch):
+        import sqlite3
+
+        db = tmp_path / "library.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE tracks (title TEXT)")
+        con.commit()
+        con.close()
+        monkeypatch.setattr(settings_module.config, "DB_PATH", db)
+        monkeypatch.setattr(settings_module.config, "DB_BACKUP_DIR", tmp_path / "backups")
+        monkeypatch.setattr(settings_module.config, "RESTORE_MARKER", tmp_path / "restore_pending.txt")
+        return tmp_path
+
+    def test_back_up_now_saves_todays_copy(self, ctx, view, paths):
+        notifications = []
+        ctx.notified.connect(notifications.append)
+
+        view.back_up_library()
+
+        daily = list((paths / "backups").glob("library-daily-*.db"))
+        assert len(daily) == 1
+        assert notifications == [f"Library backed up ({daily[0].name})"]
+
+    def test_restore_with_no_backups_just_says_so(self, ctx, view, paths):
+        notifications = []
+        ctx.notified.connect(notifications.append)
+
+        view.restore_library()
+
+        assert "no backups yet" in notifications[0]
+
+    def test_restore_from_source_schedules_it_for_the_next_start(
+        self, ctx, view, paths, monkeypatch
+    ):
+        view.back_up_library()
+        backup = next((paths / "backups").glob("library-daily-*.db"))
+
+        class _Pick:
+            def __init__(self, backups, parent=None):
+                self.chosen = backups[0].path
+
+            def exec(self):
+                return QDialog.Accepted
+
+        monkeypatch.setattr(settings_module, "RestoreBackupDialog", _Pick)
+        monkeypatch.setattr(
+            settings_module.QMessageBox, "question",
+            staticmethod(lambda *a, **k: settings_module.QMessageBox.Yes),
+        )
+        monkeypatch.setattr(view, "_current_exe", lambda: None)
+        notifications = []
+        ctx.notified.connect(notifications.append)
+
+        view.restore_library()
+
+        assert (paths / "restore_pending.txt").read_text() == str(backup)
+        assert notifications == ["Close MusicMgr and start it again to finish restoring"]
+
+    def test_declining_the_confirmation_schedules_nothing(self, ctx, view, paths, monkeypatch):
+        view.back_up_library()
+
+        class _Pick:
+            def __init__(self, backups, parent=None):
+                self.chosen = backups[0].path
+
+            def exec(self):
+                return QDialog.Accepted
+
+        monkeypatch.setattr(settings_module, "RestoreBackupDialog", _Pick)
+        monkeypatch.setattr(
+            settings_module.QMessageBox, "question",
+            staticmethod(lambda *a, **k: settings_module.QMessageBox.No),
+        )
+
+        view.restore_library()
+
+        assert not (paths / "restore_pending.txt").exists()
+
+    def test_the_picker_lists_backups_newest_first(self, qapp, paths):
+        from musicmgr.services import library_backup
+        from musicmgr.ui.widgets.backups import RestoreBackupDialog
+        import datetime as dt
+
+        db = paths / "library.db"
+        for day in (17, 18):
+            library_backup.make_daily_backup(db, paths / "backups", today=dt.date(2026, 10, day))
+        backups = library_backup.list_backups(paths / "backups")
+
+        dialog = RestoreBackupDialog(backups)
+
+        assert dialog.list.count() == 2
+        assert dialog.restore_btn.isEnabled()
+        dialog._accept()
+        assert dialog.chosen == backups[0].path

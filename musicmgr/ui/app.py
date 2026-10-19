@@ -30,6 +30,7 @@ from ..services import charts as chart_svc
 from ..services import library as lib_svc
 from ..services import playlists as pl_svc
 from ..services import scanner as scanner_svc
+from ..services import library_backup
 from ..services import updater
 from ..services.player import PlayerController, stop_background_measuring
 from .context import AppContext
@@ -463,6 +464,14 @@ class MainWindow(QMainWindow):
             if view is not None and hasattr(view, "shutdown"):
                 view.shutdown()
         self.ctx.tuner.shutdown()
+        # 2026-10-19: today's library backup, the first time the app closes
+        # each day (services/library_backup.py) - after everything above has
+        # stopped writing, before the window goes
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            library_backup.make_daily_backup(config.DB_PATH, config.DB_BACKUP_DIR)
+        finally:
+            QApplication.restoreOverrideCursor()
         super().closeEvent(event)
 
 
@@ -617,6 +626,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if splash is not None:
         app.processEvents()
 
+    restore = library_backup.apply_pending_restore(
+        config.DB_PATH, config.DB_BACKUP_DIR, config.RESTORE_MARKER
+    )
     _pre_database_housekeeping()
     bootstrap_database()
 
@@ -636,6 +648,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         window.show()
 
+    if restore is not None:
+        message = restore.error or (
+            f"Library restored from {restore.restored_from.name}"
+            + (f" - the library it replaced is saved as {restore.saved_current_as.name}"
+               if restore.saved_current_as else "")
+        )
+        QTimer.singleShot(1500, lambda: window.ctx.notify(message))
     if "--after-update" in argv:
         QTimer.singleShot(1500, lambda: window.ctx.notify(f"Updated to MusicMgr {RELEASE_VERSION}"))
     # 2026-09-24 - James: "I should never be checking for updates or anything

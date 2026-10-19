@@ -142,6 +142,7 @@ from typing import Optional
 from PySide6.QtCore import QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -178,6 +179,7 @@ from ...services import metadata_health
 from ...services import playback_prefs
 from ...services import replaygain
 from ...services import updater
+from ...services import library_backup
 from ...services import library_state
 from ...services import usb_sync
 from ...services import video_scanner
@@ -204,6 +206,7 @@ from ..widgets.common import (
     dim_label,
     guard_wheel,
 )
+from ..widgets.backups import RestoreBackupDialog
 from ..widgets.usb_sync import (
     UsbCompareThread,
     UsbPairsDialog,
@@ -1244,6 +1247,22 @@ class SettingsView(BaseView):
             "Move your database and media files to a new location.",
             "Move…",
             self.move_data,
+        )
+        # 2026-10-19 - James: daily library backups, local only, keep 7,
+        # with a Restore option - see services/library_backup.py
+        add_tool_row(
+            "Back up library",
+            "Save a copy of your library now. MusicMgr also does this by itself the first time "
+            "it closes each day, keeping the last 7.",
+            "Back up",
+            self.back_up_library,
+        )
+        add_tool_row(
+            "Restore library",
+            "Put your playlists, play history, charts and settings back to a saved backup. "
+            "Music files aren't touched.",
+            "Restore…",
+            self.restore_library,
         )
         # 2026-09-19 - James: "Create for me a 'nuke' option. Where you
         # completely wipe out library.db and start with a fresh database."
@@ -3579,6 +3598,62 @@ class SettingsView(BaseView):
         self._hide_cancel(self._rematch_thread)
         self.ctx.notify(f"{total} chart entries now point at tracks you own")
         self.ctx.libraryChanged.emit()
+
+    # -- library backups (2026-10-19) -------------------------------------------
+
+    def back_up_library(self) -> None:
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = library_backup.make_daily_backup(config.DB_PATH, config.DB_BACKUP_DIR, force=True)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if result.error:
+            QMessageBox.warning(self, "Back up library", result.error)
+        else:
+            self.ctx.notify(f"Library backed up ({result.path.name})")
+
+    def restore_library(self) -> None:
+        backups = library_backup.list_backups(config.DB_BACKUP_DIR)
+        if not backups:
+            self.ctx.notify("There are no backups yet - use Back up to make one")
+            return
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+        dialog = RestoreBackupDialog(backups, self)
+        if dialog.exec() != QDialog.Accepted or dialog.chosen is None:
+            return
+        chosen = next(b for b in backups if b.path == dialog.chosen)
+        exe = self._current_exe()
+        restart = ("MusicMgr will restart to do this." if exe is not None
+                   else "Close MusicMgr and start it again to finish.")
+        confirm = QMessageBox.question(
+            self,
+            "Restore library",
+            f"Replace your library with the backup from {chosen.when:%A %B %d, %I:%M %p}?\n\n"
+            "Anything changed since then - playlists, plays, chart matches, jukebox, "
+            "settings - goes back to how it was. Your current library is saved first as a "
+            f"\"Before restore\" backup, so this can be undone.\n\n{restart}",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        problem = library_backup.schedule_restore(chosen.path, config.RESTORE_MARKER)
+        if problem:
+            QMessageBox.warning(self, "Restore library", problem)
+            return
+        if exe is None:
+            # running from source (python run.py) - there's no exe to start
+            self.ctx.notify("Close MusicMgr and start it again to finish restoring")
+            return
+        try:
+            updater.relaunch(exe, sys.argv, after_update=False)
+        except OSError as exc:
+            QMessageBox.warning(self, "Restore library", f"Couldn't restart ({exc}). "
+                                "Close MusicMgr and open it again to finish restoring.")
+            return
+        self.window().close()
 
     def show_paths(self) -> None:
         QMessageBox.information(

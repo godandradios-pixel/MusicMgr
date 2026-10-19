@@ -111,6 +111,8 @@ LOG_PATH = DATA_DIR / "musicmgr.log"
 #: pre-upgrade copies of library.db, one per version change - see
 #: services/updater.backup_database_if_version_changed
 DB_BACKUP_DIR = DATA_DIR / "backups"
+#: which backup to restore at the next start - services/library_backup.py
+RESTORE_MARKER = DATA_DIR / "restore_pending.txt"
 #: the release version that last opened this data folder
 LAST_RUN_VERSION_FILE = DATA_DIR / "last_run_version.txt"
 
