@@ -1,6 +1,8 @@
 # Dependencies only needed to run the test suite, or to build the Windows
 # .exe distribution - not part of the shipped/bundled app itself (kept out
-# of requirements.txt for that reason).
+# of requirements.txt for that reason). Pinned like requirements.txt.
 -r requirements.txt
-pytest>=7.4
-pyinstaller>=6.10
+pytest==9.1.1
+# fails a stuck test instead of letting it stall the run - see pytest.ini
+pytest-timeout==2.4.0
+pyinstaller==6.22.3

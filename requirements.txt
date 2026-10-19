@@ -1,11 +1,18 @@
-PySide6>=6.6
-SQLAlchemy>=2.0
-mutagen>=1.47
-requests>=2.31
-cryptography>=42
-packaging>=23
-send2trash>=1.8
+# Exact versions (2026-10-19). With ">=" ranges every build - the release CI
+# and build.ps1 alike - picked up whatever was newest that day, so a release
+# could change Qt without anyone deciding to (PySide6 6.12 crashes creating
+# the audio player headless). These are the versions PC1's 2.2.7 build
+# bundled, with mutagen one step newer (1.48.1 reads the length of a video
+# with no audio track; 1.47.0 reported 0). To upgrade: bump a pin, run the
+# full test suite, then build.
+PySide6==6.11.2
+SQLAlchemy==2.0.52
+mutagen==1.48.1
+requests==2.33.1
+cryptography==50.0.1
+packaging==26.3
+send2trash==1.8.3
 # volume levelling loudness measurement (services/replaygain.py) - 2026-10-01
-numpy>=1.24
+numpy==2.5.3
 # phone remote QR code in Settings (services/web_remote.py) - 2026-10-13
-qrcode>=7.4
+qrcode==8.2
