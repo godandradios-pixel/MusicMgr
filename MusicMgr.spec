@@ -41,6 +41,9 @@ uses %APPDATA%\\MusicMgr on first run; put an (empty, or copied-over) data/
 folder next to MusicMgr.exe instead for portable mode.
 """
 
+import os
+import sys
+
 from PyInstaller.utils.hooks import collect_all
 
 datas = [("musicmgr/assets", "musicmgr/assets")]
@@ -105,6 +108,27 @@ a = Analysis(
     excludes=excludes,
     noarchive=False,
 )
+
+# Linux (2026-10-19, claude/2026-10-19-mint-video-glx-crash.md): on the Mint
+# PC every music video closed MusicMgr with "Could not initialize GLX". The
+# release is built on Ubuntu 22.04, and PyInstaller bundled that machine's
+# libstdc++ (and the other libraries below). QVideoWidget starts OpenGL, so
+# Qt loads the system's Mesa driver, which needs a newer libstdc++; with the
+# old bundled one already loaded the driver fails and Qt aborts. Music never
+# touches OpenGL, so only videos crashed. Leave these out and use the
+# system's copies, which every Mint 21/22 desktop has at the build
+# machine's version or newer. Windows builds are unaffected.
+if sys.platform.startswith("linux"):
+    _USE_SYSTEM_COPY = (
+        "libstdc++.so", "libgcc_s.so", "libexpat.so",
+        "libX11.so", "libX11-xcb.so", "libxcb-glx.so",
+        "libglib-2.0.so", "libgio-2.0.so", "libgobject-2.0.so", "libgmodule-2.0.so",
+    )
+    a.binaries = [
+        entry for entry in a.binaries
+        if not os.path.basename(entry[0]).startswith(_USE_SYSTEM_COPY)
+    ]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
