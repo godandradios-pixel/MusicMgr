@@ -36,7 +36,7 @@ def _now() -> dt.datetime:
 
 def iter_video_files(root: Path) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames if not config.is_skipped_dir(d)]
         for name in sorted(filenames):
             if name.startswith("."):
                 continue

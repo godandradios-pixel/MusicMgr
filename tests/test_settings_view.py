@@ -40,7 +40,7 @@ import pytest
 from PySide6.QtWidgets import QDialog
 from sqlalchemy import func, select
 
-from musicmgr.db.models import Track, Video, WatchedFolder
+from musicmgr.db.models import Playlist, PlaylistItem, Track, Video, WatchedFolder
 from musicmgr.services import metadata_health
 from musicmgr.services import scanner
 from musicmgr.ui.views import settings as settings_module
@@ -307,6 +307,60 @@ class TestPurgeMissingFiles:
             remaining_videos = [v.title for v in session.scalars(select(Video))]
         assert remaining_videos == ["Here"]
         assert notifications[-1] == "Removed 1 missing track and 1 missing video"
+
+
+    def test_nothing_removable_notifies_why_and_skips_the_confirmation(
+        self, ctx, view, monkeypatch, tmp_path
+    ):
+        # 2026-10-18: missing files whose tracks a purge would keep anyway
+        # used to bring up "remove 1 track?" and then remove nothing
+        wav = tmp_path / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(wav)
+        with ctx.session() as session:
+            scanner.scan_folder(session, tmp_path)
+            playlist = Playlist(name="Favorites")
+            session.add(playlist)
+            session.flush()
+            session.add(PlaylistItem(playlist_id=playlist.id, track_id=session.scalar(select(Track.id))))
+        wav.unlink()
+        boxes = []
+        monkeypatch.setattr(
+            settings_module.QMessageBox,
+            "question",
+            staticmethod(lambda *a, **k: boxes.append(a) or settings_module.QMessageBox.Yes),
+        )
+        notifications = []
+        ctx.notified.connect(notifications.append)
+
+        view.purge_missing_files()
+
+        assert boxes == []
+        assert notifications == [
+            "1 missing file found, but nothing to remove - "
+            "1 track with no file left is kept (1 on a playlist)."
+        ]
+        with ctx.session() as session:
+            assert session.scalar(select(func.count(Track.id))) == 1
+
+    def test_confirmation_counts_tracks_that_will_go_not_missing_files(
+        self, ctx, view, monkeypatch, tmp_path
+    ):
+        wav = tmp_path / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(wav)
+        with ctx.session() as session:
+            scanner.scan_folder(session, tmp_path)
+        wav.unlink()
+        texts = []
+        monkeypatch.setattr(
+            settings_module.QMessageBox,
+            "question",
+            staticmethod(lambda *a, **k: texts.append(a[2]) or settings_module.QMessageBox.No),
+        )
+
+        view.purge_missing_files()
+
+        assert texts and texts[0].startswith("1 file and 0 videos can't currently be found.")
+        assert "Purging will remove 1 track with no file left." in texts[0]
 
 
 class _FakeSignal:
@@ -598,7 +652,7 @@ class TestVerifyFilesThreaded:
 
         view._on_verify_done(3)
 
-        assert notifications == ["3 file(s) newly marked missing"]
+        assert notifications == ["3 file(s) newly marked missing, 0 missing in total"]
         assert refreshed == [True]
         assert view.progress.isVisible() is False
 

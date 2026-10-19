@@ -123,6 +123,19 @@ VIDEO_EXTENSIONS = {
     ".mp4", ".m4v", ".mkv", ".mov", ".avi", ".webm", ".wmv", ".flv",
 }
 
+#: folders a library scan never walks into (2026-10-18): GoodSync's own
+#: _gsdata_ (its "_saved_" old versions had been imported as extra copies
+#: of 130+ songs, which then showed up as missing files once GoodSync
+#: cleaned them out) and Windows' own system folders. Matched on the
+#: folder name, case-insensitively - see is_skipped_dir.
+SKIP_SCAN_DIRS = {"_gsdata_", "$recycle.bin", "system volume information"}
+
+
+def is_skipped_dir(name: str) -> bool:
+    """True for a folder name a scan leaves alone - hidden (dot) folders
+    and SKIP_SCAN_DIRS."""
+    return name.startswith(".") or name.casefold() in SKIP_SCAN_DIRS
+
 #: Touch UI sizing. Bump these if your panel is very high-DPI or very small.
 TOUCH = {
     "row_height": 72,

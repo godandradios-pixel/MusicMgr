@@ -19,7 +19,7 @@ import os
 import wave
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from musicmgr.db.models import (
     Artist,
@@ -602,6 +602,64 @@ class TestPurgeOrphanedTracks:
 
         assert removed == 0
         assert session.get(Track, track.id) is not None
+
+    def test_missing_summary_previews_the_purge_without_changing_anything(self, session, tmp_path):
+        # 2026-10-18: Purge's dialog now reports what it will do, not the
+        # count of missing file rows
+        kept = self._missing_track(session, tmp_path)
+        playlist = Playlist(name="Favorites")
+        session.add(playlist)
+        session.flush()
+        session.add(PlaylistItem(playlist_id=playlist.id, track_id=kept.id))
+        gone_wav = tmp_path / "Other" / "Album" / "01 Gone.wav"
+        make_silent_wav(gone_wav)
+        scanner.scan_folder(session, tmp_path)
+        gone_wav.unlink()
+        scanner.mark_missing_files(session)
+
+        summary = scanner.missing_summary(session)
+
+        assert summary.files == 2
+        assert summary.removable == 1
+        assert dict(summary.kept) == {"playlist": 1}
+        assert summary.stale_copies == 0
+        assert session.scalar(select(func.count(Track.id))) == 2
+        assert scanner.purge_orphaned_tracks(session) == summary.removable
+
+    def test_a_missing_extra_copy_of_a_playable_song_is_a_stale_copy(
+        self, session, tmp_path
+    ):
+        wav = tmp_path / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(wav)
+        scanner.scan_folder(session, tmp_path)
+        track = session.scalar(select(Track))
+        session.add(MediaFile(track_id=track.id, path=str(tmp_path / "gone.mp3"), is_missing=True))
+        session.flush()
+
+        summary = scanner.missing_summary(session)
+
+        assert (summary.files, summary.stale_copies, summary.removable) == (1, 1, 0)
+        assert scanner.purge_stale_copies(session) == 1
+        assert [f.path for f in session.scalars(select(MediaFile))] == [str(wav)]
+        assert session.get(Track, track.id) is not None
+
+    def test_scans_skip_goodsync_folders_and_drop_copies_already_imported(
+        self, session, tmp_path
+    ):
+        # 2026-10-18: GoodSync's _gsdata_ old versions had been imported
+        # as extra copies of real songs
+        real = tmp_path / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(real)
+        saved = tmp_path / "_gsdata_" / "_saved_" / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(saved)
+        assert list(scanner.iter_audio_files(tmp_path)) == [real]
+        scanner.scan_folder(session, tmp_path)
+        track = session.scalar(select(Track))
+        session.add(MediaFile(track_id=track.id, path=str(saved)))
+        session.flush()
+
+        assert scanner.remove_skipped_folder_files(session) == 1
+        assert [f.path for f in session.scalars(select(MediaFile))] == [str(real)]
 
     def test_a_present_file_is_never_purged_regardless_of_history(self, session, tmp_path):
         make_silent_wav(tmp_path / "Artist" / "Album" / "01 Song.wav")

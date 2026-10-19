@@ -101,6 +101,9 @@ class ScanResult:
     #: old-time radio files taken back out of the music library - they
     #: belong to the Radio page (2026-10-13, see remove_radio_files)
     radio_removed: int = 0
+    #: file rows inside a folder scans now skip (GoodSync's _gsdata_ and
+    #: the like) taken back out - 2026-10-18, see remove_skipped_folder_files
+    skipped_removed: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -108,11 +111,13 @@ class ScanResult:
                      if self.separated else "")
         radio = (f", {self.radio_removed} old-time radio files left to the Radio page"
                  if self.radio_removed else "")
+        skipped = (f", {self.skipped_removed} copies in sync/system folders removed"
+                   if self.skipped_removed else "")
         return (
             f"{self.scanned} files scanned - {self.added} added, "
             f"{self.updated} updated, {self.unchanged} unchanged, "
             f"{self.missing} missing, {self.removed} removed, "
-            f"{len(self.errors)} errors{separated}{radio}"
+            f"{len(self.errors)} errors{separated}{radio}{skipped}"
         )
 
 
@@ -523,7 +528,7 @@ def iter_audio_files(root: Path, skip: Sequence[str] = ()) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [
             d for d in dirnames
-            if not d.startswith(".")
+            if not config.is_skipped_dir(d)
             and not (skip and radio_folder.is_radio_path(os.path.join(dirpath, d), skip))
         ]
         for name in sorted(filenames):
@@ -1279,6 +1284,7 @@ def rescan_all(
     for folder in folders:
         scan_folder(session, folder.path, progress, result, force=force)
     result.radio_removed = remove_radio_files(session)
+    result.skipped_removed = remove_skipped_folder_files(session)
     result.missing = mark_missing_files(session)
     result.removed = purge_orphaned_tracks(session)
     return result
@@ -1304,6 +1310,54 @@ def remove_radio_files(session: Session) -> int:
         mf_id for mf_id, path in session.execute(select(MediaFile.id, MediaFile.path))
         if radio_folder.is_radio_path(path or "", radio)
     ]
+    for start in range(0, len(doomed), 500):
+        session.execute(delete(MediaFile).where(MediaFile.id.in_(doomed[start:start + 500])))
+    if doomed:
+        session.flush()
+        session.expire_all()
+    return len(doomed)
+
+
+def _in_skipped_folder(path: str) -> bool:
+    parts = path.replace("\\", "/").split("/")[:-1]
+    return any(p and config.is_skipped_dir(p) for p in parts)
+
+
+def remove_skipped_folder_files(session: Session) -> int:
+    """Take files inside a folder scans now skip (config.SKIP_SCAN_DIRS -
+    GoodSync's _gsdata_ above all) back out of the library, the same way
+    remove_radio_files does for the Radio folder (2026-10-18). Only the
+    file rows go: a song whose real file is also in the library just
+    loses the stray copy, and purge_orphaned_tracks, which every scan
+    runs next, removes a track left with no file - or hands its history
+    to the real one (see _live_twin) - unless it has history of its own."""
+    doomed = [
+        mf_id for mf_id, path in session.execute(select(MediaFile.id, MediaFile.path))
+        if _in_skipped_folder(path or "")
+    ]
+    for start in range(0, len(doomed), 500):
+        session.execute(delete(MediaFile).where(MediaFile.id.in_(doomed[start:start + 500])))
+    if doomed:
+        session.flush()
+        session.expire_all()
+    return len(doomed)
+
+
+def purge_stale_copies(session: Session) -> int:
+    """Delete missing file rows whose track still has another file that's
+    present - an MP3 beside the FLAC, a copy elsewhere (2026-10-18).
+    purge_orphaned_tracks only ever removes whole tracks, so a stale extra
+    copy stayed "missing" forever and kept turning up in Settings' "Purge
+    missing files" count. Nothing else is lost: the track, its history and
+    its present file all stay. Settings' Purge button runs this; a scan
+    doesn't, so a copy on a drive that's only unplugged isn't forgotten."""
+    playable_track_ids = select(MediaFile.track_id).where(MediaFile.is_missing.is_(False))
+    doomed = session.scalars(
+        select(MediaFile.id).where(
+            MediaFile.is_missing.is_(True),
+            MediaFile.track_id.in_(playable_track_ids),
+        )
+    ).all()
     for start in range(0, len(doomed), 500):
         session.execute(delete(MediaFile).where(MediaFile.id.in_(doomed[start:start + 500])))
     if doomed:
@@ -1408,30 +1462,7 @@ def purge_orphaned_tracks(session: Session) -> int:
             select(Track).where(Track.id.not_in(playable_track_ids))
         ).all()
     for track in candidates:
-        has_history = (
-            session.scalar(
-                select(PlaylistItem.id)
-                .where(PlaylistItem.track_id == track.id)
-                .limit(1)
-            )
-            or session.scalar(
-                select(ChartEntry.id).where(ChartEntry.track_id == track.id).limit(1)
-            )
-            or session.scalar(
-                select(PlayEvent.id).where(PlayEvent.track_id == track.id).limit(1)
-            )
-            or session.scalar(
-                select(JukeboxSlot.id)
-                .where(
-                    or_(
-                        JukeboxSlot.side_a_track_id == track.id,
-                        JukeboxSlot.side_b_track_id == track.id,
-                    )
-                )
-                .limit(1)
-            )
-        )
-        if has_history:
+        if _history_reason(session, track.id):
             continue
         session.delete(track)
         removed += 1
@@ -1439,6 +1470,93 @@ def purge_orphaned_tracks(session: Session) -> int:
         session.flush()
     purge_empty_releases(session)
     return removed
+
+
+def _history_reason(session: Session, track_id: int) -> Optional[str]:
+    """Why a missing track is kept rather than purged - "playlist",
+    "chart", "plays" or "jukebox" (the first that applies) - or None when
+    it has no history and may go. Shared by purge_orphaned_tracks and
+    missing_summary so the preview and the purge can never disagree."""
+    if session.scalar(
+        select(PlaylistItem.id).where(PlaylistItem.track_id == track_id).limit(1)
+    ):
+        return "playlist"
+    if session.scalar(select(ChartEntry.id).where(ChartEntry.track_id == track_id).limit(1)):
+        return "chart"
+    if session.scalar(select(PlayEvent.id).where(PlayEvent.track_id == track_id).limit(1)):
+        return "plays"
+    if session.scalar(
+        select(JukeboxSlot.id)
+        .where(
+            or_(
+                JukeboxSlot.side_a_track_id == track_id,
+                JukeboxSlot.side_b_track_id == track_id,
+            )
+        )
+        .limit(1)
+    ):
+        return "jukebox"
+    return None
+
+
+@dataclass
+class MissingSummary:
+    """What "Purge missing files" would actually do, worked out without
+    changing anything (2026-10-18 - James: Verify said nothing was missing
+    but Purge offered "133 tracks"). The old dialog showed the count of
+    missing *file rows*, which is neither the number of tracks nor the
+    number a purge removes: a missing file on a track that still has
+    another, present file (an MP3 beside the FLAC) takes nothing with it,
+    and a track with history is kept by purge_orphaned_tracks anyway.
+
+    - `files`: MediaFile rows currently flagged missing
+    - `stale_copies`: missing files whose track still has another file
+      present - a purge clears these (purge_stale_copies) and the track
+      stays
+    - `removable`: tracks with no present file that a purge would remove
+      (including ones whose history first moves to their re-found twin)
+    - `kept`: tracks with no present file kept for their history, by
+      reason ("playlist" / "chart" / "plays" / "jukebox")"""
+
+    files: int = 0
+    stale_copies: int = 0
+    removable: int = 0
+    kept: Counter = field(default_factory=Counter)
+
+    @property
+    def kept_total(self) -> int:
+        return sum(self.kept.values())
+
+
+def missing_summary(session: Session) -> MissingSummary:
+    """Preview purge_orphaned_tracks against the current is_missing flags
+    without deleting anything - see MissingSummary. Run
+    mark_missing_files first for an up-to-the-minute answer."""
+    summary = MissingSummary(
+        files=session.scalar(
+            select(func.count(MediaFile.id)).where(MediaFile.is_missing.is_(True))
+        ) or 0
+    )
+    playable_track_ids = select(MediaFile.track_id).where(MediaFile.is_missing.is_(False))
+    summary.stale_copies = session.scalar(
+        select(func.count(MediaFile.id)).where(
+            MediaFile.is_missing.is_(True),
+            MediaFile.track_id.in_(playable_track_ids),
+        )
+    ) or 0
+    candidates = session.scalars(
+        select(Track).where(Track.id.not_in(playable_track_ids))
+    ).all()
+    for track in candidates:
+        if _live_twin(session, track, playable_track_ids) is not None:
+            summary.removable += 1
+            continue
+        reason = _history_reason(session, track.id)
+        if reason:
+            summary.kept[reason] += 1
+        else:
+            summary.removable += 1
+    return summary
 
 
 def _live_twin(session: Session, track: Track, playable_track_ids) -> Optional[Track]:

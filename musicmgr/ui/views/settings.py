@@ -445,6 +445,7 @@ class ScanThread(QThread):
                     )
                 # 2026-10-13: old-time radio files an older scan added
                 audio_result.radio_removed = scanner.remove_radio_files(session)
+                audio_result.skipped_removed = scanner.remove_skipped_folder_files(session)
                 audio_result.missing = scanner.mark_missing_files(session)
                 audio_result.removed = scanner.purge_orphaned_tracks(session)
             # 2026-09-22 - James: "add a real cancel button that stops any
@@ -698,6 +699,34 @@ def _size_tool_row_buttons(rows: list["_ToolRow"]) -> None:
     width = max(row.button.sizeHint().width() for row in rows) + 12
     for row in rows:
         row.button.setFixedWidth(width)
+
+
+
+_KEPT_REASONS = {
+    "playlist": "on a playlist",
+    "chart": "on a chart",
+    "plays": "with play history",
+    "jukebox": "in a jukebox slot",
+}
+
+
+def _plural(n: int, noun: str) -> str:
+    return f"{n:,} {noun}{'' if n == 1 else 's'}"
+
+
+def _purge_breakdown(summary: "scanner.MissingSummary", removing: bool = False) -> str:
+    """The part of the Purge message explaining the tracks a purge leaves
+    alone - see scanner.MissingSummary."""
+    if not summary.kept_total:
+        return ""
+    reasons = ", ".join(
+        f"{n:,} {_KEPT_REASONS.get(r, r)}" for r, n in summary.kept.most_common()
+    )
+    verb = "will be" if removing else ("is" if summary.kept_total == 1 else "are")
+    return (
+        f"{_plural(summary.kept_total, 'track')} with no file left {verb} "
+        f"kept ({reasons})."
+    )
 
 
 class SettingsView(BaseView):
@@ -2571,6 +2600,13 @@ class SettingsView(BaseView):
         and "N removed" can legitimately differ for audio; the confirmation
         text below says so rather than that reading as a bug.
 
+        2026-10-18 - James: Verify said 0 missing while this offered to
+        remove "133 tracks" - 130 of them stray copies from GoodSync's
+        _gsdata_ folder on songs that still play. The dialog now spells out
+        what a purge will do (scanner.missing_summary), and the purge also
+        clears missing extra copies of still-playable songs
+        (scanner.purge_stale_copies), which it never used to touch.
+
         Re-checks `is_missing` against disk right before purging (via
         mark_missing_files/mark_missing_videos) rather than trusting
         whatever it was left at by the last scan - this button is meant to
@@ -2583,30 +2619,46 @@ class SettingsView(BaseView):
         than purging.
         """
         with self.ctx.session() as session:
-            # discard the return values here - each only counts files newly
-            # marked missing *this call*, not the total currently missing
-            # (a file already flagged missing by an earlier scan wouldn't
-            # count again); library_stats()/video_counts() below read the
-            # real total off the now-refreshed is_missing flags instead.
+            # re-check disk first - see above. Their return values (files
+            # *newly* flagged this call) don't matter here; missing_summary
+            # reads the real totals off the refreshed flags.
             scanner.mark_missing_files(session)
             video_scanner.mark_missing_videos(session)
-            missing_tracks = lib.library_stats(session)["missing"]
+            summary = scanner.missing_summary(session)
             missing_videos = vid_svc.video_counts(session)["video_missing"]
-        if not missing_tracks and not missing_videos:
+        if not summary.files and not missing_videos:
             self.ctx.notify("No missing files to remove")
             return
+        # 2026-10-18 - James: Verify said 0 missing but this offered to
+        # remove "133 tracks". That 133 was missing *file rows*; say what
+        # a purge will actually do instead, track by track.
+        if not summary.removable and not summary.stale_copies and not missing_videos:
+            self.ctx.notify(
+                f"{_plural(summary.files, 'missing file')} found, but nothing to "
+                "remove - " + _purge_breakdown(summary)
+            )
+            return
+        will = []
+        if summary.stale_copies:
+            will.append(
+                f"clear {_plural(summary.stale_copies, 'stale copy')}"
+                .replace("copys", "copies")
+                + " of songs that still play from another file (the songs stay)"
+            )
+        if summary.removable:
+            will.append(f"remove {_plural(summary.removable, 'track')} with no file left")
+        if missing_videos:
+            will.append(f"remove {_plural(missing_videos, 'video')}")
+        kept = _purge_breakdown(summary, removing=True)
         confirm = QMessageBox.question(
             self,
             "Purge missing files",
-            f"Permanently remove MusicMgr's record of {missing_tracks} track"
-            f"{'s' if missing_tracks != 1 else ''} and {missing_videos} video"
-            f"{'s' if missing_videos != 1 else ''} whose file can't currently "
-            "be found?\n\n"
-            "This never touches anything on disk - only MusicMgr's own "
-            "records. A track on a playlist, a chart, or a jukebox slot, or "
-            "with play history, is kept even if missing, so the count "
-            "actually removed can be lower than the count shown here; a "
-            "missing video has no such protection and is always removed.\n\n"
+            f"{_plural(summary.files, 'file')} and "
+            f"{_plural(missing_videos, 'video')} can't currently be found.\n\n"
+            "Purging will " + "; ".join(will) + "."
+            + (f" {kept}" if kept else "")
+            + "\n\nThis never touches anything on disk - only MusicMgr's own "
+            "records.\n\n"
             "If files are only missing because a drive isn't connected "
             "right now (or a watched folder points at an old location, "
             "like a path from a different machine), reconnect it or fix "
@@ -2617,10 +2669,15 @@ class SettingsView(BaseView):
         if confirm != QMessageBox.Yes:
             return
         with self.ctx.session() as session:
+            copies_removed = scanner.purge_stale_copies(session)
             tracks_removed = scanner.purge_orphaned_tracks(session)
             videos_removed = video_scanner.purge_missing_videos(session)
+        copies = (
+            f"{copies_removed} stale cop{'y' if copies_removed == 1 else 'ies'}, "
+            if copies_removed else ""
+        )
         self.ctx.notify(
-            f"Removed {tracks_removed} missing track{'s' if tracks_removed != 1 else ''} "
+            f"Removed {copies}{tracks_removed} missing track{'s' if tracks_removed != 1 else ''} "
             f"and {videos_removed} missing video{'s' if videos_removed != 1 else ''}"
         )
         self.refresh()
@@ -3313,7 +3370,15 @@ class SettingsView(BaseView):
         self.progress.setVisible(False)
         self.progress_label.setText("")
         self._hide_cancel(self._verify_thread)
-        self.ctx.notify(f"{missing} file(s) newly marked missing")
+        # 2026-10-18 - the newly-flagged count alone read as "nothing is
+        # missing" while Purge found 133 flagged by earlier scans; show
+        # the running total too.
+        with self.ctx.session() as session:
+            total = lib.library_stats(session)["missing"]
+            total += vid_svc.video_counts(session)["video_missing"]
+        self.ctx.notify(
+            f"{missing} file(s) newly marked missing, {total} missing in total"
+        )
         self.refresh()
 
     # -- playback / volume levels (2026-10-01) ------------------------------
