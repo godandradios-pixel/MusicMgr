@@ -32,6 +32,17 @@ contents match one the drive has under a different name, which this PC
 has never synced either, is therefore taken to be the same chart: it's
 moved and renamed to match instead of both copies being kept.
 
+2026-10-19 - James: "how did these duplicate chart folders get into my
+Charts (Billboard YE)?" That match needed the rows to be identical, and
+they rarely are: PC1 had fixed matches by hand and imported newer
+editions, so the other PC's never-synced ``Pop/Billboard YE`` didn't
+match PC1's ``Billboard/Pop/Year End`` and both were kept (Oct 17). Now a
+chart that isn't identical is still the same chart when its place says so
+- old ``<Genre>/<Source> YE|Weekly`` against new ``<Source>/<Genre>/Year
+End|Weekly`` (see ``chart_identity``). Its editions are then combined:
+the drive's editions, plus any this PC has that the drive lacks, keeping
+this PC's hand-fixed match on a row the drive has left unfixed.
+
 What travels per row: rank, title, artist, last week, peak, weeks on
 chart, and a match fixed by hand ("Fix match…", ``match_locked``) as the
 track's portable key. Automatic matches don't travel - each PC matches
@@ -70,6 +81,16 @@ FORMAT = 1
 PREF_CACHE = "chart_sync_cache"
 EPOCH = "1970-01-01T00:00:00+00:00"
 MATCH_THRESHOLD = 0.72
+
+#: first word of an old-style chart name / top folder -> its source, as in
+#: tools/organize_charts_by_source.py
+SOURCES = {
+    "billboard": "Billboard",
+    "playback": "Playback",
+    "playback.fm": "Playback",
+}
+YEAR_END = "Year End"
+WEEKLY = "Weekly"
 
 
 def _now_iso() -> str:
@@ -481,21 +502,105 @@ def _strip(value: dict) -> dict:
     return {k: v for k, v in value.items() if k != "changed_at"}
 
 
+def _chart_type(words: list[str]) -> Optional[str]:
+    tail = " ".join(words).lower()
+    if tail in ("ye", "year end", "year-end", "yearend"):
+        return YEAR_END
+    if tail == "weekly":
+        return WEEKLY
+    return None
+
+
+def chart_identity(value: dict) -> Optional[tuple[str, str, str]]:
+    """(source, genre, type) when a chart's folder and name say which chart
+    it is, in either layout; None otherwise.
+
+    - new (organize_charts_by_source): folder ``Billboard/Pop``, name
+      ``Year End`` / ``Weekly``
+    - old: folder ``Pop``, name ``Billboard YE`` / ``Billboard Weekly``
+    """
+    parts = [p for p in (value.get("folder") or "").split("/") if p]
+    words = (value.get("name") or "").split()
+    if len(parts) == 2 and parts[0].lower() in SOURCES:
+        kind = _chart_type(words)
+        if kind:
+            return SOURCES[parts[0].lower()], parts[1].lower(), kind
+    if len(parts) == 1 and len(words) >= 2 and words[0].lower() in SOURCES:
+        kind = _chart_type(words[1:])
+        if kind:
+            return SOURCES[words[0].lower()], parts[0].lower(), kind
+    return None
+
+
 def _match_moves(local: dict, usb: dict, base: dict) -> dict[str, str]:
     """{local key: drive key} for charts neither side has synced before
-    that hold the same rows under different names (see module docstring)."""
+    that are the same chart under different names (see module docstring).
+
+    First by place: the one chart on each side whose folder and name say
+    it's the same chart (``chart_identity``) - an ambiguous pair is left
+    alone rather than guessed. Then by identical rows, but never pairing
+    two charts whose places name different charts (a Billboard and a
+    Playback year-end list can hold the same songs)."""
+    fresh_usb = [k for k in sorted(usb) if k not in local and k not in base]
+    fresh_local = [k for k in sorted(local) if k not in usb and k not in base]
+    ident_usb = {k: chart_identity(usb[k]) for k in fresh_usb}
+    ident_local = {k: chart_identity(local[k]) for k in fresh_local}
+
+    def grouped(idents):
+        found: dict[tuple, list[str]] = {}
+        for key, ident in idents.items():
+            if ident:
+                found.setdefault(ident, []).append(key)
+        return found
+
+    moves: dict[str, str] = {}
+    usb_groups = grouped(ident_usb)
+    for ident, lkeys in grouped(ident_local).items():
+        ukeys = usb_groups.get(ident, [])
+        if len(lkeys) == 1 and len(ukeys) == 1:
+            moves[lkeys[0]] = ukeys[0]
+
+    taken = set(moves.values())
     by_sig: dict[str, list[str]] = {}
-    for key, value in usb.items():
-        if key not in local and key not in base:
-            by_sig.setdefault(value.get("sig"), []).append(key)
-    moves = {}
-    for key in sorted(local):
-        if key in usb or key in base:
+    for key in fresh_usb:
+        if key not in taken:
+            by_sig.setdefault(usb[key].get("sig"), []).append(key)
+    for key in fresh_local:
+        if key in moves:
             continue
-        candidates = by_sig.get(local[key].get("sig"))
-        if candidates:
-            moves[key] = candidates.pop(0)
+        candidates = by_sig.get(local[key].get("sig")) or []
+        for uk in candidates:
+            mine, theirs = ident_local[key], ident_usb[uk]
+            if mine and theirs and mine != theirs:
+                continue
+            moves[key] = uk
+            candidates.remove(uk)
+            break
     return moves
+
+
+def combine_contents(theirs: dict, ours: dict) -> dict:
+    """The drive's editions, plus any of ours it doesn't have. On an edition
+    both have, a row the drive left unfixed keeps our hand-fixed match for
+    the same rank, title and artist."""
+    mine = {d: rows for d, _t, rows in ours.get("issues") or [] if d}
+    out = []
+    dates = set()
+    for d, t, rows in theirs.get("issues") or []:
+        dates.add(d)
+        locks = {(r[0], r[1], r[2]): r[6] for r in mine.get(d, []) if r[6] is not None}
+        merged_rows = []
+        for row in rows:
+            row = list(row)
+            if row[6] is None and (row[0], row[1], row[2]) in locks:
+                row[6] = locks[(row[0], row[1], row[2])]
+            merged_rows.append(row)
+        out.append([d, t, merged_rows])
+    for d, t, rows in ours.get("issues") or []:
+        if d and d not in dates:
+            out.append([d, t, [list(r) for r in rows]])
+    out.sort(key=lambda issue: issue[0] or "")
+    return {"issues": out}
 
 
 def sync_charts(db: Session, drive, idx, pc_id: str) -> ChartNotes:
@@ -510,6 +615,7 @@ def sync_charts(db: Session, drive, idx, pc_id: str) -> ChartNotes:
     # the same chart, filed differently on the two PCs before either synced
     ids = dict(here.ids)
     touched_folders: set[int] = set()
+    matcher = _Matcher(db)
     for lk, uk in _match_moves(local, usb, base).items():
         value = usb[uk]
         chart = db.get(Chart, ids[lk])
@@ -517,11 +623,33 @@ def sync_charts(db: Session, drive, idx, pc_id: str) -> ChartNotes:
         chart.name = value.get("name") or chart.name
         chart.folder_id = here.folders.ensure(value.get("folder") or "")
         ids[uk] = ids.pop(lk)
-        local[uk] = dict(value)
-        del local[lk]
-        here.cache[str(chart.id)] = [here.cache[str(chart.id)][0], value.get("sig"),
-                                     value.get("changed_at") or EPOCH]
+        mine = local.pop(lk)
         notes.charts_in.append(uk)
+        if mine.get("sig") == value.get("sig"):
+            local[uk] = dict(value)
+            here.cache[str(chart.id)] = [here.cache[str(chart.id)][0], value.get("sig"),
+                                         value.get("changed_at") or EPOCH]
+            continue
+        # the same chart with different rows: combine the two
+        theirs = load_content(content_path(drive, value.get("sig")))
+        if theirs is None:
+            # filed like the drive's now; the merge takes the drive's rows
+            # once its file arrives (ours never synced, so it's older)
+            local[uk] = dict(mine, name=value.get("name"), folder=value.get("folder"))
+            continue
+        combined = combine_contents(theirs, here.content(chart.id))
+        _clear_rows(db, chart.id)
+        _fill(db, chart.id, combined, idx, matcher)
+        here._contents.pop(chart.id, None)
+        sig = content_sig(here.content(chart.id))
+        if sig == value.get("sig"):
+            local[uk] = dict(value)
+            here.remember(chart.id, sig, value.get("changed_at") or EPOCH)
+        else:
+            # we added editions or fixed matches the drive lacks: send them
+            now = _now_iso()
+            local[uk] = dict(value, sig=sig, changed_at=now)
+            here.remember(chart.id, sig, now)
     db.flush()
 
     def usb_newer(key: str) -> bool:
@@ -537,7 +665,6 @@ def sync_charts(db: Session, drive, idx, pc_id: str) -> ChartNotes:
     for k in removed:
         removed_by_sig.setdefault(local[k].get("sig"), []).append(k)
 
-    matcher = _Matcher(db)
     failed: set[str] = set()
     for key in sorted(taken):
         value = merged[key]

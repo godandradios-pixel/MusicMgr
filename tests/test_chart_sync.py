@@ -186,3 +186,105 @@ class TestChartSync:
         pc1.use()
         with db_session.session_scope() as s:
             assert list(_charts(s)) == ["Rock/Year End"]      # PC1 kept it all along
+
+    def test_same_chart_filed_differently_with_different_rows_is_combined(self, two_pcs):
+        """2026-10-19: PC1's Billboard/Pop/Year End had a hand-fixed match and
+        a newer edition, so its rows weren't identical to the other PC's
+        never-synced Pop/Billboard YE, and both copies were kept. Now they
+        are one chart holding every edition from both."""
+        pc1, pc2, drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            chart = _make_chart(s, "Billboard/Pop", "Year End", years=(1982, 1983, 1984))
+            row = s.scalar(select(ChartEntry).join(ChartIssue).where(
+                ChartIssue.chart_id == chart.id, ChartEntry.rank == 3,
+                ChartIssue.chart_date == dt.date(1982, 12, 31)))
+            chart_svc.set_entry_track(s, row.id, pc1.track(s, SONGS[1]).id)
+        pc2.use()
+        with db_session.session_scope() as s:
+            _make_chart(s, "Pop", "Billboard YE", years=(1981, 1982))   # 1981 only here
+        pc1.sync()
+        notes = pc2.sync()
+        assert notes.charts.charts_in == ["Billboard/Pop/Year End"]
+        with db_session.session_scope() as s:
+            assert list(_charts(s)) == ["Billboard/Pop/Year End"]
+            assert _charts(s)["Billboard/Pop/Year End"][:2] == (4, 12)
+            assert _folders(s) == {"Billboard", "Billboard/Pop"}
+            row = s.scalar(select(ChartEntry).join(ChartIssue).where(
+                ChartEntry.rank == 3, ChartIssue.chart_date == dt.date(1982, 12, 31)))
+            assert row.match_locked and row.track_id == pc2.track(s, SONGS[1]).id
+        # PC2's extra edition goes back to PC1; nothing is duplicated there
+        assert list(cs.load_index(cs.usb_index_path(drive))) == ["Billboard/Pop/Year End"]
+        assert pc1.sync().charts.charts_in == ["Billboard/Pop/Year End"]
+        with db_session.session_scope() as s:
+            assert list(_charts(s)) == ["Billboard/Pop/Year End"]
+            assert _charts(s)["Billboard/Pop/Year End"][:2] == (4, 12)
+        assert pc1.sync().summary() == "Library data already in sync"
+        assert pc2.sync().summary() == "Library data already in sync"
+
+    def test_old_weekly_and_year_end_each_find_their_own(self, two_pcs):
+        pc1, pc2, drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            _make_chart(s, "Billboard/Pop", "Year End", years=(1990, 1991))
+            _make_chart(s, "Billboard/Pop", "Weekly", years=(1990,))
+            _make_chart(s, "Playback/Pop", "Year End", years=(1990,))
+        pc2.use()
+        with db_session.session_scope() as s:
+            _make_chart(s, "Pop", "Billboard YE", years=(1990,))
+            _make_chart(s, "Pop", "Billboard Weekly", years=(1989,))
+            _make_chart(s, "Pop", "Playback YE", years=(1990,))
+        pc1.sync()
+        pc2.sync()
+        with db_session.session_scope() as s:
+            assert {k: v[0] for k, v in _charts(s).items()} == {
+                "Billboard/Pop/Year End": 2, "Billboard/Pop/Weekly": 2,
+                "Playback/Pop/Year End": 1}
+            assert _folders(s) == {"Billboard", "Billboard/Pop", "Playback", "Playback/Pop"}
+
+    def test_charts_not_named_for_a_source_are_left_alone(self, two_pcs):
+        pc1, pc2, drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            _make_chart(s, "Billboard/Pop", "Year End", years=(1990,))
+        pc2.use()
+        with db_session.session_scope() as s:
+            _make_chart(s, "Pop", "My Favourites YE", years=(1991,))
+        pc1.sync()
+        pc2.sync()
+        with db_session.session_scope() as s:
+            assert set(_charts(s)) == {"Billboard/Pop/Year End", "Pop/My Favourites YE"}
+
+
+class TestChartIdentity:
+    def test_both_layouts(self):
+        ident = cs.chart_identity
+        assert ident({"folder": "Billboard/Pop", "name": "Year End"}) == ("Billboard", "pop", "Year End")
+        assert ident({"folder": "Pop", "name": "Billboard YE"}) == ("Billboard", "pop", "Year End")
+        assert ident({"folder": "Country", "name": "Playback YE"}) == ("Playback", "country", "Year End")
+        assert ident({"folder": "pop", "name": "billboard weekly"}) == ("Billboard", "pop", "Weekly")
+        assert ident({"folder": "Playback/R&B", "name": "Year End"}) == ("Playback", "r&b", "Year End")
+
+    def test_not_a_known_chart(self):
+        ident = cs.chart_identity
+        assert ident({"folder": "CCM Magazine", "name": "Adult Contemporary #1 Songs"}) is None
+        assert ident({"folder": "Pop", "name": "My Favourites YE"}) is None
+        assert ident({"folder": "Billboard/Pop", "name": "Hot 100 1980s"}) is None
+        assert ident({"folder": "", "name": "Billboard YE"}) is None
+
+
+class TestMatchMoves:
+    def test_identical_rows_dont_pair_different_charts(self):
+        usb = {"Playback/Pop/Year End": {"folder": "Playback/Pop", "name": "Year End", "sig": "a"}}
+        local = {"Pop/Billboard YE": {"folder": "Pop", "name": "Billboard YE", "sig": "a"}}
+        assert cs._match_moves(local, usb, {}) == {}
+
+    def test_identical_rows_still_pair_unnamed_charts(self):
+        usb = {"Hits/Mine": {"folder": "Hits", "name": "Mine", "sig": "a"}}
+        local = {"Old/Mine": {"folder": "Old", "name": "Mine", "sig": "a"}}
+        assert cs._match_moves(local, usb, {}) == {"Old/Mine": "Hits/Mine"}
+
+    def test_already_synced_charts_are_not_moved(self):
+        usb = {"Billboard/Pop/Year End": {"folder": "Billboard/Pop", "name": "Year End", "sig": "a"}}
+        local = {"Pop/Billboard YE": {"folder": "Pop", "name": "Billboard YE", "sig": "b"}}
+        assert cs._match_moves(local, usb, {"Pop/Billboard YE": local["Pop/Billboard YE"]}) == {}
