@@ -51,6 +51,16 @@ def get_or_create_artist(session: Session, name: str, **kwargs) -> Artist:
             name = "Unknown Artist"
     artist = session.scalar(select(Artist).where(Artist.name_key == key))
     if artist is None:
+        # 2026-10-19: a spelling merged into another artist (services/
+        # artist_merge.py) - "Bj Thomas" is B.J. Thomas
+        from ..db.models import ArtistAlias
+
+        alias = session.scalar(select(ArtistAlias).where(
+            ArtistAlias.alias_name_key == key, ArtistAlias.alias_artist_id.is_(None)
+        ).limit(1))
+        if alias is not None:
+            artist = session.get(Artist, alias.artist_id)
+    if artist is None:
         artist = Artist(
             name=name.strip(),
             name_key=key,

@@ -60,7 +60,7 @@ class TestSplitArtists:
 
     def test_a_letterless_piece_is_dropped(self):
         assert split_artists("Meyer Davis Orch. (vocal trio S. Ballew and )") == [
-            "Meyer Davis Orch. (vocal trio S. Ballew"
+            "Meyer Davis Orch.", "S. Ballew"
         ]
 
     def test_ordinary_credits_still_split(self):

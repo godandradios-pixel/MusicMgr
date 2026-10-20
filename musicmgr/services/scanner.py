@@ -1716,6 +1716,94 @@ def save_side_covers(session: Session) -> int:
     return saved
 
 
+def artist_key(name: str) -> str:
+    """The Artist.name_key `library.get_or_create_artist` gives `name`."""
+    key = normalize(name)
+    if key:
+        return key
+    bare = (name or "").strip()
+    return bare.casefold() if bare and bare.casefold() != "unknown artist" else "unknown artist"
+
+
+def resplit_track_credits(session: Session) -> tuple[int, int]:
+    """Recompute every track's performer credits from its artist text with
+    the current `split_artists` rules (2026-10-19 - James's library audit:
+    "Blood, Sweat & Tears" credited as "Blood, Sweat" + "Tears", "Glenn
+    Miller (Tex Beneke & chorus, vocal)" as "Glenn Miller (Tex Beneke" +
+    "chorus, vocal)", "Shawn Mendes, Camila Cabello" as one artist - about
+    2,100 such names on 4,800 songs). Works from Track.artist_display, which
+    is the file's artist tag as last read, so no file is opened. Only tracks
+    whose credits come out different are touched. Artists those tracks
+    leave with nothing else pointing at them are deleted. Returns (tracks
+    changed, artists removed). One-time (bootstrap_database)."""
+    from sqlalchemy import insert
+
+    from ..db.models import Artist, ArtistAlias, ArtistSimilar, ArtistTopPick, ArtistTopTrack, Video
+
+    id_of = {key: aid for aid, key in session.execute(select(Artist.id, Artist.name_key))}
+    # merged spellings (services/artist_merge.py) resolve to the kept artist
+    for key, aid in session.execute(select(ArtistAlias.alias_name_key, ArtistAlias.artist_id)
+                                    .where(ArtistAlias.alias_artist_id.is_(None))):
+        id_of.setdefault(key, aid)
+    current: dict[int, list[tuple[int, int, str]]] = {}
+    for cid, track_id, artist_id, role in session.execute(
+        select(Credit.id, Credit.track_id, Credit.artist_id, Credit.role).where(
+            Credit.track_id.is_not(None),
+            Credit.role.in_((Credit.ROLE_MAIN, Credit.ROLE_FEATURING)),
+        )
+    ):
+        current.setdefault(track_id, []).append((cid, artist_id, role))
+
+    changed = 0
+    left: set[int] = set()
+    doomed: list[int] = []
+    rows: list[dict] = []
+    for track_id, display in session.execute(select(Track.id, Track.artist_display)).all():
+        names = split_artists(display)
+        if not names:
+            continue
+        wanted = [(artist_key(n), Credit.ROLE_MAIN if i == 0 else Credit.ROLE_FEATURING)
+                  for i, n in enumerate(names)]
+        have = current.get(track_id, [])
+        if all(k in id_of for k, _ in wanted) and \
+                sorted((id_of[k], r) for k, r in wanted) == sorted((aid, r) for _, aid, r in have):
+            continue
+        for cid, aid, _ in have:
+            doomed.append(cid)
+            left.add(aid)
+        for position, (name, (key, role)) in enumerate(zip(names, wanted)):
+            aid = id_of.get(key)
+            if aid is None:
+                artist = lib.get_or_create_artist(session, name)
+                aid = id_of[key] = id_of[artist.name_key] = artist.id
+            rows.append({"artist_id": aid, "role": role, "track_id": track_id,
+                         "release_id": None, "position": position})
+        changed += 1
+    for start in range(0, len(doomed), 500):
+        session.execute(delete(Credit).where(Credit.id.in_(doomed[start:start + 500])))
+    if rows:
+        session.execute(insert(Credit), rows)
+    session.flush()
+    left -= {r["artist_id"] for r in rows}
+
+    removed = 0
+    for artist_id in left:
+        used = (
+            session.scalar(select(Credit.id).where(Credit.artist_id == artist_id).limit(1))
+            or session.scalar(select(Release.id).where(Release.album_artist_id == artist_id).limit(1))
+            or session.scalar(select(Video.id).where(Video.artist_id == artist_id).limit(1))
+            or session.scalar(select(JukeboxSlot.id).where(JukeboxSlot.artist_id == artist_id).limit(1))
+        )
+        if used:
+            continue
+        for table in (ArtistTopTrack, ArtistTopPick, ArtistSimilar):
+            session.execute(delete(table).where(table.artist_id == artist_id))
+        session.execute(delete(Artist).where(Artist.id == artist_id))
+        removed += 1
+    session.flush()
+    return changed, removed
+
+
 def repair_unknown_artist_merge(session: Session) -> int:
     """Re-read the files filed under a letterless artist name or "Unknown
     Artist" (2026-10-19 - James: "help me clean up these Unknown question

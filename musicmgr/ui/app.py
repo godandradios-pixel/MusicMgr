@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from .. import config
 from ..db.session import init_engine, session_scope
+from ..services import artist_merge
 from ..services import artwork_names
 from ..services import charts as chart_svc
 from ..services import library as lib_svc
@@ -480,6 +481,8 @@ COMPILATION_MERGE_PREF = "compilation_merge_done"
 FOLDER_ARTIST_REPAIR_PREF = "folder_album_artist_repair_done"
 SIDE_COVERS_PREF = "side_covers_done"
 UNKNOWN_ARTIST_REPAIR_PREF = "unknown_artist_repair_done"
+CREDIT_RESPLIT_PREF = "credit_resplit_done"
+ARTIST_MERGE_PREF = "artist_merges_v1_done"
 
 
 def bootstrap_database() -> None:
@@ -547,6 +550,34 @@ def bootstrap_database() -> None:
                     logging.getLogger(__name__).info(
                         "re-read %d files filed under '?' / Unknown Artist", reread)
                 updater.set_pref(session, UNKNOWN_ARTIST_REPAIR_PREF, "1")
+        # 2026-10-19: every song's artist credits worked out again with the
+        # new splitting rules ("Blood, Sweat & Tears" whole again, big-band
+        # singers out of "Glenn Miller (Tex Beneke & chorus, vocal)") - from
+        # the stored artist text, no files read; ~25 s once on PC1
+        if updater.get_pref(session, CREDIT_RESPLIT_PREF) != "1":
+            try:
+                with session.begin_nested():
+                    changed, removed = scanner_svc.resplit_track_credits(session)
+            except Exception:  # never block startup on it - tried again next start
+                logging.getLogger(__name__).exception("credit re-split failed")
+            else:
+                if changed:
+                    logging.getLogger(__name__).info(
+                        "re-split artist credits on %d tracks, removed %d stray artists",
+                        changed, removed)
+                updater.set_pref(session, CREDIT_RESPLIT_PREF, "1")
+        # 2026-10-19: spelling variants of one artist merged (Tim McGraw /
+        # Tim Mc Graw ...) - the reviewed list in services/artist_merge.py
+        if updater.get_pref(session, ARTIST_MERGE_PREF) != "1":
+            try:
+                with session.begin_nested():
+                    merged = artist_merge.apply_artist_merges(session)
+            except Exception:  # never block startup on it - tried again next start
+                logging.getLogger(__name__).exception("artist merges failed")
+            else:
+                if merged:
+                    logging.getLogger(__name__).info("merged %d duplicate artists", merged)
+                updater.set_pref(session, ARTIST_MERGE_PREF, "1")
 
 
 def _build_splash() -> Optional[QSplashScreen]:

@@ -74,24 +74,156 @@ def sort_name(name: str) -> str:
     return f"{rest}, {match.group(1)}"
 
 
+#: acts whose own name has a comma or "&"/"and" in it - never split
+#: (2026-10-19: "Blood, Sweat & Tears" had become "Blood, Sweat" + "Tears",
+#: 121 songs; Earth, Wind & Fire, Emerson, Lake & Palmer ... the same)
+PROTECTED_NAMES = (
+    "Blood, Sweat & Tears", "Earth, Wind & Fire", "Emerson, Lake & Palmer",
+    "Emerson, Lake & Powell", "Crosby, Stills, Nash & Young", "Crosby, Stills & Nash",
+    "Peter, Paul & Mary", "Ray, Goodman & Brown", "Phantom, Rocker & Slick",
+    "Phillips, Craig & Dean", "Dino, Desi & Billy", "Lambert, Hendricks & Ross",
+    "Dave Dee, Dozy, Beaky, Mick & Tich", "Tyler, The Creator", "Lipps, Inc.",
+    "Earth, Wind and Fire", "10,000 Maniacs",
+)
+_PROTECTED_RE = [
+    re.compile(
+        r"(?<!\w)" + r"\s*".join(
+            r"(?:&|and)" if w == "&" else re.escape(w) for w in re.findall(r"&|[^\s&]+", name)
+        ) + r"(?!\w)",
+        re.IGNORECASE,
+    )
+    for name in sorted(PROTECTED_NAMES, key=len, reverse=True)
+]
+#: ", Jr." / ", Sr." / ", Inc." / ", III" belong to the name before them
+_SUFFIX_RE = re.compile(r",\s*(?=(?:jr|sr|inc|ii|iii|iv)\b\.?)", re.IGNORECASE)
+#: "Tommy Dorsey and His Orchestra", "Kay Kyser & Her ..." - one act
+_HIS_RE = re.compile(r"\s+(?:and|&)\s+(?=(?:his|her|their)\b)", re.IGNORECASE)
+#: "Nelly Furtado ft.Timbaland" - no space after the dot
+_GLUED_FEAT_RE = re.compile(r"\s+(feat|ft)\.(?=\S)", re.IGNORECASE)
+_LEADING_FEAT_RE = re.compile(r"^\s*(?:feat\.?|ft\.?|featuring)\s+", re.IGNORECASE)
+#: ", vocal refrain by Frank Sinatra" / ", vocal by ..."
+_VOCAL_BY_RE = re.compile(r",?\s*\bvocal(?:\s+refrain)?\s+by\s+", re.IGNORECASE)
+#: words inside a big-band credit's brackets that describe a role, not a name
+_ROLE_WORDS = re.compile(
+    r"\b(?:vocal\s+refrain\s+by|vocal\s+by|vocals?|refrain|featuring|feat\.?|ft\.?|with|"
+    r"chorus|trio|quartet|quintet|band|group|singers?|ensemble|duet|male|female|"
+    r"incl|v|voc|vcl)\b\.?",
+    re.IGNORECASE,
+)
+_ROLE_HINT = re.compile(r"\b(?:vocal|vocals|refrain|feat|ft|featuring|with|chorus|trio|quartet|"
+                        r"v|voc|vcl|incl)\b",
+                        re.IGNORECASE)
+#: a bracket that's a recording note, not a person: "(as 'Lloyd Keating')",
+#: "[aka Barry Wood]", "(Decca version)", "(dir. Joe Moss)", "(composer)" -
+#: dropped from the credit, so Ben Selvin's pseudonym records file under Ben
+#: Selvin
+_NOTE_BRACKET = re.compile(
+    r"^\s*(?:as|aka|a\.k\.a\.)\s|\bversion\b|\bdir\b\.?|\bdirected\b|\bcomposer\b|"
+    r"\btheme\b|^\s*et\s*$|\bstudio\b|\btake\s*\d|\binstrumental\b",
+    re.IGNORECASE,
+)
+#: leftover pieces of free-text credits that aren't anyone
+_NOT_A_NAME = re.compile(
+    r"^(?:the|and|by|unidentified|unknown|brief|dir|voal|vocal|vocals|refrain|trumpet|piano|"
+    r"organ|pipe organ|solo|version \d+|including .*|incl .*)$",
+    re.IGNORECASE,
+)
+_KEEP = "\x00"   # stands in for a comma that's part of a name
+_JOIN = "\x01"   # stands in for a space-and-space that's part of a name
+
+
+def _split_list(text: str) -> list[str]:
+    """Split one bracket-free stretch on feat/&/and/with/x and commas."""
+    out: list[str] = []
+    for part in _FEAT_SPLIT.split(text):
+        part = part.strip(" -/")
+        if "," not in part and ";" not in part:
+            out.append(part)
+            continue
+        pieces = (re.sub(r"^(?:and|&)\s+", "", p.strip(" -/"), flags=re.I) for p in re.split(r"[,;]", part))
+        out.extend(p for p in pieces if p)  # "A, B, and C": the last one is "C"
+    return out
+
+
+def _split_bracket(inner: str) -> list[str]:
+    """The singers inside "Glenn Miller (Tex Beneke & chorus, vocal)"."""
+    cleaned = _ROLE_WORDS.sub(" ", inner)
+    cleaned = re.sub(r"^\s*(?:and|&|by)\s+|\s+(?:and|&)\s*$", " ", cleaned.strip(), flags=re.I)
+    return [p for p in _split_list(re.sub(r"\s+", " ", cleaned).strip())
+            if p.strip().lower() not in ("and", "&", "the", "by")]
+
+
 def split_artists(text: Optional[str]) -> list[str]:
     """Break a credit string into individual artist names.
 
     'Daft Punk feat. Pharrell Williams & Nile Rodgers'
         -> ['Daft Punk', 'Pharrell Williams', 'Nile Rodgers']
+
+    2026-10-19 (James's library audit) - names that aren't lists stay whole:
+    bands with a comma or "&" in their name (PROTECTED_NAMES), "..., Jr.",
+    "Leader and His Orchestra", and "Fisher, Eddie". Lists that are lists
+    come apart: "Shawn Mendes, Camila Cabello", "Nelly Furtado ft.Timbaland",
+    a credit left as just "ft. Enya", "Huntrix: Ejae, Audrey Nuna and Rei
+    Ami", and big-band credits with the singers in brackets - "Glenn Miller
+    (Tex Beneke & chorus, vocal)" is Glenn Miller featuring Tex Beneke, not
+    "Glenn Miller (Tex Beneke" and "chorus, vocal)".
     """
     if not text:
         return []
-    parts = [p.strip(" -/") for p in _FEAT_SPLIT.split(str(text))]
-    # 2026-10-19: a credit whose first "name" is only punctuation is one
-    # name, not two - "? and the Mysterians" used to come apart into "?"
-    # and "the Mysterians", and "?" (which has no letters to key on) was
-    # filed as the same artist as every untagged file's "Unknown Artist"
-    if parts and not normalize(parts[0]):
-        whole = str(text).strip()
-        return [whole] if whole else []
-    # a stray piece with no letters ("... S. Ballew and )") isn't an artist
-    return [p for p in parts if p and normalize(p)]
+    raw = re.sub(r"\s+", " ", str(text).replace("\xa0", " ")).strip()
+    if not raw:
+        return []
+    # a credit whose first "name" is only punctuation is one name, not two -
+    # "? and the Mysterians" used to come apart into "?" and "the Mysterians"
+    first = _FEAT_SPLIT.split(raw)[0]
+    if not normalize(first):
+        return [raw]
+
+    if re.fullmatch(r"[^\s,]+,\s*[^\s,]+", raw):
+        return [raw]  # "Fisher, Eddie": one person, surname first
+    s = _LEADING_FEAT_RE.sub("", raw)
+    s = _GLUED_FEAT_RE.sub(lambda m: f" {m.group(1)}. ", s)
+    for pattern in _PROTECTED_RE:
+        s = pattern.sub(lambda m: m.group(0).replace(",", _KEEP)
+                        .replace(" & ", _JOIN + "&" + _JOIN).replace(" and ", _JOIN + "and" + _JOIN), s)
+    s = _SUFFIX_RE.sub(lambda m: m.group(0).replace(",", _KEEP), s)
+    s = _HIS_RE.sub(lambda m: m.group(0).replace(" ", _JOIN), s)
+    s = _VOCAL_BY_RE.sub(" feat. ", s)
+
+    names: list[str] = []
+    singers: list[str] = []
+
+    def take(m: "re.Match[str]") -> str:
+        inner = m.group(1)
+        if _NOTE_BRACKET.search(inner):
+            return " "
+        if _ROLE_HINT.search(inner) or "," in inner or ";" in inner:
+            singers.extend(_split_bracket(inner))
+            return " "
+        return m.group(0)  # a bracket that's part of a name - keep it
+
+    s = re.sub(r"\[([^\[\]]*)\]", take, s)
+    s = re.sub(r"\(([^()]*)\)", take, s)
+    s = re.sub(r"\(([^()]*)$", take, s)  # "Johnny Mercer (feat. Paul Weston" - never closed
+    s = re.sub(r"\s+", " ", s).strip(" ,;")
+    group = re.match(r"^([^:,()]+):\s*(.+)$", s)
+    if group and ("," in group.group(2) or " and " in group.group(2)):
+        names.append(group.group(1))
+        names.extend(_split_list(group.group(2)))
+    else:
+        names.extend(_split_list(s))
+    names.extend(singers)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        name = name.replace(_KEEP, ",").replace(_JOIN, " ").strip(" -/,")
+        key = normalize(name)
+        if not key or key in seen or _NOT_A_NAME.match(re.sub(r"[^\w\s]", " ", name).strip()):
+            continue  # a piece with no letters, or the same singer twice
+        seen.add(key)
+        out.append(name)
+    return out
 
 
 def primary_artist(text: Optional[str]) -> str:
