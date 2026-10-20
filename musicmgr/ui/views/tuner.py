@@ -110,6 +110,39 @@ def _set_setting(ctx: AppContext, key: str, value: str) -> None:
 # --------------------------------------------------------------------------
 
 
+
+def dial_entries(session) -> tuple[dict[str, list[tuple[str, int, str]]], set[int]]:
+    """What's on each band of the dial, in dial order - (kind, id, label)
+    with kind "onair" / "show" / "station" - and the ids of stations off the
+    air. Shared with Now Playing's tabletop radio (2026-10-19), so its
+    pointer sits where this page's does."""
+    entries: dict[str, list[tuple[str, int, str]]] = {k: [] for k in BAND_KEYS}
+    off_air: set[int] = set()
+    shows = otr.list_shows(session)
+    if shows:
+        entries["police"].append(("onair", 0, ONAIR_LABEL))
+    for sh in shows:
+        band = sh.band if sh.band in entries else otr.DEFAULT_SHOW_BAND
+        entries[band].append(("show", sh.id, otr.dial_label(sh.name)))
+    for st in stations.dial(session):
+        band = st.band if st.band in entries else "fm"
+        entries[band].append(("station", st.id, st.name))
+        if st.off_air_since:
+            off_air.add(st.id)
+    return entries, off_air
+
+
+def dial_spot(session, kind: str, ident: int) -> tuple[str, float, str]:
+    """(band, 0..1 position, label) of a show/station on the dial, or
+    ("", 0.5, "") when it isn't there."""
+    entries, _ = dial_entries(session)
+    for band, items in entries.items():
+        for i, (k, n, label) in enumerate(items):
+            if k == kind and n == ident:
+                positions = stations.dial_positions(band, [lab for _, _, lab in items])
+                return band, positions[i], label
+    return "", 0.5, ""
+
 class OtrScanThread(QThread):
     progress = Signal(int, int, str)
     finished_with = Signal(object)
@@ -693,20 +726,8 @@ class TunerView(BaseView):
         self._update_info()
 
     def _rebuild(self) -> None:
-        entries: dict[str, list[tuple[str, int, str]]] = {k: [] for k in BAND_KEYS}
-        off_air: set[int] = set()
         with self.ctx.session() as s:
-            shows = otr.list_shows(s)
-            if shows:
-                entries["police"].append(("onair", 0, ONAIR_LABEL))
-            for sh in shows:
-                band = sh.band if sh.band in entries else otr.DEFAULT_SHOW_BAND
-                entries[band].append(("show", sh.id, otr.dial_label(sh.name)))
-            for st in stations.dial(s):
-                band = st.band if st.band in entries else "fm"
-                entries[band].append(("station", st.id, st.name))
-                if st.off_air_since:
-                    off_air.add(st.id)
+            entries, off_air = dial_entries(s)
         self._entries = entries
         self._off_air = off_air
         for band, items in entries.items():

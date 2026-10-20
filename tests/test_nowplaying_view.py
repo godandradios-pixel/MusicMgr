@@ -599,7 +599,7 @@ class TestButtons:
         assert view.clear_queue_button not in header_widgets
 
     def test_tab_row_actions_follow_the_selected_chip(self, view):
-        queue_chip, lyrics_chip = view._right_chips.buttons()
+        queue_chip, lyrics_chip, _heard_chip = view._right_chips.buttons()
         assert view.right_actions.currentIndex() == 0
         assert view.right_actions.currentWidget().isAncestorOf(view.clear_queue_button)
         assert view.right_actions.currentWidget().isAncestorOf(view.queue_meta)

@@ -58,9 +58,10 @@ from PySide6.QtWidgets import (
 )
 from sqlalchemy import select
 
-from ...db.models import Chart, ChartEntry, ChartIssue, Track
+from ...db.models import Chart, ChartEntry, ChartIssue, RadioEpisode, Track
 from ...services import tracknum
 from ...services import updater
+from ...services import heard as heard_svc
 from ...services import jukebox as jukebox_svc
 from ...services import library as lib
 from ...services.library import format_duration
@@ -78,6 +79,7 @@ from ..widgets.common import (
 )
 from ..widgets.lyrics_editor import LyricsEditorDialog
 from ..widgets.lyrics_panel import LyricsPanel
+from ..widgets.table_radio import TableRadio
 from ..widgets.turntable import RPM_78, RPM_LP, Turntable
 from .base import BaseView
 from .jukebox import JukeboxPickerDialog
@@ -140,15 +142,29 @@ class NowPlayingView(BaseView):
         self.turntable.setCursor(Qt.PointingHandCursor)
         self.turntable.mousePressEvent = lambda e: (
             self._open_current_release() if e.button() == Qt.LeftButton else None)
-        for art in (self.cover, self.turntable):
+        # 2026-10-19 - James: "when I'm listening to a radio station, it
+        # doesn't make sense that a record spins. It's a station not an
+        # album." A station or an old-time radio show shows a tabletop radio
+        # instead (ui/widgets/table_radio.py); tapping it opens the Radio
+        # page. The same right-click switches it to the flat logo.
+        self.table_radio = TableRadio(340)
+        self.table_radio.setCursor(Qt.PointingHandCursor)
+        self.table_radio.mousePressEvent = lambda e: (
+            ctx.navigateRequested.emit("radio") if e.button() == Qt.LeftButton else None)
+        for art in (self.cover, self.turntable, self.table_radio):
             art.contextMenuEvent = lambda e: self._art_menu().popup(e.globalPos())
         self.art_stack = QStackedWidget()
         self.art_stack.setFixedSize(340, 340)
         self.art_stack.addWidget(self.cover)
         self.art_stack.addWidget(self.turntable)
+        self.art_stack.addWidget(self.table_radio)
         with ctx.session() as db:
-            show_turntable = updater.get_bool_pref(db, PREF_TURNTABLE, True)
-        self.art_stack.setCurrentWidget(self.turntable if show_turntable else self.cover)
+            self._show_turntable = updater.get_bool_pref(db, PREF_TURNTABLE, True)
+        self._on_radio_item = False
+        #: songs each station sent since it was tuned in (services/heard.py)
+        self._heard = heard_svc.HeardLog()
+        self._station_id: Optional[int] = None
+        self._apply_art()
         left.addWidget(self.art_stack, 0, Qt.AlignHCenter)
 
         self.track_title = QLabel("Nothing playing")
@@ -229,7 +245,12 @@ class NowPlayingView(BaseView):
         queue_chip = ChipButton("Up next")
         queue_chip.setChecked(True)
         lyrics_chip = ChipButton("Lyrics")
-        for chip in (queue_chip, lyrics_chip):
+        # 2026-10-19: while a station plays, the only tab - what it's played
+        # since it was tuned in (services/heard.py)
+        heard_chip = ChipButton("Heard on this station")
+        heard_chip.setVisible(False)
+        self.queue_chip, self.lyrics_chip, self.heard_chip = queue_chip, lyrics_chip, heard_chip
+        for chip in (queue_chip, lyrics_chip, heard_chip):
             self._right_chips.addButton(chip)
             qhead.addWidget(chip)
         qhead.addStretch(1)
@@ -273,6 +294,14 @@ class NowPlayingView(BaseView):
         la_layout.addWidget(self.lyrics_panel.edit_button)
         self.right_actions.addWidget(lyrics_actions)  # 1
 
+        heard_actions = QWidget()
+        ha_layout = QHBoxLayout(heard_actions)
+        ha_layout.setContentsMargins(0, 0, 0, 0)
+        ha_layout.addStretch(1)
+        self.heard_meta = dim_label("")
+        ha_layout.addWidget(self.heard_meta)
+        self.right_actions.addWidget(heard_actions)  # 2
+
         qhead.addWidget(self.right_actions)
 
         # 2026-10-03 - James: "Can Up next, Lyrics and Edit lyrics pills be
@@ -313,12 +342,27 @@ class NowPlayingView(BaseView):
 
         self.right_panes.addWidget(self.lyrics_panel)  # 1
 
+        heard_pane = QWidget()
+        heard_layout = QVBoxLayout(heard_pane)
+        heard_layout.setContentsMargins(0, 0, 0, 0)
+        heard_layout.setSpacing(8)
+        self.heard_list = TouchList()
+        self.heard_list.itemActivatedPayload.connect(lambda _p: self._sync_heard_button())
+        heard_layout.addWidget(self.heard_list, 1)
+        self.heard_add = TouchButton(f"♥  Add to “{heard_svc.PLAYLIST_NAME}”")
+        self.heard_add.setToolTip("Find the selected song in your library and add it to that playlist")
+        self.heard_add.clicked.connect(self._add_heard_to_playlist)
+        heard_layout.addWidget(self.heard_add)
+        self.right_panes.addWidget(heard_pane)  # 2
+
         right.addWidget(self.right_panes, 1)
 
         def _switch_right(btn) -> None:
-            idx = 0 if btn is queue_chip else 1
+            idx = {queue_chip: 0, lyrics_chip: 1, heard_chip: 2}.get(btn, 0)
             self.right_panes.setCurrentIndex(idx)
             self.right_actions.setCurrentIndex(idx)
+
+        self._switch_right = _switch_right
 
         self._right_chips.buttonClicked.connect(_switch_right)
         row.addLayout(right, 3)
@@ -329,8 +373,10 @@ class NowPlayingView(BaseView):
         ctx.player.queueChanged.connect(self._refresh_queue)
         ctx.radio.stateChanged.connect(self._on_radio_state)
         ctx.player.positionChanged.connect(self._on_position)
-        ctx.player.playbackStateChanged.connect(
-            lambda state: self.turntable.set_playing(state == "playing"))
+        ctx.player.playbackStateChanged.connect(self._on_playback_state)
+        ctx.player.streamTitleChanged.connect(self._on_stream_title)
+        ctx.player.signalChanged.connect(self.table_radio.set_signal)
+        ctx.tuner.tunedChanged.connect(lambda _k, _i: self._sync_radio_spot())
 
     # -- slots ---------------------------------------------------------------
 
@@ -362,6 +408,8 @@ class NowPlayingView(BaseView):
             self.cover.set_source(None, "")
             self.turntable.set_source(None, "")
             self.turntable.set_playing(False)
+            self.table_radio.set_playing(False)
+            self._set_radio_mode(False, None)
             self.rating_stars.set_rating(0)
             self.jukebox_toggle.set_on(False)
             self.lyrics_panel.load_for_path(None)
@@ -381,11 +429,12 @@ class NowPlayingView(BaseView):
         self.turntable.set_playing(self.ctx.player.is_playing())
         self.rating_stars.setVisible(item.is_track)
         self.jukebox_toggle.setVisible(item.is_track)
+        self._set_radio_mode(not item.is_track, item)
         if not item.is_track:
             # an old-time radio episode or an internet station (2026-10-01
             # tuner): no chart history, rating, jukebox, lyrics or library
             # pages behind it
-            self.chart_note.setText("")
+            self.chart_note.setText(self._now_on_air())
             self._current_artist_id = None
             self._current_release_id = None
             self.lyrics_panel.load_for_path(None)
@@ -579,17 +628,137 @@ class NowPlayingView(BaseView):
 
     def _art_menu(self) -> QMenu:
         """Right-click / hold on the artwork: switch between the turntable
-        and the flat album cover (remembered in Settings' table)."""
+        (or, for a station or show, the radio) and the flat cover -
+        remembered in Settings' table."""
         menu = QMenu(self)
-        on_turntable = self.art_stack.currentWidget() is self.turntable
-        action = menu.addAction("Show album cover" if on_turntable else "Show turntable")
-        action.triggered.connect(lambda: self.set_turntable_shown(not on_turntable))
+        shown = self._show_turntable
+        if self._on_radio_item:
+            text = "Show station logo" if shown else "Show radio"
+        else:
+            text = "Show album cover" if shown else "Show turntable"
+        action = menu.addAction(text)
+        action.triggered.connect(lambda: self.set_turntable_shown(not shown))
         return menu
 
     def set_turntable_shown(self, shown: bool) -> None:
-        self.art_stack.setCurrentWidget(self.turntable if shown else self.cover)
+        self._show_turntable = shown
+        self._apply_art()
         with self.ctx.session() as db:
             updater.set_pref(db, PREF_TURNTABLE, "1" if shown else "0")
+
+    def _apply_art(self) -> None:
+        if not self._show_turntable:
+            self.art_stack.setCurrentWidget(self.cover)
+        else:
+            self.art_stack.setCurrentWidget(self.table_radio if self._on_radio_item else self.turntable)
+
+    def _on_playback_state(self, state: str) -> None:
+        playing = state == "playing"
+        self.turntable.set_playing(playing)
+        self.table_radio.set_playing(playing and self._on_radio_item)
+
+    # -- radio stations and shows (2026-10-19) ------------------------------
+
+    def _set_radio_mode(self, on: bool, item: Optional[QueueItem]) -> None:
+        """A station or show is playing (on) or not: the radio in place of
+        the turntable, and for a station "Heard on this station" in place
+        of Up next / Lyrics."""
+        self._on_radio_item = on
+        station = item.station_id if on and item is not None and item.is_stream else None
+        self._station_id = station
+        self._apply_art()
+        if on:
+            self._sync_radio_spot(item)
+            self.table_radio.set_signal(self.ctx.player.signal)
+            self.table_radio.set_playing(self.ctx.player.is_playing())
+        streaming = station is not None
+        self.queue_chip.setVisible(not streaming)
+        self.lyrics_chip.setVisible(not streaming)
+        self.heard_chip.setVisible(streaming)
+        if streaming:
+            self.heard_chip.setChecked(True)
+            self._switch_right(self.heard_chip)
+            self._refresh_heard()
+        elif self.heard_chip.isChecked():
+            self.queue_chip.setChecked(True)
+            self._switch_right(self.queue_chip)
+
+    def _sync_radio_spot(self, item: Optional[QueueItem] = None) -> None:
+        """Point the radio's dial where the Radio page has this station or
+        show (ui/views/tuner.py:dial_spot)."""
+        from .tuner import dial_spot
+
+        item = item or self.ctx.player.current
+        if not self._on_radio_item or item is None:
+            return
+        kind, ident = self.ctx.tuner.tuned
+        with self.ctx.session() as db:
+            if kind != "onair":
+                if item.is_stream and item.station_id is not None:
+                    kind, ident = "station", item.station_id
+                elif item.episode_id is not None:
+                    episode = db.get(RadioEpisode, item.episode_id)
+                    if episode is not None:
+                        kind, ident = "show", episode.show_id
+            band, pos, label = dial_spot(db, kind, ident)
+        self.table_radio.set_station(band or ("fm" if item.is_stream else "am"), pos,
+                                     label or item.title, item.cover_path)
+
+    def _now_on_air(self) -> str:
+        heard = self._heard.for_station(self._station_id)
+        return f"♪ {heard[0].text}" if heard else ""
+
+    def _on_stream_title(self, text: str) -> None:
+        if self._station_id is None:
+            return
+        if self._heard.add(self._station_id, text):
+            self.chart_note.setText(self._now_on_air())
+            self._refresh_heard()
+
+    def _refresh_heard(self) -> None:
+        heard = self._heard.for_station(self._station_id)
+        rows = []
+        for idx, h in enumerate(heard):
+            now = idx == 0
+            rows.append({
+                "lead": h.when.strftime("%I:%M").lstrip("0"),
+                "lead_color": COLORS["jukebox_key_hi"] if now else COLORS["text_dim"],
+                "primary": h.title or h.text,
+                "secondary": h.artist,
+                "trail": "on now" if now else "",
+                "bold": now,
+                "color": COLORS["jukebox_key_hi"] if now else COLORS["text"],
+                "index": idx,
+            })
+        self.heard_list.set_rows(rows)
+        if heard:
+            since = heard[-1].when.strftime("%I:%M %p").lstrip("0")
+            self.heard_meta.setText(f"{len(heard)} song{'s' if len(heard) != 1 else ''} since {since}")
+        else:
+            self.heard_meta.setText("Nothing yet — not every station sends its songs")
+        self._sync_heard_button()
+
+    def _sync_heard_button(self) -> None:
+        payload = self.heard_list.current_payload()
+        self.heard_add.setEnabled(bool(payload) and payload.get("index") is not None)
+
+    def _add_heard_to_playlist(self) -> None:
+        payload = self.heard_list.current_payload()
+        heard = self._heard.for_station(self._station_id)
+        if not payload or payload.get("index") is None or payload["index"] >= len(heard):
+            return
+        song = heard[payload["index"]]
+        with self.ctx.session() as db:
+            track_id = heard_svc.find_track(db, song)
+            if track_id is None:
+                self.ctx.notify(f"“{song.title or song.text}” isn’t in your library")
+                return
+            added = heard_svc.add_to_heard_playlist(db, track_id)
+            title = db.get(Track, track_id).title
+        if added:
+            self.ctx.notify(f"Added “{title}” to {heard_svc.PLAYLIST_NAME}")
+        else:
+            self.ctx.notify(f"“{title}” is already on {heard_svc.PLAYLIST_NAME}")
 
     def _refresh_queue(self) -> None:
         if not self._is_current_page():
