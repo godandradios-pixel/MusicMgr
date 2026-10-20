@@ -964,7 +964,10 @@ class RadioSet(QWidget):
         # doesn't shrink every name on the band
         typical = width * (0.84 / max(1, len(labels) - 1)) if len(labels) > 1 else width
         h = name_area.height()
-        px = min(h * 0.62, max(8.0, typical * 0.95 / max(5, longest * 0.55)))
+        # 2026-10-20 (James: names on POLICE/SW1/SW2/LW too big, "SHERLOCK
+        # HOLM..." cut off): cap lowered from 0.62 to 0.40 of the strip so
+        # sparse bands print at about the size FM/AM already do.
+        px = min(h * 0.40, max(8.0, typical * 0.95 / max(5, longest * 0.55)))
 
         def need_at(i: int, size: float) -> float:
             return QFontMetricsF(_font(size, bold=i == tuned)).horizontalAdvance(labels[i].upper())
@@ -1053,6 +1056,13 @@ class RadioSet(QWidget):
             if full > avail[i] and size > 9:
                 font = _font(max(9.0 if not row else min(9.0, size),
                                  math.floor(size * avail[i] / full)), bold=is_tuned)
+                fm = QFontMetricsF(font)
+            # keep stepping down until the whole name fits (elide only as a
+            # last resort below 7px)
+            fit = font.pixelSize()
+            while fm.horizontalAdvance(label.upper()) > avail[i] and fit > 7:
+                fit -= 1
+                font = _font(fit, bold=is_tuned)
                 fm = QFontMetricsF(font)
             p.setFont(font)
             text = fm.elidedText(label.upper(), Qt.ElideRight, avail[i])
