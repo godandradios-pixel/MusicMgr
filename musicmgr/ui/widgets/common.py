@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
@@ -435,9 +437,18 @@ def placeholder_pixmap(size: int, seed_text: str = "") -> QPixmap:
     return pix
 
 
-#: (path, size, seed) -> QPixmap. Grids re-render constantly while scrolling;
-#: decoding the same JPEG each time is the difference between smooth and not.
-_ART_CACHE: dict[tuple, QPixmap] = {}
+#: (path, size, seed) -> (QPixmap, file it came from, that file's mtime).
+#: Grids re-render constantly while scrolling; decoding the same JPEG each
+#: time is the difference between smooth and not.
+#:
+#: 2026-10-19 - James: "when I try to replace album art it doesn't save my
+#: selection. I hit OK and nothing. Even when I select from a file, no
+#: change". It did save: a cover is stored under the album's own name, so
+#: the new picture overwrote the old file at the same path, and this cache -
+#: keyed by path - kept handing back the old picture until a restart. Each
+#: entry now remembers its file's modified time, and a changed file is
+#: loaded again (one stat per lookup).
+_ART_CACHE: dict[tuple, tuple[QPixmap, Optional[str], Optional[int]]] = {}
 
 
 def clear_art_cache() -> None:
@@ -491,7 +502,9 @@ def cover_pixmap(
     key = (path or "", size, seed_text if not path else "", crop)
     cached = _ART_CACHE.get(key)
     if cached is not None:
-        return cached
+        cached_pix, cached_file, cached_mtime = cached
+        if cached_file is None or _mtime(cached_file) == cached_mtime:
+            return cached_pix
     pix: Optional[QPixmap] = None
     resolved = _resolve_art_path(path)
     if resolved:
@@ -516,12 +529,22 @@ def cover_pixmap(
                 y = (size - scaled.height()) // 2
                 painter.drawPixmap(x, y, scaled)
                 painter.end()
+    # the file to watch: the one loaded, or for a placeholder the cover that
+    # wasn't there yet (picking one later must show without a restart)
+    watch = resolved or path or None
     if pix is None:
         pix = placeholder_pixmap(size, seed_text)
     if len(_ART_CACHE) > _ART_CACHE_LIMIT:
         _ART_CACHE.clear()
-    _ART_CACHE[key] = pix
+    _ART_CACHE[key] = (pix, watch, _mtime(watch) if watch else None)
     return pix
+
+
+def _mtime(path: str) -> Optional[int]:
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
 
 
 def circular_pixmap(source: QPixmap) -> QPixmap:
