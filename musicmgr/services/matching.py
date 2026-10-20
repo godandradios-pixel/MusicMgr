@@ -83,7 +83,15 @@ def split_artists(text: Optional[str]) -> list[str]:
     if not text:
         return []
     parts = [p.strip(" -/") for p in _FEAT_SPLIT.split(str(text))]
-    return [p for p in parts if p]
+    # 2026-10-19: a credit whose first "name" is only punctuation is one
+    # name, not two - "? and the Mysterians" used to come apart into "?"
+    # and "the Mysterians", and "?" (which has no letters to key on) was
+    # filed as the same artist as every untagged file's "Unknown Artist"
+    if parts and not normalize(parts[0]):
+        whole = str(text).strip()
+        return [whole] if whole else []
+    # a stray piece with no letters ("... S. Ballew and )") isn't an artist
+    return [p for p in parts if p and normalize(p)]
 
 
 def primary_artist(text: Optional[str]) -> str:

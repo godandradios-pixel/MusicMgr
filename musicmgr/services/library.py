@@ -40,8 +40,15 @@ from .matching import normalize, sort_name
 def get_or_create_artist(session: Session, name: str, **kwargs) -> Artist:
     key = normalize(name)
     if not key:
-        key = "unknown artist"
-        name = name or "Unknown Artist"
+        # 2026-10-19: a name with no letters ("?", "!!!") keys on itself
+        # rather than collapsing into "Unknown Artist" - see
+        # matching.split_artists
+        bare = (name or "").strip()
+        if bare and bare.casefold() != "unknown artist":
+            key = bare.casefold()
+        else:
+            key = "unknown artist"
+            name = "Unknown Artist"
     artist = session.scalar(select(Artist).where(Artist.name_key == key))
     if artist is None:
         artist = Artist(

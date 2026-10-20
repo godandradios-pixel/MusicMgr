@@ -479,6 +479,7 @@ class MainWindow(QMainWindow):
 COMPILATION_MERGE_PREF = "compilation_merge_done"
 FOLDER_ARTIST_REPAIR_PREF = "folder_album_artist_repair_done"
 SIDE_COVERS_PREF = "side_covers_done"
+UNKNOWN_ARTIST_REPAIR_PREF = "unknown_artist_repair_done"
 
 
 def bootstrap_database() -> None:
@@ -532,6 +533,20 @@ def bootstrap_database() -> None:
                 if saved:
                     logging.getLogger(__name__).info("saved %d 78 side labels", saved)
                 updater.set_pref(session, SIDE_COVERS_PREF, "1")
+        # 2026-10-19: "? and the Mysterians" and untagged "Artist - Title"
+        # files out from under one artist called "?" (once per data folder -
+        # it re-reads only those files; see repair_unknown_artist_merge)
+        if updater.get_pref(session, UNKNOWN_ARTIST_REPAIR_PREF) != "1":
+            try:
+                with session.begin_nested():
+                    reread = scanner_svc.repair_unknown_artist_merge(session)
+            except Exception:  # never block startup on it - tried again next start
+                logging.getLogger(__name__).exception("unknown-artist repair failed")
+            else:
+                if reread:
+                    logging.getLogger(__name__).info(
+                        "re-read %d files filed under '?' / Unknown Artist", reread)
+                updater.set_pref(session, UNKNOWN_ARTIST_REPAIR_PREF, "1")
 
 
 def _build_splash() -> Optional[QSplashScreen]:

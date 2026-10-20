@@ -453,6 +453,36 @@ def read_tags(path: Path) -> TrackTags:
     return tags
 
 
+#: the "(Official Music Video)" / "[Official Visualizer]" / "- Official
+#: Visualizer" tails download tools leave on a video's filename, and a
+#: trailing "(0)"/"(1)" copy number
+_VIDEO_NOISE = re.compile(
+    r"\s*(?:[(\[][^)\]]*\b(?:official|visuali[sz]er|video|lyrics?|audio|hd|4k)\b[^)\]]*[)\]]"
+    r"|[-\u2013\u2014]\s*official\b.*$|\(\d\)\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _artist_title_from_stem(stem: str) -> Optional[tuple[str, str]]:
+    """("Ella Langley", "20-20") from "Ella Langley - 20-20 (Official
+    Visualizer)", or None when the name isn't "Artist - Title" - including
+    "01 - Title", whose left side is a track number, not an artist."""
+    if " - " not in stem:
+        return None
+    artist, _, title = stem.partition(" - ")
+    artist = artist.strip()
+    if not artist or not re.search(r"[^\W\d_]", artist):
+        return None
+    cleaned = title
+    while True:
+        shorter = _VIDEO_NOISE.sub("", cleaned).strip()
+        if shorter == cleaned:
+            break
+        cleaned = shorter
+    cleaned = cleaned or title.strip()
+    return (artist, cleaned) if cleaned else None
+
+
 def _fallback_from_path(path: Path, tags: TrackTags) -> TrackTags:
     """Fill obvious gaps from `Artist/Album/01 Title.ext` layouts.
 
@@ -488,6 +518,15 @@ def _fallback_from_path(path: Path, tags: TrackTags) -> TrackTags:
     run into another with a hyphen ("777-9311", "20-20", "5-10-15 Hours"),
     which is part of the title, not a track number.
     """
+    if tags.artist in ("", "Unknown Artist") and not tags.had_title_tag:
+        # 2026-10-19: an untagged "Artist - Title.ext" (how music videos are
+        # usually named - 12 in D:\Videos were filed under "?" / Unknown
+        # Artist) - the filename says who it is
+        named = _artist_title_from_stem(path.stem)
+        if named is not None:
+            tags.artist, tags.title = named
+            if tags.album_artist in ("", "Unknown Artist"):
+                tags.album_artist = tags.artist
     if tags.artist in ("", "Unknown Artist"):
         parent = path.parent
         grand = parent.parent
@@ -1675,6 +1714,72 @@ def save_side_covers(session: Session) -> int:
         if cover and artwork_names.save_side_cover(cover_path, position, cover):
             saved += 1
     return saved
+
+
+def repair_unknown_artist_merge(session: Session) -> int:
+    """Re-read the files filed under a letterless artist name or "Unknown
+    Artist" (2026-10-19 - James: "help me clean up these Unknown question
+    marks"). Before matching.split_artists / library.get_or_create_artist
+    learned better, "? and the Mysterians" came apart into "?" + "the
+    Mysterians", "?" keyed as "unknown artist", and every untagged file's
+    "Unknown Artist" landed on that same "?" - on PC1, the band's 44 songs
+    and 12 untagged music videos ("Colbie Caillat - Realize (Official Music
+    Video).mp4") under one artist called "?".
+
+    Re-reading those files with the fixed rules credits the band as itself
+    and names each untagged "Artist - Title" file from its filename
+    (`_artist_title_from_stem`); re-importing drops the old credits. Tracks
+    the files leave are tidied by purge_orphaned_tracks / purge_empty_releases
+    as after any scan, and the leftover "?" record is removed - or, if
+    something still points at it, renamed "Unknown Artist". Returns how many
+    files were re-read. One-time (bootstrap_database); running it again
+    finds nothing new to fix."""
+    from ..db.models import Artist, ArtistSimilar, ArtistTopPick, ArtistTopTrack, Video
+
+    bad_artists = [
+        a for a in session.scalars(select(Artist))
+        if not normalize(a.name)
+        or (a.name_key == "unknown artist" and a.name != "Unknown Artist")
+    ]
+    bad_ids = {a.id for a in bad_artists}
+    track_ids: set[int] = set(session.scalars(
+        select(Track.id).where(Track.artist_display.in_(("Unknown Artist", "?")))
+    ))
+    if bad_ids:
+        track_ids.update(session.scalars(
+            select(Credit.track_id).where(
+                Credit.artist_id.in_(bad_ids), Credit.track_id.is_not(None)
+            )
+        ))
+    files = [
+        Path(p) for p in session.scalars(
+            select(MediaFile.path).where(
+                MediaFile.track_id.in_(track_ids), MediaFile.is_missing.is_(False)
+            )
+        ) if p and os.path.exists(p)
+    ] if track_ids else []
+    if files:
+        _import_files(session, files, ScanResult(), force=True)
+        session.flush()
+        purge_orphaned_tracks(session)
+    for artist in bad_artists:
+        if session.get(Artist, artist.id) is None:
+            continue
+        used = (
+            session.scalar(select(Credit.id).where(Credit.artist_id == artist.id).limit(1))
+            or session.scalar(select(Release.id).where(Release.album_artist_id == artist.id).limit(1))
+            or session.scalar(select(Video.id).where(Video.artist_id == artist.id).limit(1))
+            or session.scalar(select(JukeboxSlot.id).where(JukeboxSlot.artist_id == artist.id).limit(1))
+        )
+        if not used:
+            for table in (ArtistTopTrack, ArtistTopPick, ArtistSimilar):
+                session.execute(delete(table).where(table.artist_id == artist.id))
+            session.execute(delete(Artist).where(Artist.id == artist.id))
+        elif artist.name_key == "unknown artist" and artist.name != "Unknown Artist":
+            artist.name = "Unknown Artist"
+            artist.name_sort = "Unknown Artist"
+    session.flush()
+    return len(files)
 
 
 def repair_folder_album_artists(session: Session) -> int:
