@@ -9,6 +9,7 @@ MusicBee-style folder tree it started as - see PlaylistsView's docstring.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from ... import config
 from ...db.models import Playlist, PlaylistFolder
+from ...services import playlist_import
 from ...services import playlists as pl_svc
 from ...services import tracknum
 from ...services.library import format_duration
@@ -511,6 +513,9 @@ class PlaylistsView(BaseView):
         self.header.addWidget(new_btn)
         self.header.addWidget(smart_btn)
         self.header.addWidget(folder_btn)
+        import_btn = TouchButton("Import playlist…")
+        import_btn.clicked.connect(self.import_playlist)
+        self.header.addWidget(import_btn)
 
         self.breadcrumb = Breadcrumb()
         self.breadcrumb.crumbActivated.connect(self._on_crumb)
@@ -1106,6 +1111,63 @@ class PlaylistsView(BaseView):
             return
         self.ctx.player.set_shuffle(True)
         self.ctx.play_tracks(self._tracks, start=0, source=f"playlist:{self._playlist_id}")
+
+    # -- importing a song list (2026-10-20) ----------------------------------------
+    # James: a KLOVE Eras list (Rank, Artist, Title in an .xlsx) had to go in
+    # as a chart, be saved as a playlist and the chart deleted - losing the
+    # songs it couldn't match on the way. This goes straight to a playlist in
+    # the folder showing and lists what wasn't found.
+
+    def _ask_import_file(self) -> Optional[str]:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import playlist", str(Path.home()),
+            "Song lists (*.csv *.xlsx);;CSV files (*.csv);;Excel files (*.xlsx)",
+        )
+        return path or None
+
+    def _ask_import_name(self, suggestion: str, folder_label: str) -> Optional[str]:
+        name, ok = QInputDialog.getText(
+            self, "Import playlist",
+            f"The new playlist goes in {folder_label}.\nPlaylist name:",
+            text=suggestion,
+        )
+        return name.strip() if ok and name.strip() else None
+
+    def _show_import_result(self, result: "playlist_import.PlaylistImportResult") -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Import playlist")
+        box.setIcon(QMessageBox.Information if result.playlist_id else QMessageBox.Warning)
+        text = result.summary()
+        if result.unmatched:
+            text += "\n\nShow Details lists the songs that weren't found."
+        box.setText(text)
+        if result.unmatched or result.repeats:
+            lines = []
+            if result.unmatched:
+                lines.append("Not in your library:")
+                lines += [f"  {artist} - {title}" for artist, title in result.unmatched]
+            if result.repeats:
+                lines.append("Repeated in the list (added once):")
+                lines += [f"  {artist} - {title}" for artist, title in result.repeats]
+            box.setDetailedText("\n".join(lines))
+        box.exec()
+
+    def import_playlist(self) -> None:
+        path = self._ask_import_file()
+        if not path:
+            return
+        folder_id = self._current_folder_context()
+        folder_label = f"“{self._chain[-1][1]}”" if folder_id is not None and self._chain else "the top level"
+        name = self._ask_import_name(playlist_import.name_from_path(path), folder_label)
+        if name is None:
+            return
+        with self.ctx.session() as session:
+            result = playlist_import.import_playlist(session, path, name=name, folder_id=folder_id)
+        self.refresh()
+        self._show_import_result(result)
+        if result.playlist_id is not None:
+            self.ctx.notify(f"Imported “{result.name}”")
+            self._open_playlist(result.playlist_id)
 
     # -- folder / node actions -----------------------------------------------------
 
