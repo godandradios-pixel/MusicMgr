@@ -452,6 +452,7 @@ class ScanThread(QThread):
                 audio_result.case_duplicates_removed = scanner.merge_case_duplicate_files(session)
                 audio_result.missing = scanner.mark_missing_files(session)
                 audio_result.removed = scanner.purge_orphaned_tracks(session)
+                scanner.tidy_after_scan(session)
             # 2026-09-22 - James: "add a real cancel button that stops any
             # process running within Settings" - a cancel mid-audio-pass
             # skips the video pass entirely rather than starting a second

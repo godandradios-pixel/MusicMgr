@@ -1319,3 +1319,22 @@ class TestEllipsisFoldersAndCaseOnlyRenames:
         session.flush()
 
         assert scanner.merge_case_duplicate_files(session) == 0
+
+
+
+def test_rescan_all_tidies_artist_sort_keys(session, tmp_path):
+    """2026-10-21: fix_artist_sort_keys moved off startup to the end of every
+    scan (scanner.tidy_after_scan) - a scan still puts a bad key right."""
+    from musicmgr.db.models import Artist, WatchedFolder
+
+    make_silent_wav(tmp_path / "The Romantics" / "Album" / "01 Song.wav")
+    session.add(WatchedFolder(path=str(tmp_path)))
+    session.flush()
+    scanner.rescan_all(session)
+    artist = session.scalar(select(Artist).where(Artist.name == "The Romantics"))
+    artist.name_sort = " Romantics, The"  # what the old sort_name left
+    session.flush()
+
+    scanner.rescan_all(session)
+
+    assert artist.name_sort == "Romantics, The"

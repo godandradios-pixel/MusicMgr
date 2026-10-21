@@ -38,6 +38,7 @@ def cmd_scan(args) -> int:
         result.case_duplicates_removed = scanner.merge_case_duplicate_files(session)
         result.missing = scanner.mark_missing_files(session)
         result.removed = scanner.purge_orphaned_tracks(session)
+        scanner.tidy_after_scan(session)
     print("\n" + result.summary())
     for err in result.errors[:10]:
         print("  !", err)
@@ -186,7 +187,6 @@ def main(argv=None) -> int:
         pl_svc.ensure_default_playlists(session)
         pl_svc.ensure_builtin_playback_playlists(session)
         chart_svc.remove_orphaned_playback_charts(session)
-        lib.fix_artist_sort_keys(session)
         lib.backfill_album_artists(session)
         lib.merge_compilation_duplicates(session)
     return args.func(args)

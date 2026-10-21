@@ -1355,7 +1355,20 @@ def rescan_all(
     result.case_duplicates_removed = merge_case_duplicate_files(session)
     result.missing = mark_missing_files(session)
     result.removed = purge_orphaned_tracks(session)
+    tidy_after_scan(session)
     return result
+
+
+def tidy_after_scan(session: Session) -> None:
+    """Self-healing checks over every artist and album that only find work
+    after a scan has changed the library - artist sort keys
+    (library.fix_artist_sort_keys) and single-artist albums the
+    Compilation flag hid (library.fix_single_artist_compilations). They
+    ran on every start until 2026-10-21 (James: "I would like the ongoing
+    startup to be fast"), about 0.27 s of each launch on PC1; every scan
+    path calls this at its end instead. Both are idempotent."""
+    lib.fix_artist_sort_keys(session)
+    lib.fix_single_artist_compilations(session)
 
 
 #: how often mark_missing_files below reports progress - each item here is

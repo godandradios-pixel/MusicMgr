@@ -504,11 +504,11 @@ def bootstrap_database() -> None:
         pl_svc.ensure_default_playlists(session)
         pl_svc.ensure_builtin_playback_playlists(session)
         chart_svc.remove_orphaned_playback_charts(session)
-        lib_svc.fix_artist_sort_keys(session)
         lib_svc.backfill_album_artists(session)
-        # 2026-10-14: single-artist "Best of"s the Compilation flag hid
-        # from their artist's page (cheap; nothing to do after the first run)
-        lib_svc.fix_single_artist_compilations(session)
+        # fix_artist_sort_keys and fix_single_artist_compilations used to
+        # run here too - about 0.27 s of every start on PC1's library, for
+        # checks that only find work after a scan. They run at the end of
+        # every library scan now (scanner.tidy_after_scan, 2026-10-21).
         # 3.5 s on the real library (reads every file path) - a one-time
         # clean-up for databases scanned before the scanner learned about
         # compilations, so it runs once per data folder, not every start
