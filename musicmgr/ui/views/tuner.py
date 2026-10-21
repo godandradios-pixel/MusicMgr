@@ -1163,7 +1163,7 @@ class TunerView(BaseView):
         name, ok = QInputDialog.getText(
             self, "Add a SiriusXM channel",
             "Name for the dial - start with the channel number to put it there "
-            "on the 1-150 scale (e.g. 56 - The Highway):")
+            "on the 1-100 scale (e.g. 56 - The Highway):")
         if ok:
             self.add_sxm(url, name)
 

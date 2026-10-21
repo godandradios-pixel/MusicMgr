@@ -64,9 +64,11 @@ CATEGORIES: list[tuple[str, dict]] = [
 #: (ui/widgets/radio_dial.py draws them; stations are placed against them)
 FM_MARKS = (88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 108)
 AM_MARKS = (540, 600, 700, 800, 900, 1000, 1200, 1400, 1600)
-#: SiriusXM channel numbers, 1-150 like a car's satellite radio (2026-10-21)
-SXM_MARKS = (1, 25, 50, 75, 100, 125, 150)
-SXM_TOP_CHANNEL = 150
+#: SiriusXM channel numbers along the SXM band (2026-10-21): 1-150 like a
+#: car's satellite radio at first, then 1-100 (James) - marked every ten
+#: like the FM scale
+SXM_MARKS = (1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+SXM_TOP_CHANNEL = 100
 SCALE_MARKS = {"fm": FM_MARKS, "am": AM_MARKS, "sxm": SXM_MARKS}
 #: bands whose stations open in the web browser rather than play here
 BROWSER_BANDS = ("sxm",)
@@ -112,9 +114,9 @@ def frequency(name: str, band: str) -> Optional[float]:
             if 530 <= f <= 1710:
                 return f
     elif band == "sxm":
-        # the channel number, placed along a 1-150 scale like a car radio's
-        # (2026-10-21, James: "make the scale 150 channels equivalent to
-        # whats in a car"); a channel past 150 goes at the top end
+        # the channel number, placed along the 1-100 scale (2026-10-21,
+        # James: first "150 channels equivalent to whats in a car", then
+        # "1 - 100"); a channel past 100 goes at the top end
         m = _SXM_RE.match(name)
         if m and 1 <= int(m.group(1)) <= 999:
             return float(min(int(m.group(1)), SXM_TOP_CHANNEL))

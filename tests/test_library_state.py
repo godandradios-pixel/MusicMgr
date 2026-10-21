@@ -705,6 +705,35 @@ class TestRadioStations:
             assert s.scalar(select(RadioStation)).favicon_path == "/pc1/stations/2.png"
         assert pc1.sync().summary() == "Library data already in sync"
 
+    def test_sxm_channels_travel_on_their_band(self, two_pcs):
+        """2026-10-21 - James: "make sure the new radio stations get USB
+        Sync". A SiriusXM channel is a station like any other, keyed by its
+        link: it arrives on the SXM band, still opening in the browser, and
+        a rename or a changed link follows it back."""
+        from musicmgr.db.models import RadioStation
+        from musicmgr.services import stations as st_svc
+
+        highway = "https://www.siriusxm.com/player/channel-linear/entity/ffd94bb6"
+        moved = highway + "-new"
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            st_svc.add_sxm(s, "56 - The Highway", highway)
+        assert pc1.sync().stations_out == 1
+
+        assert pc2.sync().stations_in == [highway]
+        assert self._dial(pc2) == [("56 - The Highway", highway, "sxm")]
+        pc2.use()
+        with db_session.session_scope() as s:
+            st = s.scalar(select(RadioStation))
+            assert st_svc.opens_in_browser(st)
+            st.name = "56 - Highway"
+            st_svc.set_link(s, st.id, moved)
+        pc2.sync()
+
+        pc1.sync()
+        assert self._dial(pc1) == [("56 - Highway", moved, "sxm")]
+
     def test_switched_off_stations_stay_put(self, two_pcs):
         from musicmgr.services import stations as st_svc
 

@@ -83,7 +83,7 @@ def test_sxm_channels_have_their_own_band(db):
 
 @pytest.mark.parametrize("name, channel", [
     ("56 - The Highway", 56), ("Ch 56 The Highway", 56), ("Channel 7: 70s on 7", 7),
-    ("150 - Last", 150), ("301 - Past the dial", 150),
+    ("100 - Last", 100), ("150 - Past the dial", 100),
     ("70s on 7", None), ("1st Wave", None), ("The Highway", None),
 ])
 def test_channel_number_from_the_name(name, channel):
@@ -100,14 +100,14 @@ def test_glass_leaves_the_channel_number_to_the_scale(name, shown):
     assert stations.glass_label("fm", "102.5 WDVE") == "102.5 WDVE"
 
 
-def test_channels_sit_at_their_number_on_a_1_to_150_scale():
-    """2026-10-21 - James: "make the scale 150 channels equivalent to
-    whats in a car"."""
-    assert stations.SXM_MARKS[0] == 1 and stations.SXM_MARKS[-1] == 150
+def test_channels_sit_at_their_number_on_a_1_to_100_scale():
+    """2026-10-21 - James: first a 1-150 scale like a car's, then "make the
+    SXM dial go from 1 - 100"."""
+    assert stations.SXM_MARKS[0] == 1 and stations.SXM_MARKS[-1] == 100
     lo, hi = stations.SCALE_LO, stations.SCALE_HI
-    pos = stations.dial_positions("sxm", ["1 - First", "150 - Last", "Elvis Radio"])
+    pos = stations.dial_positions("sxm", ["1 - First", "100 - Last", "Elvis Radio"])
     assert pos[0] == pytest.approx(lo) and pos[1] == pytest.approx(hi)
-    mid = stations.dial_positions("sxm", ["75 - Middle"])[0]
+    mid = stations.dial_positions("sxm", ["50 - Middle"])[0]
     assert mid == pytest.approx((lo + hi) / 2)
 
 

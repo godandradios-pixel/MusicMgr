@@ -19,7 +19,7 @@ Bands, top to bottom (James's layout, reorganised 2026-10-01):
     LW      speeches, Paul Harvey, commercials
     SXM     SiriusXM channels, played in the web browser (2026-10-21) - at
             the bottom and shorter than the others (BAND_HEIGHT), with a
-            1-150 channel scale like a car's satellite radio
+            1-100 channel scale
 Only the selected band's strip is lit; the piano keys below choose it.
 
 Below the glass: a 6E5 "magic eye" that closes as a station comes in,
@@ -112,9 +112,9 @@ BANDS: tuple[Band, ...] = (
     Band("sw2", "SW2", "Mc", ("11", "12", "13", "15", "17", "19", "21", "22"),
          ("25m", "19m", "16m", "13m")),
     Band("lw", "LW", "kc", ("150", "175", "200", "225", "250", "275", "300", "350")),
-    # SiriusXM channels (2026-10-21): channel numbers 1-150 like a car's
-    # satellite radio; a channel with its number in its name ("56 - The
-    # Highway") sits at it (services/stations.py:frequency)
+    # SiriusXM channels (2026-10-21): channel numbers 1-100; a channel with
+    # its number in its name ("56 - The Highway") sits at it
+    # (services/stations.py:frequency)
     Band("sxm", "SXM", "ch", tuple(str(m) for m in station_svc.SXM_MARKS)),
 )
 #: a band's strip height against the others' (2026-10-21 - James: SXM "not
@@ -984,6 +984,12 @@ class RadioSet(QWidget):
         # as printed on the glass - an SXM channel without the number the
         # scale already shows (2026-10-21)
         labels = [station_svc.glass_label(band.key, t) for t in self._labels[band.key]]
+        # Station names (FM, AM, SXM) print as James typed them ("70s on 7",
+        # "KDKA 1020"); the show bands keep the dial's printed capitals
+        # (2026-10-21 - James: "don't automatically capitalize the radio
+        # station names")
+        if band.key not in station_svc.STATION_BAND_KEYS:
+            labels = [t.upper() for t in labels]
         positions = self._positions[band.key]
         if not labels:
             p.setFont(_font(r.height() * 0.24))
@@ -1007,7 +1013,7 @@ class RadioSet(QWidget):
         px = min(h * 0.40, max(8.0, typical * 0.95 / max(5, longest * 0.55)))
 
         def need_at(i: int, size: float) -> float:
-            return QFontMetricsF(_font(size, bold=i == tuned)).horizontalAdvance(labels[i].upper())
+            return QFontMetricsF(_font(size, bold=i == tuned)).horizontalAdvance(labels[i])
 
         # Staggered names. Stations close enough that their names would
         # have to shrink to share one line are printed in two rows - one
@@ -1021,7 +1027,7 @@ class RadioSet(QWidget):
         row_h = (bottom_y - top_y - 2) / 2
         stack_px = px
         def cap_h(size: float) -> float:
-            # true height of capitals and figures (names print in capitals)
+            # true height of capitals and figures (show names print in capitals; station names as typed)
             return -QFontMetricsF(_font(size, bold=True)).tightBoundingRect("0HW").top()
 
         while stack_px > 7 and cap_h(stack_px) + BAR + GAP > row_h:
@@ -1089,7 +1095,7 @@ class RadioSet(QWidget):
             size = stack_px if row else px
             font = _font(size, bold=is_tuned)
             fm = QFontMetricsF(font)
-            full = fm.horizontalAdvance(label.upper())
+            full = fm.horizontalAdvance(label)
             if full > avail[i] and size > 9:
                 font = _font(max(9.0 if not row else min(9.0, size),
                                  math.floor(size * avail[i] / full)), bold=is_tuned)
@@ -1097,12 +1103,12 @@ class RadioSet(QWidget):
             # keep stepping down until the whole name fits (elide only as a
             # last resort below 7px)
             fit = font.pixelSize()
-            while fm.horizontalAdvance(label.upper()) > avail[i] and fit > 7:
+            while fm.horizontalAdvance(label) > avail[i] and fit > 7:
                 fit -= 1
                 font = _font(fit, bold=is_tuned)
                 fm = QFontMetricsF(font)
             p.setFont(font)
-            text = fm.elidedText(label.upper(), Qt.ElideRight, avail[i])
+            text = fm.elidedText(label, Qt.ElideRight, avail[i])
             tw = fm.horizontalAdvance(text)
             x = xs[i]
             tx = max(left + 4, min(left + width - 4 - tw, x - tw / 2))
