@@ -10,6 +10,18 @@ searches, adds a station's logo, or tunes in.
 
 Radio Browser asks clients to send a descriptive User-Agent and to spread
 load over its mirrors; `_get` tries them in turn.
+
+2026-10-21 - the SXM band (James: "Could I have a SXM band on the radio
+with stations. Then when I click on a station it plays through the
+browser?"). A SiriusXM channel is a RadioStation on band "sxm" whose
+stream_url is the channel's page in SiriusXM's own web player
+(".../player/channel-linear/entity/<id>"), copied by right-clicking the
+channel's tile and choosing Copy link. (Not the address bar: while a
+channel plays, that still shows the list it was started from - seen on
+PC1, "All channels" with The Highway playing.) Tuning one opens that page in the browser
+(services/tuner.py) instead of playing anything here - no SiriusXM
+library, no sign-in, nothing unofficial, so nothing for SiriusXM to break
+but the link itself.
 """
 
 from __future__ import annotations
@@ -52,7 +64,17 @@ CATEGORIES: list[tuple[str, dict]] = [
 #: (ui/widgets/radio_dial.py draws them; stations are placed against them)
 FM_MARKS = (88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 108)
 AM_MARKS = (540, 600, 700, 800, 900, 1000, 1200, 1400, 1600)
-SCALE_MARKS = {"fm": FM_MARKS, "am": AM_MARKS}
+#: SiriusXM channel numbers, 1-150 like a car's satellite radio (2026-10-21)
+SXM_MARKS = (1, 25, 50, 75, 100, 125, 150)
+SXM_TOP_CHANNEL = 150
+SCALE_MARKS = {"fm": FM_MARKS, "am": AM_MARKS, "sxm": SXM_MARKS}
+#: bands whose stations open in the web browser rather than play here
+BROWSER_BANDS = ("sxm",)
+#: every band a station can be on (anything else counts as FM)
+STATION_BAND_KEYS = ("fm", "am", *BROWSER_BANDS)
+#: SiriusXM's web player, for finding a channel's link
+SXM_PLAYER_URL = "https://www.siriusxm.com/player"
+_SXM_HOSTS = ("siriusxm.com", "siriusxm.ca")
 #: where the first and last printed marks sit along the 0..1 dial
 SCALE_LO, SCALE_HI = 0.08, 0.92
 #: nothing is placed closer to the ends of the glass than this
@@ -62,6 +84,10 @@ MIN_GAP = 0.018
 
 _FM_RE = re.compile(r"(?<![\d.])(\d{2,3}\.\d)(?![\d.])")
 _AM_RE = re.compile(r"(?<![\d.])(\d{3,4})(?![\d.]|\s*'?s\b)")
+#: a SiriusXM channel's number: leading ("56 - The Highway", "Ch 56 The
+#: Highway") - not a decade ("70s on 7") or an ordinal ("1st Wave")
+_SXM_RE = re.compile(r"^\s*(?:ch\.?|channel)?\s*(\d{1,3})(?![\d.]|\s*'?s\b|(?:st|nd|rd|th)\b)",
+                     re.IGNORECASE)
 
 #: "Add some to get started" on an empty FM or AM band
 STARTER_SEARCH = {"tag": "old time radio"}
@@ -73,7 +99,7 @@ def frequency(name: str, band: str) -> Optional[float]:
     "102.5 WDVE" -> 102.5 on FM, "KDKA 1020" -> 1020 on AM (2026-10-03,
     James: put stations "at their real frequencies"). Internet-only names
     ("20s Gold", "WQED Pittsburgh") and an FM number on the AM band have
-    none."""
+    none. On the SXM band it's the channel number: "56 - The Highway" -> 56."""
     name = name or ""
     if band == "fm":
         for m in _FM_RE.finditer(name):
@@ -85,7 +111,29 @@ def frequency(name: str, band: str) -> Optional[float]:
             f = float(m.group(1))
             if 530 <= f <= 1710:
                 return f
+    elif band == "sxm":
+        # the channel number, placed along a 1-150 scale like a car radio's
+        # (2026-10-21, James: "make the scale 150 channels equivalent to
+        # whats in a car"); a channel past 150 goes at the top end
+        m = _SXM_RE.match(name)
+        if m and 1 <= int(m.group(1)) <= 999:
+            return float(min(int(m.group(1)), SXM_TOP_CHANNEL))
     return None
+
+
+def glass_label(band: str, name: str) -> str:
+    """A station's name as printed on the dial glass. On the SXM band the
+    channel number is left off ("56 - The Highway" -> "The Highway"): the
+    channel already sits at that number on the scale, and clustered
+    channels (56, 59, 63...) need the room (2026-10-21). Everywhere else
+    the name is printed as it is."""
+    if band != "sxm":
+        return name
+    m = _SXM_RE.match(name or "")
+    if not m:
+        return name
+    rest = name[m.end():].lstrip(" -–—:.·|")
+    return rest or name
 
 
 def scale_position(band: str, freq: float) -> float:
@@ -175,9 +223,57 @@ def dial_positions(band: str, names: Sequence[str]) -> list[float]:
     return out
 
 
+def station_band(st: RadioStation) -> str:
+    """The band a station is on - FM if it has none (or one we don't know)."""
+    return st.band if st.band in STATION_BAND_KEYS else "fm"
+
+
+def opens_in_browser(st: Optional[RadioStation]) -> bool:
+    """A SiriusXM channel: tuning it opens its page in the web browser."""
+    return st is not None and st.band in BROWSER_BANDS
+
+
+def is_sxm_link(url: str) -> bool:
+    """A link to a page on SiriusXM's site - what an SXM channel stores."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit((url or "").strip())
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    return parts.scheme in ("http", "https") and any(
+        host == h or host.endswith("." + h) for h in _SXM_HOSTS)
+
+
+def is_sxm_channel_link(url: str) -> bool:
+    """A link to one channel's page (".../player/channel-linear/entity/<id>"),
+    not a list of channels or the player's front page."""
+    from urllib.parse import urlsplit
+
+    return is_sxm_link(url) and "/channel" in urlsplit(url.strip()).path.lower()
+
+
+def add_sxm(session: Session, name: str, url: str) -> RadioStation:
+    """Put a SiriusXM channel on the SXM band. `url` is the channel's page
+    in SiriusXM's web player (checked by the caller with is_sxm_link)."""
+    return add_manual(session, name, url, band="sxm")
+
+
+def set_link(session: Session, station_id: int, url: str) -> Optional[RadioStation]:
+    """Point a station at a new address, keeping everything else - for an
+    SXM channel whose page moved."""
+    st = session.get(RadioStation, station_id)
+    if st is not None and url.strip():
+        st.stream_url = url.strip()
+        st.off_air_since = None
+        session.flush()
+    return st
+
+
 def band_stations(session: Session, band: str) -> list[RadioStation]:
     """A band's stations in dial order (stations without a band count as FM)."""
-    return [st for st in dial(session) if (st.band if st.band in SCALE_MARKS else "fm") == band]
+    return [st for st in dial(session) if station_band(st) == band]
 
 
 def neighbour(session: Session, station_id: int, delta: int, wrap: bool = True) -> Optional[int]:
@@ -187,7 +283,7 @@ def neighbour(session: Session, station_id: int, delta: int, wrap: bool = True) 
     st = session.get(RadioStation, station_id)
     if st is None:
         return None
-    band = st.band if st.band in SCALE_MARKS else "fm"
+    band = station_band(st)
     sts = band_stations(session, band)
     if len(sts) < 2:
         return None
