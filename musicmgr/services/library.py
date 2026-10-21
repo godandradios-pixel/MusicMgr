@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -127,6 +128,30 @@ def get_or_create_master(
     return master
 
 
+_NO_CATALOG = {"", "none", "[none]", "n/a", "-"}
+
+
+def catalog_set(text: Optional[str]) -> set[str]:
+    """The catalog numbers in a catalog tag, compared without case or
+    spacing: "88697187522, 88697187522" -> {"88697187522"}."""
+    out = set()
+    for part in re.split(r"[,;|]", text or ""):
+        part = re.sub(r"[\s\u2010-\u2015-]+", "", part).casefold()
+        if part not in _NO_CATALOG:
+            out.add(part)
+    return out
+
+
+def same_catalog(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two catalog tags can be the same release: one is blank, or
+    they share a number (2026-10-21: Jordin Sparks's album split in two,
+    "88697187522, 88697187522" vs "88697187522" - the stored value from
+    before the scanner learned to drop a repeated number no longer matched
+    the same files read again)."""
+    sa, sb = catalog_set(a), catalog_set(b)
+    return not sa or not sb or bool(sa & sb)
+
+
 def get_or_create_release(
     session: Session,
     title: str,
@@ -139,12 +164,9 @@ def get_or_create_release(
     stmt = select(Release).where(
         Release.title_key == key,
         Release.artist_display == artist_display,
-    )
-    if catalog_number:
-        stmt = stmt.where(
-            or_(Release.catalog_number == catalog_number, Release.catalog_number.is_(None))
-        )
-    release = session.scalar(stmt)
+    ).order_by(Release.id)
+    release = next((r for r in session.scalars(stmt)
+                    if not catalog_number or same_catalog(r.catalog_number, catalog_number)), None)
     if release is None:
         release = Release(
             title=title,
@@ -436,6 +458,82 @@ def _merge_release_group(session: Session, group: list[Release]) -> int:
     # SQLAlchemy's own relationship-cascade bookkeeping can re-query their
     # (now stale) tracks and null the FK back out from under it (same
     # gotcha as services/playlists.py:delete_folder)
+    session.flush()
+    for dup in duplicates:
+        session.delete(dup)
+    session.flush()
+    return len(duplicates)
+
+
+def merge_split_releases(session: Session) -> int:
+    """Put back together albums the scanner split in two (2026-10-21 -
+    James: "why does it think there are 2 different albums for Jordin
+    Sparks"). Releases are merged when they have the same title and album
+    artist, catalog numbers that can be the same release (same_catalog),
+    and files in a shared folder - so genuinely different pressings (Rush's
+    "Caress of Steel" ANR-1-603 and 314 534 625-2) and same-named albums in
+    different folders stay apart. Everything folds into the oldest release,
+    so whatever points at it keeps working. One-time per data folder
+    (ui/app.py); returns how many releases were merged away."""
+    folders: dict[int, set[str]] = {}
+    for release_id, path in session.execute(
+        select(Track.release_id, MediaFile.path).join(MediaFile, MediaFile.track_id == Track.id)
+    ):
+        folders.setdefault(release_id, set()).add(str(Path(path).parent).casefold())
+
+    groups: dict[tuple, list[Release]] = {}
+    for r in session.scalars(select(Release).where(Release.album_artist_id.is_not(None))
+                             .order_by(Release.id)):
+        groups.setdefault((r.title_key, r.album_artist_id), []).append(r)
+
+    merged = 0
+    for releases in groups.values():
+        if len(releases) < 2:
+            continue
+        # cluster: each release joins the first earlier one it can be
+        clusters: list[list[Release]] = []
+        for r in releases:
+            home = next((c for c in clusters if any(
+                same_catalog(r.catalog_number, o.catalog_number)
+                and folders.get(r.id, set()) & folders.get(o.id, set()) for o in c)), None)
+            if home is None:
+                clusters.append([r])
+            else:
+                home.append(r)
+        for cluster in clusters:
+            if len(cluster) > 1:
+                merged += _fold_releases(session, cluster[0], cluster[1:])
+    if merged:
+        session.flush()
+    return merged
+
+
+def _fold_releases(session: Session, survivor: Release, duplicates: list[Release]) -> int:
+    """Move the duplicates' tracks, genres, styles and anything the
+    survivor lacks (cover, year, catalog number, barcode) onto `survivor`,
+    then delete them. The survivor's catalog number loses repeats."""
+    from .scanner import _distinct_catalog_numbers
+
+    genre_ids = {g.id for g in survivor.genres}
+    style_ids = {s.id for s in survivor.styles}
+    for dup in duplicates:
+        for g in dup.genres:
+            if g.id not in genre_ids:
+                survivor.genres.append(g)
+                genre_ids.add(g.id)
+        for s in dup.styles:
+            if s.id not in style_ids:
+                survivor.styles.append(s)
+                style_ids.add(s.id)
+        for field in ("cover_path", "year", "released", "barcode", "country", "label_id",
+                      "catalog_number"):
+            if not getattr(survivor, field) and getattr(dup, field):
+                setattr(survivor, field, getattr(dup, field))
+        for track in list(dup.tracks):
+            track.release = survivor   # via the relationship - see _merge_release_group
+        if dup.master is not None and dup.master.main_release_id == dup.id:
+            dup.master.main_release_id = survivor.id
+    survivor.catalog_number = _distinct_catalog_numbers(survivor.catalog_number or "") or None
     session.flush()
     for dup in duplicates:
         session.delete(dup)

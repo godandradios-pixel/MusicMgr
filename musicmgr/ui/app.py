@@ -488,6 +488,9 @@ ARTIST_MERGE_PREF = "artist_merges_v1_done"
 ARTIST_MERGE_V2_PREF = "artist_merges_v2_done"
 CREDIT_RESPLIT_V2_PREF = "credit_resplit_v2_done"
 VIDEO_ARTIST_REPAIR_PREF = "video_artist_repair_done"
+#: 2026-10-21: albums split in two by a catalog number stored as
+#: "88697187522, 88697187522" (Jordin Sparks and 8 others on PC1)
+SPLIT_RELEASE_REPAIR_PREF = "split_release_repair_done"
 
 
 def bootstrap_database() -> None:
@@ -597,6 +600,8 @@ def bootstrap_database() -> None:
                   "re-split artist credits on %d tracks")
         _run_once(session, VIDEO_ARTIST_REPAIR_PREF, "video artist repair",
                   lambda: video_scanner.repair_video_artists(session), "re-filed %d videos")
+        _run_once(session, SPLIT_RELEASE_REPAIR_PREF, "split album repair",
+                  lambda: lib_svc.merge_split_releases(session), "put %d split albums back together")
 
 
 def _run_once(session, pref: str, label: str, work, message: str) -> None:

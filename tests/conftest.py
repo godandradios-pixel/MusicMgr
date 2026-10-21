@@ -101,3 +101,31 @@ def pytest_unconfigure(config):
 
 def pytest_sessionfinish(session, exitstatus):
     session.config._musicmgr_exitstatus = exitstatus
+
+
+# -- watchdog for a frozen test (2026-10-21) ------------------------------------
+#
+# The audio player now and then freezes inside Qt's FFmpeg backend at a
+# track hand-off (py-spy: QMediaPlayer::mediaStatusChanged -> our handler ->
+# play() -> QBasicMutex::lockInternal - a deadlock in Qt's own code; about
+# 2 in 25 runs of the player tests here). The 2.3.7 release build sat on it
+# for 10+ minutes: pytest-timeout's thread can't fire, because the frozen
+# main thread is stuck in Qt and never lets Python run. faulthandler's timer
+# is a native thread that needs no Python, so it still prints every
+# thread's stack and exits - the run fails in minutes instead of hanging,
+# and the release workflow runs the tests once more. (The deadlock itself
+# is a separate fix; see the project doc.)
+
+WATCHDOG_S = 200  # a little past pytest-timeout's 180, which catches ordinary Python hangs
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    import faulthandler
+    import sys
+
+    faulthandler.dump_traceback_later(WATCHDOG_S, exit=True, file=sys.stderr)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
