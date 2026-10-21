@@ -64,8 +64,6 @@ class TunerController(QObject):
     notified = Signal(str)
     #: a station went off the air (True) or came back (False)
     stationAirChanged = Signal(int, bool)
-    #: a SiriusXM channel's page was opened in the web browser (2026-10-21)
-    browserStationOpened = Signal(int)
 
     def __init__(self, player, parent=None) -> None:
         super().__init__(parent)
@@ -192,12 +190,8 @@ class TunerController(QObject):
             st = session.get(RadioStation, station_id)
             if st is None:
                 return False
-            # a SiriusXM channel (the SXM band) plays in the web browser
-            browser_url = st.stream_url if stations.opens_in_browser(st) else None
-            item = None if browser_url else stations.queue_item(st)
+            item = stations.queue_item(st)
             uuid = st.rb_uuid
-        if browser_url:
-            return self.open_in_browser(station_id, browser_url)
         self._onair = None
         self._play([item], f"{SOURCE_STATION}:{station_id}", ("station", station_id))
         self._set_tuned("station", station_id)
@@ -205,31 +199,6 @@ class TunerController(QObject):
             import threading
 
             threading.Thread(target=stations.register_click, args=(uuid,), daemon=True).start()
-        return True
-
-    #: opens a link in the web browser - tests swap it out
-    @staticmethod
-    def open_url(url: str) -> bool:
-        from PySide6.QtCore import QUrl
-        from PySide6.QtGui import QDesktopServices
-
-        return QDesktopServices.openUrl(QUrl(url))
-
-    def open_in_browser(self, station_id: int, url: str) -> bool:
-        """Play a SiriusXM channel: open its web-player page in the browser
-        (2026-10-21, the SXM band). MusicMgr can't play SiriusXM itself, so
-        it gets out of the way first - a station playing here is stopped,
-        anything else paused - so the two don't play over each other."""
-        kind, _ident = self._tuned
-        if kind == "station":
-            self.player.stop()
-            self._set_tuned("", 0)
-        elif self.player.is_playing():
-            self.player.pause()
-        if not self.open_url(url):
-            self.notified.emit("Couldn't open the web browser")
-            return False
-        self.browserStationOpened.emit(station_id)
         return True
 
     def step_station(self, delta: int) -> bool:

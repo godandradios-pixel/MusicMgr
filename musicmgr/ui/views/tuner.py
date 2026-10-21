@@ -33,16 +33,6 @@ only applies to internet-only stations (the others are placed by their
 frequency). The magic eye follows the stream's signal, and a station
 that's gone off the air is faded on the glass with a "Find a new link…"
 button in the header (ReplacementDialog).
-
-2026-10-21: the SXM band - SiriusXM channels that play in the web browser
-(services/stations.py has the why). James adds one by pasting the link of
-the channel's page in SiriusXM's web player (right-click the channel's
-tile, Copy link). Tapping a channel's name opens
-it in the browser; sweeping the pointer, the knob, the wheel or the keys
-only point at one (RadioSet.last_tune_was_tap), so browsing the band never
-opens a tab per channel - "Play in browser ▶" opens the one pointed at.
-The band isn't scanned, and SXM channels and other stations don't move
-between bands (an FM stream can't open in a browser, nor the reverse).
 """
 
 from __future__ import annotations
@@ -90,7 +80,6 @@ ONAIR_LABEL = "On the Air"
 BAND_BLURBS = {
     "fm": "Internet stations",
     "am": "Internet stations",
-    "sxm": "SiriusXM channels, played in your web browser",
     "police": "On the Air, WWII news and American history",
     "sw1": "Drama and comedy",
     "sw2": "Crime and mystery",
@@ -678,21 +667,6 @@ class TunerView(BaseView):
         self.btn_folder.clicked.connect(self.choose_folder)
         self.btn_starters = make_compact(TouchButton("Add old-time radio stations", primary=True))
         self.btn_starters.clicked.connect(self._add_starters)
-        # the SXM band (2026-10-21)
-        self.btn_open_browser = make_compact(TouchButton("Play in browser ▶", primary=True))
-        self.btn_open_browser.setToolTip("Open this channel in SiriusXM's web player")
-        self.btn_open_browser.clicked.connect(self._listen_pointed)
-        self.btn_sxm_add = make_compact(TouchButton("Add a channel…", primary=True))
-        self.btn_sxm_add.setToolTip("Paste the link of a channel's page in SiriusXM's web player")
-        self.btn_sxm_add.clicked.connect(self.ask_add_sxm)
-        self.btn_sxm_site = make_compact(TouchButton("Open SiriusXM"))
-        self.btn_sxm_site.setToolTip("SiriusXM's web player - open a channel there and copy its link")
-        self.btn_sxm_site.clicked.connect(lambda: self.ctx.tuner.open_url(stations.SXM_PLAYER_URL))
-        self.btn_sxm_link = make_compact(TouchButton("Change link…"))
-        self.btn_sxm_link.setToolTip("Paste a new link for this channel's page")
-        self.btn_sxm_link.clicked.connect(self._ask_sxm_link)
-        #: the SXM channel last opened in the browser, to say so on the page
-        self._browser_station: Optional[int] = None
         for b in self._all_buttons():
             self.actions.addWidget(b)
             b.setVisible(False)
@@ -706,7 +680,6 @@ class TunerView(BaseView):
         ctx.player.signalChanged.connect(lambda _l: self._sync_signal())
         ctx.player.signalChanged.connect(self._scan_on_signal)
         ctx.tuner.stationAirChanged.connect(lambda _id, _off: self._changed())
-        ctx.tuner.browserStationOpened.connect(self._on_browser_opened)
 
     # -- setup -------------------------------------------------------------
 
@@ -784,10 +757,6 @@ class TunerView(BaseView):
         if not (0 <= index < len(entries)):
             return
         kind, ident, _ = entries[index]
-        if band in stations.BROWSER_BANDS and not self.radio.last_tune_was_tap:
-            # pointing at a SiriusXM channel: say what it is, open nothing
-            self._update_info()
-            return
         if self.ctx.tuner.tuned == (kind, ident) and self.ctx.player.is_playing():
             self._update_info()
             return
@@ -914,11 +883,10 @@ class TunerView(BaseView):
     # -- info card ---------------------------------------------------------
 
     def _all_buttons(self):
-        return (self.btn_scan, self.btn_listen, self.btn_open_browser, self.btn_episodes,
-                self.btn_prev, self.btn_next, self.btn_new_evening, self.btn_band, self.btn_rename,
-                self.btn_move_left, self.btn_move_right, self.btn_sxm_link, self.btn_remove,
-                self.btn_relink, self.btn_folder, self.btn_starters, self.btn_sxm_add,
-                self.btn_sxm_site)
+        return (self.btn_scan, self.btn_listen, self.btn_episodes, self.btn_prev, self.btn_next,
+                self.btn_new_evening, self.btn_band, self.btn_rename, self.btn_move_left,
+                self.btn_move_right, self.btn_remove, self.btn_relink, self.btn_folder,
+                self.btn_starters)
 
     def _show_buttons(self, *buttons) -> None:
         if self._scanning or self.can_scan():
@@ -960,8 +928,6 @@ class TunerView(BaseView):
         kind, ident, live = self._pointed()
         self._live = live
         band = self.radio.band
-        self.find_btn.setText("Add a channel…" if band in stations.BROWSER_BANDS
-                              else "Find stations…")
         if not self._entries.get(band):
             self._empty_band(band)
         elif kind == "show":
@@ -980,16 +946,6 @@ class TunerView(BaseView):
             root = otr.get_root(s)
             any_shows = bool(otr.list_shows(s))
         label = BY_KEY[band].label
-        if band in stations.BROWSER_BANDS:
-            self._set_status("No SiriusXM channels yet",
-                             "in SiriusXM's web player, right-click a channel, Copy link, "
-                             "then Add a channel",
-                             tip="Each channel on this band opens in SiriusXM's own web player in "
-                                 "your browser. Open SiriusXM, right-click a channel's tile and "
-                                 "choose Copy link (the address bar shows the list you're in, not "
-                                 "the channel), then paste it into Add a channel.")
-            self._show_buttons(self.btn_sxm_add, self.btn_sxm_site)
-            return
         if band in otr.STATION_BANDS:
             self._set_status(f"No stations on the {label} band yet",
                              "find some in the free Radio Browser directory",
@@ -1058,19 +1014,7 @@ class TunerView(BaseView):
             st = s.get(RadioStation, station_id)
             if st is None:
                 return
-            if stations.opens_in_browser(st):
-                name, url = st.name, st.stream_url
-                browser = True
-            else:
-                browser = False
-        if browser:
-            self._info_browser_station(station_id, name, url)
-            return
-        with self.ctx.session() as s:
-            st = s.get(RadioStation, station_id)
-            if st is None:
-                return
-            band = stations.station_band(st)
+            band = st.band if st.band in otr.STATION_BANDS else "fm"
             freq = stations.frequency(st.name, band)
             off_air = bool(st.off_air_since)
             # (no frequency here - it's in the name, and placed on the glass)
@@ -1101,89 +1045,6 @@ class TunerView(BaseView):
         if not self._live or off_air:
             buttons.insert(0, self.btn_listen)
         self._show_buttons(*buttons)
-
-    def _info_browser_station(self, station_id: int, name: str, url: str) -> None:
-        """A SiriusXM channel on the SXM band (2026-10-21)."""
-        opened = self._browser_station == station_id
-        self._set_status(name, "playing in your web browser" if opened
-                         else "SiriusXM · tap its name or Play in browser",
-                         tip=f"{name}\nOpens in SiriusXM's web player:\n{url}")
-        self._show_buttons(self.btn_open_browser, self.btn_rename, self.btn_move_left,
-                           self.btn_move_right, self.btn_sxm_link, self.btn_remove)
-
-    def _on_browser_opened(self, station_id: int) -> None:
-        self._browser_station = station_id
-        self._point_at("station", station_id, animate=True)
-        with self.ctx.session() as s:
-            st = s.get(RadioStation, station_id)
-            name = st.name if st else "SiriusXM"
-        self.ctx.notify(f"Opening {name} in your web browser")
-        self._update_info()
-
-    def add_sxm(self, url: str, name: str) -> bool:
-        """Put a SiriusXM channel on the SXM band; False (with a message) if
-        `url` isn't a SiriusXM page."""
-        url = (url or "").strip()
-        if not self._sxm_link_ok(url):
-            return False
-        with self.ctx.session() as s:
-            st = stations.add_sxm(s, (name or "").strip() or "SiriusXM", url)
-            s.commit()
-            sid, shown = st.id, st.name
-        self._changed()
-        self._point_at("station", sid, animate=True)
-        self._update_info()
-        self.ctx.notify(f"Added {shown} to the SXM band")
-        return True
-
-    def _sxm_link_ok(self, url: str) -> bool:
-        """A link to one SiriusXM channel's page - else say what's wrong."""
-        if not stations.is_sxm_link(url):
-            self.ctx.notify("That isn't a SiriusXM link — in SiriusXM's web player, right-click "
-                            "a channel and choose Copy link")
-            return False
-        if not stations.is_sxm_channel_link(url):
-            self.ctx.notify("That's a SiriusXM page, not a channel — right-click the channel's "
-                            "tile and choose Copy link")
-            return False
-        return True
-
-    def ask_add_sxm(self) -> None:  # pragma: no cover - dialog
-        url, ok = QInputDialog.getText(
-            self, "Add a SiriusXM channel",
-            "In SiriusXM's web player, right-click the channel and choose Copy link, "
-            "then paste it here:")
-        if not ok or not url.strip():
-            return
-        if not self._sxm_link_ok(url.strip()):
-            return
-        name, ok = QInputDialog.getText(self, "Add a SiriusXM channel",
-                                        "Name for the dial (e.g. 70s on 7):")
-        if ok:
-            self.add_sxm(url, name)
-
-    def set_sxm_link(self, url: str) -> bool:
-        """A new link for the SXM channel the page describes."""
-        kind, ident, _ = self._pointed()
-        if kind != "station" or not self._sxm_link_ok((url or "").strip()):
-            return False
-        with self.ctx.session() as s:
-            stations.set_link(s, ident, url)
-            s.commit()
-        self._update_info()
-        return True
-
-    def _ask_sxm_link(self) -> None:  # pragma: no cover - dialog
-        kind, ident, _ = self._pointed()
-        if kind != "station":
-            return
-        with self.ctx.session() as s:
-            st = s.get(RadioStation, ident)
-            current = st.stream_url if st else ""
-        url, ok = QInputDialog.getText(self, "Change link", "Link to the channel's page:",
-                                       text=current)
-        if ok and url.strip():
-            self.set_sxm_link(url)
 
     # -- actions -----------------------------------------------------------
 
@@ -1230,9 +1091,6 @@ class TunerView(BaseView):
         self._update_info()
 
     def find_stations(self) -> None:  # pragma: no cover - dialog
-        if self.radio.band in stations.BROWSER_BANDS:
-            self.ask_add_sxm()
-            return
         dialog = StationSearchDialog(self.ctx, self, band=self.station_band())
         dialog.changed.connect(self._changed)
         dialog.listenRequested.connect(self.ctx.tuner.tune_station)
@@ -1309,8 +1167,6 @@ class TunerView(BaseView):
     def _band_menu(self) -> None:  # pragma: no cover - menu
         menu = QMenu(self)
         for band in BANDS:
-            if band.key in stations.BROWSER_BANDS:
-                continue    # only SiriusXM links belong there (SXM channels have no Band…)
             action = menu.addAction(f"{band.label} — {BAND_BLURBS.get(band.key, '')}")
             action.setCheckable(True)
             action.setChecked(band.key == self.radio.band)
@@ -1327,7 +1183,7 @@ class TunerView(BaseView):
             st = s.get(RadioStation, ident)
             if st is None:
                 return
-            band = stations.station_band(st)
+            band = st.band if st.band in otr.STATION_BANDS else "fm"
             loose = [x.id for x in stations.band_stations(s, band)
                      if stations.frequency(x.name, band) is None]
             stations.move(s, ident, delta, among=loose)
@@ -1403,7 +1259,6 @@ class TunerView(BaseView):
         menu.addAction("Old-time radio folder…").triggered.connect(self.choose_folder)
         menu.addAction("Rescan shows").triggered.connect(self.rescan)
         menu.addAction("Find stations…").triggered.connect(self.find_stations)
-        menu.addAction("Add a SiriusXM channel…").triggered.connect(self.ask_add_sxm)
         menu.exec(global_pos)
 
     def shutdown(self) -> None:

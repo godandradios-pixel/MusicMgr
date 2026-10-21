@@ -221,9 +221,8 @@ class TestRadioSet:
         pos = radio_dial.station_positions(5)
         assert pos[0] == pytest.approx(0.08) and pos[-1] == pytest.approx(0.92)
 
-    def test_bands_in_order(self):
-        # SXM (SiriusXM, played in the browser) joined after AM on 2026-10-21
-        assert radio_dial.BAND_KEYS == ("fm", "am", "sxm", "police", "sw1", "sw2", "lw")
+    def test_six_bands_in_order(self):
+        assert radio_dial.BAND_KEYS == ("fm", "am", "police", "sw1", "sw2", "lw")
 
     def test_pointer_maps_from_x(self, qapp):
         w = radio_dial.RadioSet()
