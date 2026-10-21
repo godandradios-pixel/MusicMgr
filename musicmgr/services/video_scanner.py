@@ -14,7 +14,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
-from pathlib import Path
+import re
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import Callable, Iterable, Optional
 
 import mutagen
@@ -45,7 +46,7 @@ def iter_video_files(root: Path) -> Iterable[Path]:
                 yield p
 
 
-def _parse_video_title_artist(path: Path) -> tuple[str, str]:
+def _parse_video_title_artist(path: PurePath) -> tuple[str, str]:
     """Best-effort title/artist split with no tag reading involved.
 
     Two conventions cover most real-world video collections: "Artist -
@@ -58,11 +59,75 @@ def _parse_video_title_artist(path: Path) -> tuple[str, str]:
         artist, _, title = stem.partition(" - ")
         artist, title = artist.strip(), title.strip()
         if artist and title:
-            return title, artist
+            return _move_featuring_to_title(title, artist)
     parent = path.parent.name
     if parent and parent not in (".", "/"):
         return stem.strip() or "Untitled", parent
     return stem.strip() or "Untitled", "Unknown Artist"
+
+
+#: "Artist ft. Guest" / "Artist feat. Guest" / "Artist featuring Guest" /
+#: "Artist (feat. Guest)" in the artist half of a video's file name
+_ARTIST_FEAT_RE = re.compile(
+    r"\s*(?:\(\s*(?:feat\.?|ft\.?|featuring)\s+(?P<b>[^)]+)\)|"
+    r"\s(?:feat\.?|ft\.?|featuring)\s+(?P<a>.+))\s*$",
+    re.IGNORECASE,
+)
+_TITLE_HAS_FEAT_RE = re.compile(r"\b(?:feat\.?|ft\.?|featuring)\s", re.IGNORECASE)
+
+
+def _move_featuring_to_title(title: str, artist: str) -> tuple[str, str]:
+    """Keep a guest singer out of the video's artist (2026-10-21).
+
+    "for KING & COUNTRY ft. Courtney - Without You.mp4" used to file under
+    an artist called "for KING & COUNTRY ft. Courtney" - one made-up artist
+    per guest, five of them for that one band on PC1. The video now files
+    under "for KING & COUNTRY" and its title becomes "Without You (feat.
+    Courtney)", so nothing in the name is lost. Only an explicit feat./ft./
+    featuring is split off: "Simon & Garfunkel - The Boxer.mp4" stays with
+    Simon & Garfunkel (the music side's split_artists would credit Simon
+    and Garfunkel separately, which a video, with one artist, can't do)."""
+    match = _ARTIST_FEAT_RE.search(artist)
+    if not match or match.start() == 0:
+        return title, artist
+    guests = (match.group("a") or match.group("b") or "").strip()
+    main = artist[: match.start()].strip()
+    if not main or not guests:
+        return title, artist
+    if not _TITLE_HAS_FEAT_RE.search(title):
+        title = f"{title} (feat. {guests})"
+    return title, main
+
+
+def repair_video_artists(session: Session) -> int:
+    """File every video under the artist its file name gives with the
+    current rules - guests moved to the title (see _move_featuring_to_title)
+    and merged spellings ("for KING + COUNTRY") resolved through
+    library.get_or_create_artist's aliases. No file is opened; only rows
+    whose title or artist comes out different change. Artists left with
+    nothing pointing at them are removed. Returns how many videos changed.
+    One-time per data folder (ui/app.py, 2026-10-21)."""
+    changed = 0
+    left: set[int] = set()
+    for video in list(session.scalars(select(Video))):
+        # a library made on Windows keeps its "D:\\Videos\\..." paths on the
+        # Mint PC too - read those as Windows paths there
+        path = PureWindowsPath(video.path) if "\\" in video.path else Path(video.path)
+        title, artist_name = _parse_video_title_artist(path)
+        artist = lib.get_or_create_artist(session, artist_name)
+        if video.title == title and video.artist_id == artist.id and video.artist_display == artist.name:
+            continue
+        if video.artist_id is not None and video.artist_id != artist.id:
+            left.add(video.artist_id)
+        video.title = title
+        video.title_key = normalize(title)
+        video.artist_display = artist.name
+        video.artist_id = artist.id
+        changed += 1
+    session.flush()
+    if left:
+        _remove_unused_artists(session, left)
+    return changed
 
 
 def read_video_duration(path: Path) -> Optional[int]:

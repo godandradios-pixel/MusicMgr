@@ -27,6 +27,12 @@ from musicmgr.services.matching import split_artists
     ("Tommy Dorsey and His Orchestra", ["Tommy Dorsey and His Orchestra"]),
     ("? and the Mysterians", ["? and the Mysterians"]),
     ("Bruce Hornsby (& The Range)", ["Bruce Hornsby (& The Range)"]),
+    # 2026-10-21: the band's "&"/"+" is part of its name
+    ("for KING & COUNTRY", ["for KING & COUNTRY"]),
+    ("FOR KING + COUNTRY", ["FOR KING + COUNTRY"]),
+    ("for KING & COUNTRY + Dolly Parton", ["for KING & COUNTRY", "Dolly Parton"]),
+    ("for KING & COUNTRY ft. Lecrae & The WRLDFMS Tony Williams",
+     ["for KING & COUNTRY", "Lecrae", "The WRLDFMS Tony Williams"]),
     # lists that are lists come apart
     ("Blood, Sweat & Tears ft. David Clayton-Thomas", ["Blood, Sweat & Tears", "David Clayton-Thomas"]),
     ("Shawn Mendes, Camila Cabello", ["Shawn Mendes", "Camila Cabello"]),
@@ -98,6 +104,18 @@ class TestResplitTrackCredits:
         names = set(session.scalars(select(Artist.name)))
         assert not names & {"Blood, Sweat", "Tears", "Glenn Miller (Tex Beneke", "chorus, vocal)"}
         assert scanner.resplit_track_credits(session) == (0, 0)
+
+    def test_for_king_and_country_back_together(self, session):
+        """2026-10-21: 167 songs on PC1 credited to "for KING" + "COUNTRY"."""
+        song = _track(session, "God Only Knows", "for KING & COUNTRY", ["for KING", "COUNTRY"])
+        duet = _track(session, "TOGETHER", "for KING & COUNTRY ft. Tori Kelly",
+                      ["for KING", "COUNTRY", "Tori Kelly"])
+
+        scanner.resplit_track_credits(session)
+
+        assert _performers(session, song) == ["for KING & COUNTRY"]
+        assert _performers(session, duet) == ["for KING & COUNTRY", "Tori Kelly"]
+        assert not set(session.scalars(select(Artist.name))) & {"for KING", "COUNTRY"}
 
     def test_keeps_an_artist_that_is_still_an_album_artist(self, session):
         track = _track(session, "Song", "Earth, Wind & Fire", ["Earth, Wind", "Fire"])

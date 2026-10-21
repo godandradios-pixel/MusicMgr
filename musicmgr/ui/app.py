@@ -33,6 +33,7 @@ from ..services import playlists as pl_svc
 from ..services import scanner as scanner_svc
 from ..services import library_backup
 from ..services import updater
+from ..services import video_scanner
 from ..services.player import PlayerController, stop_background_measuring
 from .context import AppContext
 from .theme import stylesheet
@@ -483,6 +484,11 @@ SIDE_COVERS_PREF = "side_covers_done"
 UNKNOWN_ARTIST_REPAIR_PREF = "unknown_artist_repair_done"
 CREDIT_RESPLIT_PREF = "credit_resplit_done"
 ARTIST_MERGE_PREF = "artist_merges_v1_done"
+#: 2026-10-21: for KING & COUNTRY - the band kept whole in song credits,
+#: "for KING + COUNTRY" merged in, guests out of video artists
+ARTIST_MERGE_V2_PREF = "artist_merges_v2_done"
+CREDIT_RESPLIT_V2_PREF = "credit_resplit_v2_done"
+VIDEO_ARTIST_REPAIR_PREF = "video_artist_repair_done"
 
 
 def bootstrap_database() -> None:
@@ -578,6 +584,37 @@ def bootstrap_database() -> None:
                 if merged:
                     logging.getLogger(__name__).info("merged %d duplicate artists", merged)
                 updater.set_pref(session, ARTIST_MERGE_PREF, "1")
+        # 2026-10-21: for KING & COUNTRY under one artist - merge the "+"
+        # spelling (the whole reviewed list again; groups already merged
+        # just confirm their aliases), then re-split song credits so the
+        # band stays whole instead of "for KING" + "COUNTRY" (167 songs on
+        # PC1), then re-file videos with guests moved into the title. In
+        # that order: the re-split and video pass both resolve names
+        # through the aliases the merge records.
+        _run_once(session, ARTIST_MERGE_V2_PREF, "artist merges v2",
+                  lambda: artist_merge.apply_artist_merges(session), "merged %d duplicate artists")
+        _run_once(session, CREDIT_RESPLIT_V2_PREF, "credit re-split v2",
+                  lambda: scanner_svc.resplit_track_credits(session)[0],
+                  "re-split artist credits on %d tracks")
+        _run_once(session, VIDEO_ARTIST_REPAIR_PREF, "video artist repair",
+                  lambda: video_scanner.repair_video_artists(session), "re-filed %d videos")
+
+
+def _run_once(session, pref: str, label: str, work, message: str) -> None:
+    """Run a one-time library repair once per data folder: inside a
+    savepoint, logged, and never blocking startup - a failure is logged and
+    tried again on the next start (the shape every repair above uses)."""
+    if updater.get_pref(session, pref) == "1":
+        return
+    try:
+        with session.begin_nested():
+            count = work()
+    except Exception:
+        logging.getLogger(__name__).exception("%s failed", label)
+        return
+    if count:
+        logging.getLogger(__name__).info(message, count)
+    updater.set_pref(session, pref, "1")
 
 
 def _build_splash() -> Optional[QSplashScreen]:

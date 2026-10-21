@@ -84,6 +84,9 @@ PROTECTED_NAMES = (
     "Phillips, Craig & Dean", "Dino, Desi & Billy", "Lambert, Hendricks & Ross",
     "Dave Dee, Dozy, Beaky, Mick & Tich", "Tyler, The Creator", "Lipps, Inc.",
     "Earth, Wind and Fire", "10,000 Maniacs",
+    # 2026-10-21: the band's "&" (or "+") split every song into "for KING" +
+    # "COUNTRY" - 167 songs on PC1
+    "for KING & COUNTRY", "for KING + COUNTRY",
 )
 _PROTECTED_RE = [
     re.compile(
@@ -185,7 +188,8 @@ def split_artists(text: Optional[str]) -> list[str]:
     s = _GLUED_FEAT_RE.sub(lambda m: f" {m.group(1)}. ", s)
     for pattern in _PROTECTED_RE:
         s = pattern.sub(lambda m: m.group(0).replace(",", _KEEP)
-                        .replace(" & ", _JOIN + "&" + _JOIN).replace(" and ", _JOIN + "and" + _JOIN), s)
+                        .replace(" & ", _JOIN + "&" + _JOIN).replace(" and ", _JOIN + "and" + _JOIN)
+                        .replace(" + ", _JOIN + "+" + _JOIN), s)
     s = _SUFFIX_RE.sub(lambda m: m.group(0).replace(",", _KEEP), s)
     s = _HIS_RE.sub(lambda m: m.group(0).replace(" ", _JOIN), s)
     s = _VOCAL_BY_RE.sub(" feat. ", s)

@@ -40,6 +40,8 @@ from .matching import normalize, sort_name
 #: (kept name, spellings merged into it)
 ARTIST_MERGES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ('Tim McGraw', ('Tim Mc Graw',)),
+    # 2026-10-21 (ARTIST_MERGE_V2_PREF): videos named "for KING + COUNTRY -"
+    ('for KING & COUNTRY', ('for KING + COUNTRY', 'for KING and COUNTRY')),
     ('MercyMe', ('Mercy Me',)),
     ('Coldplay', ('Cold Play',)),
     ('NEEDTOBREATHE', ('Need To Breathe',)),

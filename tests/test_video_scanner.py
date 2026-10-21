@@ -482,3 +482,46 @@ def test_rescan_all_videos_runs_the_skipped_folder_cleanup(session, tmp_path):
     assert result.skipped_removed == 1
     assert session.scalar(select(func.count(Video.id))) == 0
     assert "1 copies in sync/system folders removed" in result.summary()
+
+
+
+# -- guests out of the video's artist (2026-10-21) ------------------------------
+
+
+@pytest.mark.parametrize("name, title, artist", [
+    ("for KING & COUNTRY ft. Courtney - Without You.mp4", "Without You (feat. Courtney)", "for KING & COUNTRY"),
+    ("for KING & COUNTRY ft. Lecrae & The WRLDFMS Tony Williams - Amen (Reborn).mp4",
+     "Amen (Reborn) (feat. Lecrae & The WRLDFMS Tony Williams)", "for KING & COUNTRY"),
+    ("Daft Punk feat. Pharrell Williams - Get Lucky.mp4", "Get Lucky (feat. Pharrell Williams)", "Daft Punk"),
+    ("Dawn (featuring Tony Orlando) - Knock Three Times.mp4", "Knock Three Times (feat. Tony Orlando)", "Dawn"),
+    # a title that already names the guest isn't given a second one
+    ("Nelly ft. Kelly Rowland - Dilemma (feat. Kelly Rowland).mp4", "Dilemma (feat. Kelly Rowland)", "Nelly"),
+    # "&" without ft. is one act - a video has only one artist
+    ("Simon & Garfunkel - The Boxer.mp4", "The Boxer", "Simon & Garfunkel"),
+    ("for KING & COUNTRY - TOGETHER (feat. Kirk Franklin & Tori Kelly) [Official Music Video].mp4",
+     "TOGETHER (feat. Kirk Franklin & Tori Kelly) [Official Music Video]", "for KING & COUNTRY"),
+])
+def test_featured_guest_moves_from_artist_to_title(name, title, artist):
+    assert video_scanner._parse_video_title_artist(Path("D:/Videos") / name) == (title, artist)
+
+
+def test_repair_video_artists_files_guests_and_spellings_under_one_artist(session, tmp_path):
+    """PC1: five "for KING & COUNTRY ft. X" artists plus "FOR KING +
+    COUNTRY", one video each, beside the real for KING & COUNTRY."""
+    from musicmgr.services import artist_merge
+
+    band = _video_row(session, tmp_path / "for KING & COUNTRY - Priceless.mp4", "for KING & COUNTRY")
+    guest = _video_row(session, tmp_path / "for KING & COUNTRY ft. Courtney - Without You.mp4",
+                       "for KING & COUNTRY ft. Courtney")
+    plus = _video_row(session, tmp_path / "for KING + COUNTRY - Drummer Boy Live.m4v", "FOR KING + COUNTRY")
+    artist_merge.apply_artist_merges(session, [("for KING & COUNTRY", ("for KING + COUNTRY",))])
+
+    assert video_scanner.repair_video_artists(session) == 3  # (these rows' titles were the whole file name)
+
+    for video in (band, guest, plus):
+        session.refresh(video)
+        assert video.artist_display == "for KING & COUNTRY"
+    assert guest.title == "Without You (feat. Courtney)"
+    names = set(session.scalars(select(Artist.name)))
+    assert not names & {"for KING & COUNTRY ft. Courtney", "FOR KING + COUNTRY"}
+    assert video_scanner.repair_video_artists(session) == 0
