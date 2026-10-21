@@ -541,7 +541,7 @@ $("albums").addEventListener("click", (e) => {
 });
 
 /* ---- radio ---- */
-const BANDS = {fm: "FM", am: "AM", police: "Police", sw1: "Shortwave 1", sw2: "Shortwave 2", lw: "Long wave"};
+const BANDS = {fm: "FM", am: "AM", sxm: "SiriusXM (plays in the PC's browser)", police: "Police", sw1: "Shortwave 1", sw2: "Shortwave 2", lw: "Long wave"};
 let radioData = null, radioTab = "stations";
 async function loadRadio() {
   try { radioData = await get("/api/radio"); drawRadio(); }

@@ -13,6 +13,7 @@ attached but the general idea".)
 Bands, top to bottom (James's layout, reorganised 2026-10-01):
     FM      internet stations
     AM      internet stations
+    SXM     SiriusXM channels, played in the web browser (2026-10-21)
     POLICE  On the Air, WWII news and sounds, American history
     SW1     drama and comedy
     SW2     crime and mystery
@@ -103,6 +104,9 @@ class Band:
 BANDS: tuple[Band, ...] = (
     Band("fm", "FM", "MHz", tuple(str(m) for m in station_svc.FM_MARKS)),
     Band("am", "AM", "kc", tuple(str(m) for m in station_svc.AM_MARKS)),
+    # SiriusXM channels (2026-10-21) - the scale is channel numbers, for
+    # the look; channels are spread evenly along it
+    Band("sxm", "SXM", "ch", ("1", "100", "200", "300", "400", "500", "600", "700")),
     Band("police", "POLICE", "Mc", ("1.6", "1.8", "2.0", "2.2", "2.4", "2.6", "2.8", "3.0")),
     Band("sw1", "SW1", "Mc", ("5.9", "6.5", "7.1", "7.7", "8.3", "8.9", "9.5", "10.1"),
          ("49m", "41m", "31m")),
@@ -148,6 +152,8 @@ log = logging.getLogger(__name__)
 
 #: rest on a station this long mid-drag and it starts playing through the static
 DWELL_MS = 400
+#: a press on the glass that moves no further than this is a tap
+TAP_SLOP_PX = 8
 #: how much a half-tuned station's volume wavers (0 = steady)
 FLUTTER = 0.55
 #: reception/static refresh while the pointer moves
@@ -347,6 +353,14 @@ class RadioSet(QWidget):
         self._dwell.setSingleShot(True)
         self._dwell.setInterval(DWELL_MS)
         self._dwell.timeout.connect(self._on_dwell)
+        #: where a press on the lit band started (x), to tell a tap from a drag
+        self._press_x: Optional[float] = None
+        self._tap_pending = False
+        #: the last tuneRequested came from tapping a station on the glass -
+        #: not a drag, the knob, the wheel or the keys (2026-10-21: the SXM
+        #: band opens a browser page per channel, so it only does that for
+        #: a deliberate tap, never while the pointer sweeps across)
+        self.last_tune_was_tap = False
 
     # -- public ------------------------------------------------------------
 
@@ -571,10 +585,12 @@ class RadioSet(QWidget):
 
     def _emit_tune(self) -> None:
         index, self._pending_tune = self._pending_tune, -1
+        tap, self._tap_pending = self._tap_pending, False
         if index >= 0:
             self._tuned[self._band] = index
             self.update()
             self._set_reception(1.0)
+            self.last_tune_was_tap = tap
             self.tuneRequested.emit(self._band, index)
 
     # -- reception (stations coming in and out) --------------------------------
@@ -637,6 +653,7 @@ class RadioSet(QWidget):
             return
         self._tuned[self._band] = index
         self.update()
+        self.last_tune_was_tap = False
         self.tuneRequested.emit(self._band, index)
         self._update_reception()
 
@@ -731,6 +748,7 @@ class RadioSet(QWidget):
             if self._positions[band]:
                 self._anim.stop()
                 self._tune_timer.stop()
+                self._press_x = pt.x()
                 self._drag = "dial"
                 self._pos = self._pos_from_x(pt.x())
                 self._update_static()
@@ -768,6 +786,9 @@ class RadioSet(QWidget):
     def mouseReleaseEvent(self, event) -> None:  # noqa: D102
         drag, self._drag = self._drag, None
         positions = self._positions[self._band]
+        press_x, self._press_x = self._press_x, None
+        self._tap_pending = (drag == "dial" and press_x is not None
+                             and abs(event.position().x() - press_x) <= TAP_SLOP_PX)
         if drag in ("dial", "tune") and positions:
             if drag == "tune" and not self._drag_moved:
                 c, _ = self._geom["knob_tune"]

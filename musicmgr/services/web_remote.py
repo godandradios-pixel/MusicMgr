@@ -810,7 +810,14 @@ class RemoteApi:
         return f"{n} track{'s' if n != 1 else ''} added" if n else "No playable files"
 
     def _cmd_tune_station(self, b) -> str:
-        ok = self.ctx.tuner.tune_station(int(b.get("id", 0)))
+        from . import stations
+
+        sid = int(b.get("id", 0))
+        with self.ctx.session() as s:
+            browser = stations.opens_in_browser(s.get(RadioStation, sid))
+        ok = self.ctx.tuner.tune_station(sid)
+        if browser:   # a SiriusXM channel (2026-10-21): it opens on the PC
+            return "Opened in the PC's web browser" if ok else "Couldn't open the PC's web browser"
         return "Tuned in" if ok else "Couldn't tune that station"
 
     def _cmd_tune_show(self, b) -> str:
