@@ -18,14 +18,14 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 import mutagen
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .. import config
 from ..db.models import Video, WatchedFolder
 from . import library as lib
 from .matching import normalize
-from .scanner import ProgressFn, ScanResult, path_matches
+from .scanner import ProgressFn, ScanResult, _in_skipped_folder, path_matches
 
 log = logging.getLogger(__name__)
 
@@ -217,8 +217,68 @@ def rescan_all_videos(
     )
     for folder in folders:
         scan_video_folder(session, folder.path, progress, result, force=force)
+    result.skipped_removed = remove_skipped_folder_videos(session)
     result.missing = mark_missing_videos(session)
     return result
+
+
+def remove_skipped_folder_videos(session: Session) -> int:
+    """Take videos inside a folder scans now skip (config.SKIP_SCAN_DIRS -
+    GoodSync's _gsdata_ above all) back out of the library - the video twin
+    of scanner.remove_skipped_folder_files (2026-10-21).
+
+    The 2026-10-18 fix made video scans skip those folders, but only the
+    music side got a cleanup for what an older scan had already imported.
+    PC1 still had 15 videos from D:\\Movies\\_gsdata_\\_saved_ (GoodSync's
+    old versions), four of them filed under an artist called "_saved_" -
+    the folder name, since their file names had no "Artist - Title".
+
+    Deleting a Video row takes nothing else with it (nothing has a foreign
+    key to videos.id - see purge_missing_videos), so unlike the music side
+    there's no orphan-track step. An artist the removed videos leave with
+    nothing at all - no credits, releases, videos or jukebox slots - goes
+    too, along with its top-track/similar-artist rows, so "_saved_" doesn't
+    linger as an empty artist. The files on disk are never touched.
+    Returns how many videos were removed."""
+    doomed = [
+        (video_id, artist_id)
+        for video_id, path, artist_id in session.execute(select(Video.id, Video.path, Video.artist_id))
+        if _in_skipped_folder(path or "")
+    ]
+    if not doomed:
+        return 0
+    ids = [video_id for video_id, _ in doomed]
+    for start in range(0, len(ids), 500):
+        session.execute(delete(Video).where(Video.id.in_(ids[start:start + 500])))
+    session.flush()
+    _remove_unused_artists(session, {a for _, a in doomed if a is not None})
+    session.expire_all()
+    return len(ids)
+
+
+def _remove_unused_artists(session: Session, artist_ids: set[int]) -> int:
+    """Delete those of `artist_ids` nothing points at any more - the same
+    "still used?" test scanner.py's artist repairs use."""
+    from ..db.models import (
+        Artist, ArtistSimilar, ArtistTopPick, ArtistTopTrack, Credit, JukeboxSlot, Release,
+    )
+
+    removed = 0
+    for artist_id in artist_ids:
+        used = (
+            session.scalar(select(Credit.id).where(Credit.artist_id == artist_id).limit(1))
+            or session.scalar(select(Release.id).where(Release.album_artist_id == artist_id).limit(1))
+            or session.scalar(select(Video.id).where(Video.artist_id == artist_id).limit(1))
+            or session.scalar(select(JukeboxSlot.id).where(JukeboxSlot.artist_id == artist_id).limit(1))
+        )
+        if used:
+            continue
+        for table in (ArtistTopTrack, ArtistTopPick, ArtistSimilar):
+            session.execute(delete(table).where(table.artist_id == artist_id))
+        session.execute(delete(Artist).where(Artist.id == artist_id))
+        removed += 1
+    session.flush()
+    return removed
 
 
 def mark_missing_videos(

@@ -425,3 +425,60 @@ class TestForceRescan:
 
         assert result.updated == 1
         assert result.unchanged == 0
+
+
+# -- videos an older scan took from a now-skipped folder (2026-10-21) ---------
+
+
+def _video_row(session, path: Path, artist_name: str) -> Video:
+    """A Video row as an older, pre-skip scan would have left it."""
+    from musicmgr.services import library as lib
+
+    artist = lib.get_or_create_artist(session, artist_name)
+    video = Video(
+        title=path.stem, title_key=path.stem.lower(), artist_display=artist.name,
+        artist_id=artist.id, path=str(path), size_bytes=1, mtime=0.0, codec="mp4",
+    )
+    session.add(video)
+    session.flush()
+    return video
+
+
+def test_remove_skipped_folder_videos_drops_gsdata_rows_and_empty_artist(session, tmp_path):
+    """PC1 had 15 videos from D:\\Movies\\_gsdata_\\_saved_, four filed under
+    an artist called "_saved_" (the folder name). They come back out, the
+    "_saved_" artist goes with them, a real artist with other videos stays,
+    and no file on disk is touched."""
+    real = tmp_path / "Movies" / "Rush - R30.mkv"
+    make_placeholder_video(real)
+    saved_dir = tmp_path / "Movies" / "_gsdata_" / "_saved_"
+    stray_named = saved_dir / "Rush - R30.mkv"
+    stray_folder_artist = saved_dir / "JEREMY_CAMP_UNPLUGGED_Title1.mp4"
+    for p in (stray_named, stray_folder_artist):
+        make_placeholder_video(p)
+
+    video_scanner.scan_video_folder(session, tmp_path / "Movies")  # picks up only the real one
+    _video_row(session, stray_named, "Rush")
+    _video_row(session, stray_folder_artist, "_saved_")
+    assert session.scalar(select(func.count(Video.id))) == 3
+
+    assert video_scanner.remove_skipped_folder_videos(session) == 2
+
+    assert [v.path for v in session.scalars(select(Video))] == [str(real)]
+    names = set(session.scalars(select(Artist.name)))
+    assert "Rush" in names and "_saved_" not in names
+    assert stray_named.exists() and stray_folder_artist.exists()
+
+
+def test_rescan_all_videos_runs_the_skipped_folder_cleanup(session, tmp_path):
+    stray = tmp_path / "_gsdata_" / "_saved_" / "Old Copy.mp4"
+    make_placeholder_video(stray)
+    session.add(WatchedFolder(path=str(tmp_path)))
+    session.flush()
+    _video_row(session, stray, "_saved_")
+
+    result = video_scanner.rescan_all_videos(session)
+
+    assert result.skipped_removed == 1
+    assert session.scalar(select(func.count(Video.id))) == 0
+    assert "1 copies in sync/system folders removed" in result.summary()

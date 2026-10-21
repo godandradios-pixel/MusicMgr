@@ -474,6 +474,8 @@ class ScanThread(QThread):
                             force=self.force,
                             should_stop=self.isInterruptionRequested,
                         )
+                    # 2026-10-21: videos an older scan took from _gsdata_
+                    video_result.skipped_removed = video_scanner.remove_skipped_folder_videos(session)
                     video_result.missing = video_scanner.mark_missing_videos(session)
             summary = f"Audio: {audio_result.summary()} · Video: {video_result.summary()}"
             if self.isInterruptionRequested():

@@ -54,6 +54,7 @@ def cmd_scan_videos(args) -> int:
                 progress=lambda d, t, n: print(f"\r  {d}/{t} {n[:60]:<60}", end=""),
                 result=result,
             )
+        result.skipped_removed = video_scanner.remove_skipped_folder_videos(session)
         result.missing = video_scanner.mark_missing_videos(session)
     print("\n" + result.summary())
     for err in result.errors[:10]:
