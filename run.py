@@ -13,7 +13,9 @@ Used internally by the in-app updater's "Restart now" (2026-09-23):
 
 import sys
 
-from musicmgr.ui.app import main
+# musicmgr.launch puts the splash up before loading the rest of the app
+# (2026-10-21) - importing musicmgr.ui.app here would load every page first
+from musicmgr.launch import main
 
 if __name__ == "__main__":
     sys.exit(main())

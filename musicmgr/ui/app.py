@@ -7,7 +7,7 @@ import sys
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSplashScreen,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -617,26 +616,6 @@ def _run_once(session, pref: str, label: str, work, message: str) -> None:
     updater.set_pref(session, pref, "1")
 
 
-def _build_splash() -> Optional[QSplashScreen]:
-    """A launch splash showing James's MusicMgr banner - see main()'s
-    docstring-length comment below for why it's shown where it is. Returns
-    None (rather than raising) if the banner asset is missing, so a
-    from-source checkout that hasn't pulled musicmgr/assets/ yet - or any
-    future trimmed-down build - still starts normally without it."""
-    if not config.SPLASH_IMAGE.is_file():
-        return None
-    pixmap = QPixmap(str(config.SPLASH_IMAGE))
-    if pixmap.isNull():
-        return None
-    # Full-res source is 2170x725 - a splash that size would dwarf the
-    # 1440x900 main window on most screens, so it's scaled down for display
-    # only; the bundled asset stays full resolution for any other future use.
-    pixmap = pixmap.scaledToWidth(640, Qt.SmoothTransformation)
-    splash = QSplashScreen(pixmap, Qt.WindowStaysOnTopHint)
-    splash.show()
-    return splash
-
-
 def _setup_logging() -> None:
     """Send every module's `logging.getLogger(__name__).exception(...)` call
     (scanner.py's per-bad-file catch is the one that motivated this) to
@@ -686,7 +665,11 @@ def _pre_database_housekeeping() -> None:
         logging.getLogger(__name__).info("backed up library.db to %s before first run of %s", made, RELEASE_VERSION)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None, splash=None) -> int:
+    """Start the app. Normally reached through musicmgr.launch.main (run.py),
+    which has already created the QApplication and put the splash up before
+    this module and all its pages were imported - `splash` is that splash.
+    Called directly, it puts one up itself."""
     argv = list(argv if argv is not None else sys.argv)
 
     _prepare_for_update_restart(argv)
@@ -699,15 +682,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         app.setWindowIcon(QIcon(str(config.APP_ICON)))
     QGuiApplication.setAttribute(Qt.AA_SynthesizeTouchForUnhandledMouseEvents, False)
 
-    # The splash needs a QApplication to paint into, which is why app
-    # creation moved ahead of bootstrap_database() below - that's the one
-    # part of startup with real, library-size-dependent duration (schema
-    # creation plus three library-wide fix-up passes), and previously ran
-    # with no window on screen at all. processEvents() forces the splash to
-    # actually paint before that blocking call starts.
-    splash = _build_splash()
-    if splash is not None:
-        app.processEvents()
+    # The splash stays up through the database work and building the
+    # window below. launch.py normally shows it before this module is even
+    # imported (2026-10-21 - see that module's docstring).
+    if splash is None:
+        from ..launch import build_splash, close_bootloader_splash
+
+        splash = build_splash()
+        if splash is not None:
+            app.processEvents()
+        close_bootloader_splash()
 
     restore = library_backup.apply_pending_restore(
         config.DB_PATH, config.DB_BACKUP_DIR, config.RESTORE_MARKER

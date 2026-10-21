@@ -76,6 +76,10 @@ def is_portable() -> bool:
 #: see the sys._MEIPASS comment above.
 ASSETS_DIR = _BUNDLE_ROOT / "musicmgr" / "assets"
 SPLASH_IMAGE = ASSETS_DIR / "splash_banner.png"
+#: the banner at the size the splash shows it (640 px wide) - used by both
+#: PyInstaller's splash (MusicMgr.spec) and the Qt one (launch.py) so they
+#: match exactly. Made from splash_banner.png; remake it if that changes.
+SPLASH_SMALL_IMAGE = ASSETS_DIR / "splash_640.png"
 APP_ICON = ASSETS_DIR / "app_icon.ico"
 
 #: -- in-app updater (services/updater.py, 2026-09-23) --------------------

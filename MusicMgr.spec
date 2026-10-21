@@ -140,9 +140,29 @@ if sys.platform.startswith("linux"):
 
 pyz = PYZ(a.pure)
 
+# Splash while the exe unpacks itself (2026-10-21 - see musicmgr/launch.py).
+# A --onefile exe unpacks everything to a temp folder on every launch before
+# any Python runs, with nothing on screen; PyInstaller's own splash is drawn
+# by the exe straight away, before that. launch.py closes it as soon as the
+# Qt splash - the same picture, same size - is up. Windows only for now:
+# on Linux it needs the build machine's Tcl/Tk bundled, and the Mint GLX
+# crash (above) is a reminder that bundled X libraries can bite there.
+# Without a Splash the build is unchanged; launch.py copes either way.
+splash_items = []
+if sys.platform == "win32":
+    splash = Splash(
+        "musicmgr/assets/splash_640.png",
+        binaries=a.binaries,
+        datas=a.datas,
+        text_pos=None,          # just the picture, no progress text
+        always_on_top=True,
+    )
+    splash_items = [splash, splash.binaries]
+
 exe = EXE(
     pyz,
     a.scripts,
+    *splash_items,
     a.binaries,
     a.datas,
     [],
