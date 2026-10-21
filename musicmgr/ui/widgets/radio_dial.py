@@ -118,8 +118,14 @@ BANDS: tuple[Band, ...] = (
     Band("sxm", "SXM", "ch", tuple(str(m) for m in station_svc.SXM_MARKS)),
 )
 #: a band's strip height against the others' (2026-10-21 - James: SXM "not
-#: as tall as the other bands")
-BAND_HEIGHT = {"sxm": 0.7}
+#: as tall as the other bands"). 0.7 at first, then 0.8: at 0.7 two
+#: channels close together (7 and 8, 25 and 26) had too little height to be
+#: staggered one above the other and ran into each other.
+BAND_HEIGHT = {"sxm": 0.8}
+#: how much of a strip the scale row takes (the rest is for station names).
+#: The shorter SXM strip gives its scale less, so the names keep room for
+#: two staggered rows (2026-10-21).
+SCALE_SHARE = {"sxm": 0.28}
 BAND_KEYS = tuple(b.key for b in BANDS)
 BY_KEY = {b.key: b for b in BANDS}
 
@@ -945,7 +951,7 @@ class RadioSet(QWidget):
         p.drawLine(QPointF(left, r.top() + 3), QPointF(left, r.bottom() - 3))
         p.drawLine(QPointF(left + width, r.top() + 3), QPointF(left + width, r.bottom() - 3))
         # scale row: unit, numbers and ticks along the top of the strip
-        scale_h = r.height() * 0.36
+        scale_h = r.height() * SCALE_SHARE.get(band.key, 0.36)
         base = r.top() + scale_h
         p.setFont(_font(scale_h * 0.62, bold=True))
         fm = QFontMetricsF(p.font())

@@ -118,7 +118,8 @@ def test_sxm_is_the_bottom_band_and_shorter(qapp):
     strips = w._geom["strips"]
     assert radio_dial.BAND_KEYS[-1] == "sxm"
     assert strips["sxm"].top() > strips["lw"].bottom()
-    assert strips["sxm"].height() == pytest.approx(strips["fm"].height() * 0.7)
+    assert strips["sxm"].height() == pytest.approx(strips["fm"].height() * 0.8)
+    assert strips["sxm"].height() < strips["fm"].height()
     assert strips["sxm"].bottom() <= w._geom["dial"].bottom()
 
 
