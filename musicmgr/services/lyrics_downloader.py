@@ -30,6 +30,12 @@ loops it over a list of tracks and aggregates the outcomes into one
 `AlbumLyricsResult` (used for both the per-album button and, as a
 "batch of one", the per-track button too - one result shape instead of
 two parallel ones).
+
+2026-10-21: YouTube Music (`ytmusic_lyrics.py`) is a second source. When
+LRCLIB has no lyrics for a track, or only plain text, the download asks
+YouTube Music too - signed out, so it doesn't depend on James's
+subscription. LRCLIB stays first: it's the purpose-built synced-lyrics
+database, and it's the one source with no unofficial-API risk.
 """
 
 from __future__ import annotations
@@ -95,13 +101,19 @@ class AlbumLyricsResult:
     #: run can report "we found it, it just isn't synced" instead of a
     #: plain miss (2026-09-20, James: force synced-only downloads)
     plain_only: int = 0
+    #: how many of `downloaded` came from YouTube Music rather than LRCLIB
+    #: (2026-10-21) - shown in summary() so James can see the fallback work
+    from_ytmusic: int = 0
     errors: list[str] = field(default_factory=list)
     outcomes: list[TrackLyricsOutcome] = field(default_factory=list)
 
     def summary(self) -> str:
         parts = []
         if self.downloaded:
-            parts.append(f"{self.downloaded} downloaded")
+            if self.from_ytmusic:
+                parts.append(f"{self.downloaded} downloaded ({self.from_ytmusic} from YouTube Music)")
+            else:
+                parts.append(f"{self.downloaded} downloaded")
         if self.already_exists:
             parts.append(f"{self.already_exists} already had lyrics")
         if self.instrumental:
@@ -252,6 +264,7 @@ def download_lyrics_for_track(
     duration_ms: int = 0,
     overwrite: bool = False,
     save_plain: bool = True,
+    use_ytmusic: bool = True,
 ) -> TrackLyricsOutcome:
     """Look up and save lyrics for one track. Writes to the same
     `Path(audio_path).with_suffix(".lrc")` sidecar `services/lyrics.py`
@@ -269,6 +282,15 @@ def download_lyrics_for_track(
     text is left alone rather than getting a plain sidecar, and comes back
     as `status="plain_only"` - not `"not_found"` - so callers can tell
     "nothing on LRCLIB at all" apart from "found it, it's just not synced".
+
+    `use_ytmusic=True` (2026-10-21): when LRCLIB has no synced lyrics,
+    YouTube Music is asked too, in this order of preference:
+    LRCLIB synced > YouTube Music synced > LRCLIB plain > YouTube Music
+    plain (the plain ones only with `save_plain`). A track LRCLIB marks
+    instrumental isn't looked up again. A YouTube Music failure never
+    turns into an `error` outcome on its own - the track just ends up as
+    whatever LRCLIB said. The outcome's `detail` names where the saved
+    lyrics came from ("Exact"/"Search" for LRCLIB, "YouTube Music").
     """
     audio_path = Path(audio_path)
     lrc_path = audio_path.with_suffix(".lrc")
@@ -290,33 +312,66 @@ def download_lyrics_for_track(
         result, method = _find_lyrics(session, track)
     except Exception as exc:  # one bad track must not stop an album run
         log.exception("lyrics lookup failed for %s", audio_path)
-        return TrackLyricsOutcome(audio_path, "error", str(exc))
+        if not use_ytmusic:
+            return TrackLyricsOutcome(audio_path, "error", str(exc))
+        result, method, lrclib_error = None, None, str(exc)
+    else:
+        lrclib_error = ""
 
-    if not result:
-        return TrackLyricsOutcome(audio_path, "not_found")
-
-    if result.get("instrumental") is True:
+    if result and result.get("instrumental") is True:
         return TrackLyricsOutcome(audio_path, "instrumental")
 
-    synced_text = result.get("syncedLyrics")
-    plain_text = result.get("plainLyrics")
+    lrclib_synced = (result or {}).get("syncedLyrics") or ""
+    lrclib_plain = (result or {}).get("plainLyrics") or ""
 
-    if synced_text:
-        text = synced_text
-    elif plain_text and save_plain:
-        text = plain_text
-    elif plain_text:
-        # matched, but only plain text, and the caller asked synced-only
-        return TrackLyricsOutcome(audio_path, "plain_only")
+    text, source = "", ""
+    if lrclib_synced:
+        text, source = lrclib_synced, method
     else:
-        return TrackLyricsOutcome(audio_path, "not_found")
+        yt = _ytmusic_lookup(track) if use_ytmusic else None
+        yt_synced = yt.synced if yt else ""
+        yt_plain = yt.plain if yt else ""
+        if yt_synced:
+            text, source = yt_synced, _ytmusic_source_name()
+        elif save_plain and lrclib_plain:
+            text, source = lrclib_plain, method
+        elif save_plain and yt_plain:
+            text, source = yt_plain, _ytmusic_source_name()
+        elif lrclib_plain or yt_plain:
+            # matched, but only plain text, and the caller asked synced-only
+            return TrackLyricsOutcome(audio_path, "plain_only")
+        elif lrclib_error:
+            return TrackLyricsOutcome(audio_path, "error", lrclib_error)
+        else:
+            return TrackLyricsOutcome(audio_path, "not_found")
 
     try:
         lrc_path.write_text(text.rstrip() + "\n", encoding="utf-8")
     except OSError as exc:
         return TrackLyricsOutcome(audio_path, "error", str(exc))
 
-    return TrackLyricsOutcome(audio_path, "downloaded", method)
+    return TrackLyricsOutcome(audio_path, "downloaded", source)
+
+
+def _ytmusic_source_name() -> str:
+    from . import ytmusic_lyrics
+
+    return ytmusic_lyrics.SOURCE_NAME
+
+
+def _ytmusic_lookup(track: dict) -> Optional["LyricsTextFetch"]:
+    """YouTube Music's lyrics for `track` (the dict `download_lyrics_for_track`
+    builds), or None when it has none or the lookup failed. Imported here
+    rather than at the top because ytmusic_lyrics imports this module."""
+    from . import ytmusic_lyrics
+
+    fetch = ytmusic_lyrics.fetch_lyrics_text(
+        title=track["title"],
+        artist=track["artist"],
+        album=track["album"],
+        duration_ms=track["duration"] * 1000,
+    )
+    return fetch if fetch.status == "found" else None
 
 
 @dataclass
@@ -383,6 +438,7 @@ def download_lyrics_for_album(
     *,
     overwrite: bool = False,
     save_plain: bool = True,
+    use_ytmusic: bool = True,
     rate_limit_s: float = DEFAULT_RATE_LIMIT_S,
     progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> AlbumLyricsResult:
@@ -409,11 +465,14 @@ def download_lyrics_for_album(
             duration_ms=track.duration_ms,
             overwrite=overwrite,
             save_plain=save_plain,
+            use_ytmusic=use_ytmusic,
         )
         result.outcomes.append(outcome)
 
         if outcome.status == "downloaded":
             result.downloaded += 1
+            if outcome.detail == _ytmusic_source_name():
+                result.from_ytmusic += 1
         elif outcome.status == "already_exists":
             result.already_exists += 1
         elif outcome.status == "instrumental":

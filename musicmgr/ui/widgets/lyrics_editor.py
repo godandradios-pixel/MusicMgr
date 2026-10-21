@@ -11,7 +11,8 @@ backing up whatever was there before.
 
 The starting text is the track's existing .lrc (timestamps kept, so this
 doubles as a re-timing tool), or LRCLIB's lyrics via "Load from LRCLIB"
-(fetched on a thread - see `LyricsTextThread`). "Edit text…" fixes words
+(fetched on a thread - see `LyricsTextThread`), or YouTube Music's via
+"Load from YouTube Music" (2026-10-21, `services/ytmusic_lyrics.py`). "Edit text…" fixes words
 without losing the sync (`lyrics_editor.retext`).
 
 This dialog is modal, which hides the persistent PlayerBar's controls
@@ -48,6 +49,7 @@ from PySide6.QtWidgets import (
 from ...config import TOUCH
 from ...services import lyrics_downloader as lyrics_dl
 from ...services import lyrics_editor as le
+from ...services import ytmusic_lyrics
 from ...services.player import PlayerController
 from ..theme import COLORS
 from .common import PAUSE_GLYPH, TouchButton
@@ -61,17 +63,28 @@ PREROLL_MS = 2000
 COL_TIME, COL_TEXT = 0, 1
 
 
+#: lyric sources the editor can load from: name shown -> fetch function
+#: (both return a `lyrics_downloader.LyricsTextFetch`)
+SOURCES = {
+    "LRCLIB": lyrics_dl.fetch_lyrics_text,
+    ytmusic_lyrics.SOURCE_NAME: ytmusic_lyrics.fetch_lyrics_text,
+}
+
+
 class LyricsTextThread(QThread):
-    """Runs `lyrics_downloader.fetch_lyrics_text` off the UI thread."""
+    """Runs one source's `fetch_lyrics_text` off the UI thread."""
 
     finished_with = Signal(object)  # LyricsTextFetch
 
-    def __init__(self, *, title: str, artist: str, album: str, duration_ms: int, parent=None) -> None:
+    def __init__(
+        self, *, title: str, artist: str, album: str, duration_ms: int, source: str = "LRCLIB", parent=None
+    ) -> None:
         super().__init__(parent)
+        self._fetch = SOURCES[source]
         self._args = dict(title=title, artist=artist, album=album, duration_ms=duration_ms)
 
     def run(self) -> None:  # pragma: no cover - exercised interactively
-        self.finished_with.emit(lyrics_dl.fetch_lyrics_text(**self._args))
+        self.finished_with.emit(self._fetch(**self._args))
 
 
 class LyricsTextDialog(QDialog):
@@ -153,9 +166,13 @@ class LyricsEditorDialog(QDialog):
         self.reload_btn.clicked.connect(self._reload_saved)
         self.lrclib_btn = TouchButton("Load from LRCLIB")
         self.lrclib_btn.clicked.connect(self._fetch_from_lrclib)
+        self.ytmusic_btn = TouchButton(f"Load from {ytmusic_lyrics.SOURCE_NAME}")
+        self.ytmusic_btn.clicked.connect(self._fetch_from_ytmusic)
+        #: source name -> its Load button
+        self._source_buttons = {"LRCLIB": self.lrclib_btn, ytmusic_lyrics.SOURCE_NAME: self.ytmusic_btn}
         self.text_btn = TouchButton("Edit text…")
         self.text_btn.clicked.connect(self._edit_text)
-        for b in (self.reload_btn, self.lrclib_btn, self.text_btn):
+        for b in (self.reload_btn, self.lrclib_btn, self.ytmusic_btn, self.text_btn):
             source.addWidget(b)
         source.addStretch(1)
         self.status = QLabel("")
@@ -336,7 +353,7 @@ class LyricsEditorDialog(QDialog):
             return
         total = len(self.lines)
         if not total:
-            self.status.setText("No lyric lines yet - load them from LRCLIB or type them in with Edit text…")
+            self.status.setText("No lyric lines yet - load them from LRCLIB or YouTube Music, or type them in with Edit text…")
             return
         timed = total - le.unstamped_count(self.lines)
         parts = [f"{timed} of {total} lines timed"]
@@ -369,52 +386,63 @@ class LyricsEditorDialog(QDialog):
         self.set_lines(existing, dirty=False, select=first_unstamped)
 
     def _fetch_from_lrclib(self) -> None:
+        self._fetch_from("LRCLIB")
+
+    def _fetch_from_ytmusic(self) -> None:
+        self._fetch_from(ytmusic_lyrics.SOURCE_NAME)
+
+    def _fetch_from(self, source: str) -> None:
+        """Load the lyrics from one source on a thread - one fetch at a
+        time, so both Load buttons are off while either is running."""
         if self._fetch_thread is not None:
             return
-        self.lrclib_btn.setEnabled(False)
-        self.lrclib_btn.setText("Loading…")
-        self._fetch_thread = LyricsTextThread(**self.meta, parent=self)
-        self._fetch_thread.finished_with.connect(self._on_fetched)
+        for btn in self._source_buttons.values():
+            btn.setEnabled(False)
+        self._source_buttons[source].setText("Loading…")
+        self._fetch_thread = LyricsTextThread(**self.meta, source=source, parent=self)
+        self._fetch_thread.finished_with.connect(lambda fetch: self._on_fetched(fetch, source))
         self._fetch_thread.start()
 
-    def _on_fetched(self, fetch: "lyrics_dl.LyricsTextFetch") -> None:
+    def _on_fetched(self, fetch: "lyrics_dl.LyricsTextFetch", source: str = "LRCLIB") -> None:
         self._fetch_thread = None
-        self.lrclib_btn.setEnabled(True)
-        self.lrclib_btn.setText("Load from LRCLIB")
+        for name, btn in self._source_buttons.items():
+            btn.setEnabled(True)
+            btn.setText(f"Load from {name}")
         messages = {
-            "no_artist": "This track has no artist tag, so LRCLIB can't be searched.",
-            "not_found": "No lyrics found on LRCLIB for this track.",
-            "instrumental": "LRCLIB lists this track as instrumental.",
-            "error": "Couldn't reach LRCLIB just now - try again in a bit.",
+            "no_artist": f"This track has no artist tag, so {source} can't be searched.",
+            "not_found": f"No lyrics found on {source} for this track.",
+            "instrumental": f"{source} lists this track as instrumental.",
+            "error": f"Couldn't reach {source} just now - try again in a bit.",
         }
         if fetch.status != "found":
             self._refresh_status(messages.get(fetch.status, "Nothing loaded."))
             return
-        choice = self._choose_lrclib_text(fetch)
+        choice = self._choose_lrclib_text(fetch, source)
         if choice is None:
             return
         if self.lines and not self._confirm(
-            "Replace lyrics?", "Replace the lines in the editor with LRCLIB's?"
+            "Replace lyrics?", f"Replace the lines in the editor with {source}'s?"
         ):
             return
         if choice == "synced":
             lines = le.lines_from_lyrics(le.parse_lrc(fetch.synced).lines)
             self.set_lines(lines, select=0)
-            self._refresh_status(f"Loaded LRCLIB's synced lyrics ({len(lines)} lines) - fix any timing, then Save.")
+            self._refresh_status(f"Loaded {source}'s synced lyrics ({len(lines)} lines) - fix any timing, then Save.")
         else:
             lines = le.lines_from_plain_text(fetch.plain or fetch.synced)
             self.set_lines(lines, select=0)
-            self._refresh_status(f"Loaded {len(lines)} lines from LRCLIB - play the song and tap Stamp as each line starts.")
+            self._refresh_status(f"Loaded {len(lines)} lines from {source} - play the song and tap Stamp as each line starts.")
 
-    def _choose_lrclib_text(self, fetch: "lyrics_dl.LyricsTextFetch") -> Optional[str]:
-        """"plain" (tap-sync from scratch), "synced" (start from LRCLIB's
-        own timing), or None (cancel). Only asks when both exist."""
+    def _choose_lrclib_text(self, fetch: "lyrics_dl.LyricsTextFetch", source: str = "LRCLIB") -> Optional[str]:
+        """"plain" (tap-sync from scratch), "synced" (start from the
+        source's own timing), or None (cancel). Only asks when both exist.
+        (Name kept from when LRCLIB was the only source.)"""
         if not fetch.synced:
             return "plain"
         box = QMessageBox(self)
-        box.setWindowTitle("LRCLIB has synced lyrics")
+        box.setWindowTitle(f"{source} has synced lyrics")
         box.setText(
-            "LRCLIB already has timing for this track. Start from its timing and fix it, "
+            f"{source} already has timing for this track. Start from its timing and fix it, "
             "or load just the words and tap-sync them yourself?"
         )
         synced_btn = box.addButton("Use its timing", QMessageBox.AcceptRole)

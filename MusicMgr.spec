@@ -60,6 +60,15 @@ datas += _mutagen_datas
 binaries += _mutagen_binaries
 hiddenimports += _mutagen_hidden
 
+# ytmusicapi (services/ytmusic_lyrics.py, 2026-10-21) ships its translation
+# files as package data and loads them with gettext when a YTMusic client is
+# created - without them the packaged exe's YouTube Music lookups fail even
+# though they work from source.
+_ytm_datas, _ytm_binaries, _ytm_hidden = collect_all("ytmusicapi")
+datas += _ytm_datas
+binaries += _ytm_binaries
+hiddenimports += _ytm_hidden
+
 # USB sync (services/usb_sync.py) sends deleted files to the Recycle Bin via
 # send2trash, which picks its Windows backend at import time - name the
 # ctypes one explicitly so the packaged exe always has a working fallback.

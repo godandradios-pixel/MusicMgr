@@ -16,3 +16,6 @@ send2trash==1.8.3
 numpy==2.5.3
 # phone remote QR code in Settings (services/web_remote.py) - 2026-10-13
 qrcode==8.2
+# YouTube Music lyrics, signed out (services/ytmusic_lyrics.py) - 2026-10-21.
+# Unofficial library: if lookups start failing, bump this pin first.
+ytmusicapi==1.12.3

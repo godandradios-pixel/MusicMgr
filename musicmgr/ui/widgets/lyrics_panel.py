@@ -48,10 +48,11 @@ _DEFAULT_EMPTY_DETAIL = "Drop a matching .lrc file next to this track's audio fi
 
 _STATUS_MESSAGES = {
     "no_artist": "This track has no artist tag on file, so lyrics can't be looked up.",
-    "not_found": "No lyrics found on LRCLIB for this track.",
+    # LRCLIB first, YouTube Music as the fallback (2026-10-21)
+    "not_found": "No lyrics found on LRCLIB or YouTube Music for this track.",
     "instrumental": "LRCLIB lists this as an instrumental - no lyrics to show.",
-    "plain_only": 'LRCLIB only has plain (unsynced) lyrics for this track - skipped since "Synced lyrics only" is checked.',
-    "error": "Couldn't reach LRCLIB just now - try again in a bit.",
+    "plain_only": 'Only plain (unsynced) lyrics were found for this track - skipped since "Synced lyrics only" is checked.',
+    "error": "Couldn't reach the lyrics sites just now - try again in a bit.",
 }
 
 

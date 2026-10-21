@@ -254,17 +254,34 @@ def test_song_ending_steps_back_to_the_edited_track(ctx, playing, qapp):
 def test_lrclib_plain_load_and_synced_choice(ctx, playing, qapp, monkeypatch):
     d = _dialog(ctx, playing[0], qapp)
     fetch = lyrics_dl.LyricsTextFetch("found", plain="A\n\nB", synced="[00:03.00]A\n[00:07.00]B")
-    monkeypatch.setattr(d, "_choose_lrclib_text", lambda f: "plain")
+    monkeypatch.setattr(d, "_choose_lrclib_text", lambda f, source="LRCLIB": "plain")
     d._on_fetched(fetch)
     assert [(l.text, l.time_ms) for l in d.lines] == [("A", None), ("B", None)]
 
-    monkeypatch.setattr(d, "_choose_lrclib_text", lambda f: "synced")
+    monkeypatch.setattr(d, "_choose_lrclib_text", lambda f, source="LRCLIB": "synced")
     monkeypatch.setattr(d, "_confirm", lambda *a: True)
     d._on_fetched(fetch)
     assert [(l.text, l.time_ms) for l in d.lines] == [("A", 3_000), ("B", 7_000)]
 
     d._on_fetched(lyrics_dl.LyricsTextFetch("not_found"))
     assert "No lyrics found" in d.status.text()
+
+
+def test_youtube_music_load_names_its_source(ctx, playing, qapp, monkeypatch):
+    """2026-10-21: the editor's second Load button - same flow as LRCLIB's,
+    with YouTube Music named in the messages."""
+    d = _dialog(ctx, playing[0], qapp)
+    assert d.ytmusic_btn.text() == "Load from YouTube Music"
+    fetch = lyrics_dl.LyricsTextFetch("found", plain="A\nB", synced="[00:03.00]A\n[00:07.00]B")
+    monkeypatch.setattr(d, "_choose_lrclib_text", lambda f, source="LRCLIB": "synced")
+    d._on_fetched(fetch, "YouTube Music")
+    assert [(l.text, l.time_ms) for l in d.lines] == [("A", 3_000), ("B", 7_000)]
+    assert "YouTube Music's synced lyrics" in d.status.text()
+
+    d._on_fetched(lyrics_dl.LyricsTextFetch("not_found"), "YouTube Music")
+    assert "No lyrics found on YouTube Music" in d.status.text()
+    assert d.lrclib_btn.isEnabled() and d.ytmusic_btn.isEnabled()
+    d.done(QDialog.Rejected)
 
 
 def test_line_tools_insert_delete_clear_shift(ctx, playing, qapp):
