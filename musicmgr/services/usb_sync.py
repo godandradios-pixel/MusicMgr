@@ -174,16 +174,21 @@ def candidate_roots() -> list[Path]:
     if sys.platform.startswith("win"):  # pragma: no cover - Windows only
         import ctypes
 
-        roots = []
+        removable, fixed = [], []
         kernel32 = ctypes.windll.kernel32
         mask = kernel32.GetLogicalDrives()
         for i in range(26):
             if not mask & (1 << i):
                 continue
             root = f"{chr(65 + i)}:\\"
-            if kernel32.GetDriveTypeW(root) in (2, 3):  # REMOVABLE, FIXED
-                roots.append(Path(root))
-        return roots
+            kind = kernel32.GetDriveTypeW(root)
+            if kind == 2:    # REMOVABLE
+                removable.append(Path(root))
+            elif kind == 3:  # FIXED (some USB SSDs report this)
+                fixed.append(Path(root))
+        # removable drives first: if a copy of a drive's marker turns up on
+        # a PC disk too, the real stick wins (2026-10-22, see find_drives)
+        return removable + fixed
     user = os.environ.get("USER") or ""
     roots: list[Path] = []
     for base in (Path("/media") / user, Path("/run/media") / user, Path("/media")):
@@ -194,15 +199,37 @@ def candidate_roots() -> list[Path]:
     return roots
 
 
+def _holds_data_dir(root: Path) -> bool:
+    """True if `root` is the disk this library's own data folder is on."""
+    try:
+        data = Path(os.path.normcase(os.path.realpath(config.DATA_DIR)))
+        r = Path(os.path.normcase(os.path.realpath(root)))
+    except (OSError, ValueError):
+        return False
+    return r == data or r in data.parents
+
+
 def find_drives(roots: Optional[Iterable[Path]] = None) -> list[Drive]:
-    """Every connected MusicMgr drive (normally zero or one)."""
+    """Every connected MusicMgr drive (normally zero or one).
+
+    2026-10-22: the JukeBox PC's own DATA disk (D:) held a copy of the
+    stick's MusicMgr\\sync\\drive.json - same drive id - and D: was checked
+    before the stick on E:, so MusicMgr took D: for the USB and synced
+    D:\\Music with itself. Now the disk holding this library's own data
+    folder is never taken for the USB (MusicMgr is never run from the
+    stick), and removable drives are looked at before fixed ones."""
     found = []
     seen = set()
     for root in roots if roots is not None else candidate_roots():
         drive = load_marker(root)
-        if drive is not None and drive.drive_id not in seen:
-            seen.add(drive.drive_id)
-            found.append(drive)
+        if drive is None or drive.drive_id in seen:
+            continue
+        if _holds_data_dir(root):
+            log.warning("ignoring the MusicMgr drive marker on %s: that's this library's own "
+                        "data disk, not a USB drive", root)
+            continue
+        seen.add(drive.drive_id)
+        found.append(drive)
     return found
 
 
@@ -236,6 +263,28 @@ def _norm_rel(rel: str) -> str:
 
 REMOVED_PREFIX = "removed:"
 
+
+def on_drive(local: str | Path, drive: Drive) -> bool:
+    """True if `local` is the USB drive itself or a folder on it.
+
+    2026-10-22 - on the JukeBox PC a stray copy of the drive marker made its
+    own DATA disk (D:) count as the USB, so its pairs read D:\\Music <->
+    USB\\Music with "USB" = D: - one folder synced with itself. Every check
+    said "everything is in sync", nothing was ever copied to the PC, and
+    Jukebox cards whose songs weren't in its library never placed. A pair's PC side must be on the PC's own
+    disk, never on the drive it syncs with."""
+    try:
+        loc = Path(os.path.normcase(os.path.realpath(local)))
+        root = Path(os.path.normcase(os.path.realpath(drive.root)))
+    except (OSError, ValueError):
+        return False
+    return loc == root or root in loc.parents
+
+
+def on_drive_message(local: str | Path, drive: Drive) -> str:
+    return (f"{local} is on the USB drive itself ({drive.root}), so it would only sync "
+            "with itself. Pick a folder on this PC's own disk.")
+
 #: 2026-10-13 - James: "I would like to add D:\Radio as a Sync settings".
 #: The Radio page's old-time radio folder (services/otr.py) isn't a watched
 #: music folder, so it never got a pair of its own; it now pairs with a
@@ -259,10 +308,11 @@ def ensure_default_pairs(db: Session, drive: Drive) -> list[SyncPair]:
     removed ones (filter with `is_removed`). Never re-creates a pair James
     removed: `remove_pair` keeps a "removed:" marker row for that."""
     pairs = list(db.scalars(select(SyncPair).where(SyncPair.drive_id == drive.drive_id)))
+    _retire_stray_markers(db, drive, pairs)
     existing = {_fold(_norm_local(p.local_path)): p for p in pairs}
     for folder in db.scalars(select(WatchedFolder).order_by(WatchedFolder.id)):
         local = _norm_local(folder.path)
-        if _fold(local) in existing:
+        if _fold(local) in existing or on_drive(local, drive):
             continue
         name = Path(local).name
         if name and (drive.root / name).is_dir():
@@ -277,6 +327,10 @@ def ensure_default_pairs(db: Session, drive: Drive) -> list[SyncPair]:
     if artwork_names.naming_done(db):
         for folder, rel in artwork_names.image_folders_for_sync():
             local = _norm_local(folder)
+            if on_drive(local, drive):
+                # this library's data folder is on the drive (MusicMgr run
+                # from the USB) - there is nothing on the PC to pair
+                continue
             # an artwork pair always syncs *this* library's own data folder:
             # found by its folder name (artwork / artists), and repointed if
             # the data folder has moved since (2026-09-24, James saw
@@ -305,6 +359,62 @@ def ensure_default_pairs(db: Session, drive: Drive) -> list[SyncPair]:
     )
 
 
+STRAY_SUFFIX = ".stray"
+
+
+def _retire_stray_markers(db: Session, drive: Drive, pairs: list[SyncPair]) -> None:
+    """A copy of this drive's marker on the disk a pair's PC folder is on.
+
+    2026-10-22 (JukeBox PC): D:\\MusicMgr\\sync\\drive.json was a copy of the
+    stick's, so D: was taken for the USB and every pair synced its folder
+    with itself. Those pairs' sync lists then hold every file "on both
+    sides"; checked against the real stick, files only on the PC would look
+    deleted from the USB and be offered for deletion here. So: forget those
+    pairs' sync lists (the next check is a first sync - copies only, nothing
+    counts as deleted) - every pair of the drive, since all of them were
+    compared against the stray - and rename the stray marker to drive.json.stray so
+    this happens once. The rename is all that's touched on disk."""
+    roots: dict[str, Path] = {}
+    for pair in pairs:
+        if is_removed(pair):
+            continue
+        local = Path(_norm_local(pair.local_path))
+        # the marker sits at a drive's root (D:\\MusicMgr\\sync\\drive.json);
+        # look at each folder above the pair's (a few stats per pair)
+        for folder in local.parents:
+            if marker_path(folder).is_file():
+                roots.setdefault(_fold(str(folder)), folder)
+                break
+    for root in roots.values():
+        if on_drive(root, drive):
+            continue
+        stray = load_marker(root)
+        if stray is None or stray.drive_id != drive.drive_id:
+            continue
+        # every pair of this drive was synced against the stray, not just
+        # the ones on that disk (C:\\Users\\JB\\Radio synced with D:\\Radio)
+        hit = [p for p in pairs if not is_removed(p)]
+        pc_id = get_pc_id(db)
+        for pair in hit:
+            _clear_baseline(db, pair.id)
+            # and the copy on the real drive, or the next check would
+            # fall back to it (build_plan)
+            copy = _usb_baseline_path(drive, pc_id, pair)
+            if copy.is_file():
+                try:
+                    os.replace(copy, copy.with_name(copy.name + STRAY_SUFFIX))
+                except OSError:
+                    log.warning("couldn't set aside %s", copy)
+        marker = marker_path(root)
+        try:
+            os.replace(marker, marker.with_name(marker.name + STRAY_SUFFIX))
+        except OSError:
+            log.warning("couldn't rename the stray drive marker %s", marker)
+        log.warning("found a copy of %s's marker on %s; renamed it and reset %d pair(s) to a "
+                    "first sync", drive.describe(), root, len(hit))
+    db.flush()
+
+
 def _ensure_radio_pair(db: Session, drive: Drive, pairs: list[SyncPair], existing: dict) -> None:
     """Pair the Radio page's folder with <drive>\\Radio (2026-10-13).
 
@@ -326,7 +436,7 @@ def _ensure_radio_pair(db: Session, drive: Drive, pairs: list[SyncPair], existin
     local = _norm_local(root) if root else None
     match = next((p for p in pairs if p.kind in (RADIO_KIND, REMOVED_PREFIX + RADIO_KIND)), None)
     if match is not None:
-        if (local and not is_removed(match)
+        if (local and not is_removed(match) and not on_drive(local, drive)
                 and _fold(_norm_local(match.local_path)) != _fold(local)):
             match.local_path = local
             _clear_baseline(db, match.id)
@@ -345,6 +455,8 @@ def _ensure_radio_pair(db: Session, drive: Drive, pairs: list[SyncPair], existin
         otr.set_root(db, local)
     elif not Path(local).is_dir():
         return
+    if on_drive(local, drive):
+        return
     if _fold(local) in existing:
         return  # already paired by hand
     if not usb_dir.is_dir():
@@ -362,6 +474,8 @@ def _ensure_radio_pair(db: Session, drive: Drive, pairs: list[SyncPair], existin
 
 def add_pair(db: Session, drive: Drive, local_path: str | Path, usb_rel_path: str) -> SyncPair:
     local = _norm_local(local_path)
+    if on_drive(local, drive):
+        raise ValueError(on_drive_message(local, drive))
     rel = _norm_rel(usb_rel_path)
     for pair in db.scalars(select(SyncPair).where(SyncPair.drive_id == drive.drive_id)):
         if _fold(_norm_local(pair.local_path)) == _fold(local):
@@ -387,10 +501,12 @@ def set_pair_enabled(db: Session, pair_id: int, enabled: bool) -> None:
 
 
 def update_pair(db: Session, pair_id: int, *, local_path: Optional[str | Path] = None,
-                usb_rel_path: Optional[str] = None) -> Optional[SyncPair]:
+                usb_rel_path: Optional[str] = None,
+                drive: Optional[Drive] = None) -> Optional[SyncPair]:
     """Point a pair at a different folder on either side. Its sync list is
     cleared, so the next check treats it as a first sync (files on one
-    side only are copied across; nothing counts as deleted)."""
+    side only are copied across; nothing counts as deleted). With `drive`,
+    a PC folder on that drive itself is refused (ValueError)."""
     pair = db.get(SyncPair, pair_id)
     if pair is None:
         return None
@@ -398,8 +514,18 @@ def update_pair(db: Session, pair_id: int, *, local_path: Optional[str | Path] =
     if local_path is not None and _fold(_norm_local(local_path)) != _fold(_norm_local(pair.local_path)):
         if pair.kind == "artwork":
             raise ValueError("an artwork pair always uses this library's own data folder")
+        if drive is not None and on_drive(local_path, drive):
+            raise ValueError(on_drive_message(_norm_local(local_path), drive))
         pair.local_path = _norm_local(local_path)
         changed = True
+        if pair.kind == RADIO_KIND:
+            # the Radio pair follows the Radio page's folder
+            # (_ensure_radio_pair), so moving the pair moves that folder too.
+            # 2026-10-22: James changed it from C:\\Users\\JB\\Radio to D:\\Radio
+            # in Folder pairs, pressed OK, and it snapped straight back.
+            from . import otr
+
+            otr.set_root(db, pair.local_path)
     if usb_rel_path is not None and _norm_rel(usb_rel_path) != pair.usb_rel_path:
         pair.usb_rel_path = _norm_rel(usb_rel_path)
         changed = True
@@ -854,6 +980,11 @@ def build_plan(
         local_root = Path(pair.local_path)
         usb_root = drive.root / pair.usb_rel_path
         label = pair_label(pair)
+        if on_drive(local_root, drive):
+            plan = PairPlan(pair.id, label, local_root, usb_root)
+            plan.errors.append(on_drive_message(local_root, drive) + " — skipped")
+            result.pairs.append(plan)
+            continue
         if not local_root.is_dir():
             plan = PairPlan(pair.id, label, local_root, usb_root)
             plan.errors.append(f"{local_root} isn't available on this PC — skipped")

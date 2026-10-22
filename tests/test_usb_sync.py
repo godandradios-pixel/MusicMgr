@@ -106,6 +106,101 @@ class TestDrive:
             assert {p.drive_id for p in s.scalars(select(SyncPair))} == {drive.drive_id, other.drive_id}
 
 
+class TestPairOnTheDrive:
+    """2026-10-22: the JukeBox PC's USB came up as D:, so D:\\Music <-> USB\\Music
+    synced the drive's folder with itself and reported "in sync"."""
+
+    def test_on_drive(self, env, tmp_path):
+        local, usb, drive = env
+        assert us.on_drive(drive.root, drive)
+        assert us.on_drive(usb, drive)
+        assert us.on_drive(drive.root / "MusicMgr" / "data" / "artwork", drive)
+        assert not us.on_drive(local, drive)
+        assert not us.on_drive(tmp_path / "USB2" / "Music", drive)   # same prefix, other folder
+
+    def test_watched_folder_on_drive_gets_no_default_pair(self, env, db):
+        local, usb, drive = env
+        with db_session.session_scope() as s:
+            s.add(WatchedFolder(path=str(usb)))
+            pairs = us.ensure_default_pairs(s, drive)
+            assert [p.local_path for p in pairs] == [str(local)]
+
+    def test_add_and_update_refuse_a_folder_on_the_drive(self, env):
+        local, usb, drive = env
+        with db_session.session_scope() as s:
+            with pytest.raises(ValueError, match="on the USB drive itself"):
+                us.add_pair(s, drive, usb, "Music")
+            (pair,) = us.ensure_default_pairs(s, drive)
+            with pytest.raises(ValueError, match="on the USB drive itself"):
+                us.update_pair(s, pair.id, local_path=usb, drive=drive)
+            assert pair.local_path == str(local)
+
+    def test_existing_pair_on_drive_is_skipped_with_an_error(self, env):
+        local, usb, drive = env
+        write(usb / "a.mp3")
+        with db_session.session_scope() as s:
+            s.add(SyncPair(drive_id=drive.drive_id, local_path=str(usb), usb_rel_path="Music", kind="media"))
+            s.flush()
+            plan = us.build_plan(s, drive)
+            bad = [p for p in plan.pairs if p.local_root == usb]
+            assert len(bad) == 1 and "on the USB drive itself" in bad[0].errors[0]
+            assert not bad[0].items and not bad[0].record
+
+
+    def test_marker_on_the_data_disk_is_not_the_usb(self, tmp_path, monkeypatch):
+        from musicmgr import config
+        disk = tmp_path / "D"
+        stick = tmp_path / "E"
+        us.write_marker(stick, "MusicMgr USB")
+        (disk / "MusicMgr" / "sync").mkdir(parents=True)
+        import shutil
+        shutil.copy(us.marker_path(stick), us.marker_path(disk))   # the stray copy
+        monkeypatch.setattr(config, "DATA_DIR", disk / "MusicMgr" / "data")
+        found = us.find_drives([disk, stick])
+        assert [d.root for d in found] == [stick]
+        found = us.find_drives([disk])     # stick unplugged: no drive at all
+        assert found == []
+
+    def test_stray_marker_resets_self_synced_pairs(self, tmp_path, db):
+        disk = tmp_path / "D"
+        stick = tmp_path / "E"
+        (stick / "Music").mkdir(parents=True)
+        write(stick / "Music" / "only-on-usb.mp3")
+        drive = us.write_marker(stick, "MusicMgr USB")
+        (disk / "MusicMgr" / "sync").mkdir(parents=True)
+        import shutil
+        shutil.copy(us.marker_path(stick), us.marker_path(disk))
+        local = disk / "Music"
+        write(local / "only-on-pc.mp3")
+        other = tmp_path / "C" / "Radio"        # a pair on another disk
+        write(other / "show.mp3")
+        (stick / "Radio").mkdir()
+        # the bad state: the pair was synced while D: was taken for the USB,
+        # so its sync list says only-on-pc.mp3 is on both sides
+        self_drive = us.load_marker(disk)
+        with db_session.session_scope() as s:
+            s.add(WatchedFolder(path=str(local)))
+            s.add(SyncPair(drive_id=drive.drive_id, local_path=str(local), usb_rel_path="Music",
+                           kind="media"))
+            s.add(SyncPair(drive_id=drive.drive_id, local_path=str(other), usb_rel_path="Radio",
+                           kind="media"))
+        with db_session.session_scope() as s:
+            music, radio = list(s.scalars(select(SyncPair).order_by(SyncPair.id)))
+            s.add(SyncBaseline(pair_id=music.id, rel_path="only-on-pc.mp3", size=1, mtime_ns=0))
+            s.add(SyncBaseline(pair_id=radio.id, rel_path="show.mp3", size=1, mtime_ns=0))
+            # and a USB copy of the radio list on the real stick
+            us.save_usb_baseline(drive, us.get_pc_id(s), radio, {"show.mp3": FileStat(1, 0)})
+        with db_session.session_scope() as s:
+            plan = us.build_plan(s, drive)
+        assert not us.marker_path(disk).exists()
+        assert (us.marker_path(disk).parent / "drive.json.stray").exists()
+        kinds = {(i.kind, i.direction, i.rel) for i in plan.all_items()}
+        assert (COPY, TO_LOCAL, "only-on-usb.mp3") in kinds
+        assert (COPY, TO_USB, "only-on-pc.mp3") in kinds
+        assert (COPY, TO_USB, "show.mp3") in kinds
+        assert not any(i.kind == DELETE for i in plan.all_items())
+
+
 # --------------------------------------------------------------------------
 # the comparison table
 # --------------------------------------------------------------------------

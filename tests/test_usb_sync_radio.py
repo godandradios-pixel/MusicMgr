@@ -118,3 +118,20 @@ def test_the_pair_follows_the_radio_pages_folder(tmp_path, drive):
         otr.set_root(s, str(new))
         (pair,) = radio_pairs(s, drive)
         assert Path(pair.local_path) == new
+
+
+def test_changing_the_radio_pair_moves_the_radio_folder(tmp_path, drive):
+    """2026-10-22: changed C:\\Users\\JB\\Radio to D:\\Radio in Folder pairs, pressed
+    OK, and the pair snapped back to the Radio page's folder."""
+    old = tmp_path / "home" / "Radio"
+    new = tmp_path / "D" / "Radio"
+    old.mkdir()
+    new.mkdir(parents=True)
+    with db_session.session_scope() as s:
+        otr.set_root(s, str(old))
+        (pair,) = radio_pairs(s, drive)
+        us.update_pair(s, pair.id, local_path=new, drive=drive)
+    with db_session.session_scope() as s:
+        (pair,) = radio_pairs(s, drive)
+        assert pair.local_path == str(new)
+        assert otr.get_root(s) == str(new)

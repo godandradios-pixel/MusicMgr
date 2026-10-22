@@ -1729,6 +1729,9 @@ class SettingsView(BaseView):
                 when = (
                     f" (last synced {pair.last_synced_at:%Y-%m-%d %H:%M})" if pair.last_synced_at else ""
                 )
+                if usb_sync.on_drive(pair.local_path, drive):
+                    # 2026-10-22: a PC folder on the USB itself syncs with itself
+                    when = "  ⚠ on the USB drive itself - not synced; change it in Folder pairs…"
                 names.append(f"{pair.local_path} ↔ USB\\{pair.usb_rel_path}{when}")
         self.usb_pairs_label.setText(
             "\n".join(names) if names else

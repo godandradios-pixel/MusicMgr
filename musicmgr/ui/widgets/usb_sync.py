@@ -580,7 +580,9 @@ class UsbPairsDialog(QDialog):
         self.list.clear()
         for r in self._visible():
             label = f"{r['local']}  ↔  USB\\{r['rel'].replace('/', chr(92))}"
-            if r["id"] is None:
+            if us.on_drive(r["local"], self.drive):
+                label += "  ⚠ on the USB drive itself - not synced"
+            elif r["id"] is None:
                 label += "  (new)"
             elif (r["local"], r["rel"]) != (r["orig_local"], r["orig_rel"]):
                 label += "  (changed)"
@@ -637,6 +639,9 @@ class UsbPairsDialog(QDialog):
         local = self._pick_local()
         if not local:
             return
+        if us.on_drive(local, self.drive):
+            QMessageBox.warning(self, "USB folder pairs", us.on_drive_message(local, self.drive))
+            return
         if self._taken(local):
             QMessageBox.warning(self, "USB folder pairs", f"{local} is already paired.")
             return
@@ -658,6 +663,9 @@ class UsbPairsDialog(QDialog):
         if cur is None or cur["kind"] == "artwork":
             return
         local = self._pick_local(cur["local"])
+        if local and us.on_drive(local, self.drive):
+            QMessageBox.warning(self, "USB folder pairs", us.on_drive_message(local, self.drive))
+            return
         if not local or self._taken(local, skip=cur):
             if local:
                 QMessageBox.warning(self, "USB folder pairs", f"{local} is already paired.")
@@ -715,6 +723,6 @@ class UsbPairsDialog(QDialog):
                 if r["removed"]:
                     us.remove_pair(db, r["id"])
                     continue
-                us.update_pair(db, r["id"], local_path=r["local"], usb_rel_path=r["rel"])
+                us.update_pair(db, r["id"], local_path=r["local"], usb_rel_path=r["rel"], drive=self.drive)
                 us.set_pair_enabled(db, r["id"], r["enabled"])
         self.accept()
