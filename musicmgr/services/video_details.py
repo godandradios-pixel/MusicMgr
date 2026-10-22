@@ -265,8 +265,9 @@ def fill_video_details(
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> tuple[int, int]:
     """Fill in years and thumbnails for every video still missing them.
-    Returns (years found, thumbnails found). Commits as it goes, so a stop
-    keeps what's done. A grabber that reports itself stuck (None) ends
+    Returns (years found, thumbnails found). Each video is written and
+    committed on its own, after its slow file work, so the app's own
+    writes never wait behind this; a stop keeps what's done. A grabber that reports itself stuck (None) ends
     the frame grabs for this run; those videos are tried again next time."""
     ids = list(session.scalars(
         select(Video.id).where(
@@ -284,13 +285,15 @@ def fill_video_details(
             continue
         path = Path(video.path)
         needs_thumb = video.thumbnail_path is None
+        known_ms = video.duration_ms
         duration, tag_year, cover, suffix = (
             read_file_details(path) if path.is_file() else (None, None, None, ".jpg"))
-        if video.year is None:
-            year = find_year(session, video, tag_year)
-            if year:
-                video.year = year
-                years += 1
+        new_year = find_year(session, video, tag_year) if video.year is None else None
+        # 2026-10-22: no write is pending while a frame is grabbed - the
+        # first run held its write transaction through up to 25 grabs, and a
+        # chart match James saved meanwhile timed out ("database is locked")
+        session.rollback()
+        new_thumb: Optional[str] = None
         if needs_thumb and path.is_file():
             found: Optional[str] = None
             settled = True  # False leaves it NULL, to be tried again next run
@@ -301,7 +304,7 @@ def fill_video_details(
                 found = save_cover(path, cover, suffix)
             elif grabbing is not None:
                 out = thumb_file(path)
-                ok = grabbing(path, out, duration or video.duration_ms)
+                ok = grabbing(path, out, duration or known_ms)
                 if ok is None:
                     log.warning("video frame grab stuck on %s - no more grabs this run", path)
                     grabbing = None
@@ -311,13 +314,23 @@ def fill_video_details(
             elif grab is not None:
                 settled = False  # the grabber got stuck earlier in this run
             if settled:
-                video.thumbnail_path = found if found is not None else NO_THUMB
-                if found is not None:
+                new_thumb = found if found is not None else NO_THUMB
+        else:
+            needs_thumb = False
+        # write and commit this video at once: each write holds the lock
+        # for a moment only
+        video = session.get(Video, vid)
+        if video is not None and (new_year or (needs_thumb and new_thumb is not None)):
+            if new_year:
+                video.year = new_year
+                years += 1
+            if needs_thumb and new_thumb is not None:
+                video.thumbnail_path = new_thumb
+                if new_thumb:
                     thumbs += 1
-        if n % 25 == 0:
             session.commit()
-            if progress:
-                progress(n, len(ids))
+        if progress and n % 25 == 0:
+            progress(n, len(ids))
     session.commit()
     if progress:
         progress(len(ids), len(ids))

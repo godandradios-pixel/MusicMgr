@@ -175,3 +175,34 @@ def test_real_mp4_cover_and_ffmpeg_grab(session, tmp_path):
     session.commit()
     vd.fill_video_details(session, grab=vd.ffmpeg_grabber())
     assert v.thumbnail_path and Path(v.thumbnail_path).stat().st_size > 0
+
+
+def test_no_write_lock_is_held_while_a_frame_is_grabbed(qapp, tmp_path, monkeypatch):
+    """2026-10-22: the first run held its write transaction through up to 25
+    frame grabs, and a chart match James saved meanwhile never took."""
+    import sqlite3
+
+    from musicmgr.db import session as db_session
+
+    db_file = tmp_path / "library.db"
+    db_session.init_engine(db_path=str(db_file))
+    monkeypatch.setattr(vd, "read_file_details", lambda p: (None, None, None, ".jpg"))
+    chart_entry_paths = [tmp_path / f"A - {i}.mp4" for i in range(3)]
+    with db_session.session_scope() as s:
+        for p in chart_entry_paths:
+            p.write_bytes(b"x")
+            video(s, p, p.stem, "A")   # no year: find_year runs first
+    writes = []
+
+    def grabber(path, out, duration):
+        other = sqlite3.connect(str(db_file), timeout=0)
+        other.execute("CREATE TABLE IF NOT EXISTS probe (x)")
+        other.execute("INSERT INTO probe VALUES (1)")   # raises if locked
+        other.commit()
+        other.close()
+        writes.append(path.name)
+        return False
+
+    with db_session.session_scope() as s:
+        vd.fill_video_details(s, grab=grabber)
+    assert len(writes) == 3
