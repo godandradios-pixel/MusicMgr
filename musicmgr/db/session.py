@@ -224,9 +224,9 @@ def reset_database() -> None:
     completely wipe out library.db and start with a fresh database."
     Asked whether to keep a timestamped backup first (the same
     never-touch-the-original habit "Move data location…" in
-    ui/views/settings.py already follows) or delete outright with no way
+    ui/views/settings/ already follows) or delete outright with no way
     back, James chose outright deletion - this keeps no copy of anything.
-    `NukeConfirmDialog`/`SettingsView.nuke_library` (ui/views/settings.py)
+    `NukeConfirmDialog`/`SettingsView.nuke_library` (ui/views/settings/)
     are what stand between an accidental tap and this being permanent;
     this function itself does no confirming of its own.
 

@@ -9,7 +9,7 @@ the Linux target, *always ask before installing*, a fresh public repo
 (config.UPDATE_REPO), and signed releases from day one.
 
 Headless on purpose (no Qt import anywhere in this module) so every piece is
-unit-testable; ui/views/settings.py owns the threads and dialogs.
+unit-testable; ui/views/settings/ owns the threads and dialogs.
 
 The pieces, in the order an update actually uses them:
 

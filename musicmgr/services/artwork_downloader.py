@@ -16,7 +16,7 @@ whole app (`Master` -> `Release` -> `Track`, see architecture.md): far
 better coverage of vinyl, obscure, and out-of-print releases than iTunes,
 and no separate MusicBrainz-ID resolution step first. Needs a free
 personal access token from discogs.com/settings/developers - see
-`DiscogsCredentialsDialog` in ui/views/settings.py, the same "Setting
+`DiscogsCredentialsDialog` in ui/views/settings/, the same "Setting
 key/value table" pattern `lastfm_popularity.py` already used for its own
 API key (`API_KEY_KEY`/`get_api_key`/`set_api_key` there, mirrored here as
 `TOKEN_KEY`/`get_api_token`/`set_api_token`).

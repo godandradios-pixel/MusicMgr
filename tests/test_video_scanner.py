@@ -390,7 +390,7 @@ class TestRescanAllVideos:
 class TestForceRescan:
     """Covers the 2026-09-18 "Re-read all tags (takes more time)" scan
     option (see services/scanner.py's matching TestForceRescan and
-    ui/views/settings.py's ScanThread/force_rescan_checkbox) - an unchanged
+    ui/views/settings/'s ScanThread/force_rescan_checkbox) - an unchanged
     video file is ordinarily left alone entirely; force=True makes
     import_video_file/scan_video_folder re-import it anyway."""
 

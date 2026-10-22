@@ -1267,7 +1267,7 @@ class LyricsDownloadThread(QThread):
 
     Network-bound and rate-limited on purpose (see lyrics_downloader.py),
     so an album's worth of tracks can take several seconds - same reason
-    `ScanThread` (ui/views/settings.py) exists for library scans."""
+    `ScanThread` (ui/views/settings/) exists for library scans."""
 
     progress = Signal(int, int, str)
     finished_with = Signal(object)  # AlbumLyricsResult
@@ -1787,7 +1787,7 @@ class SearchBar(QWidget):
         self.edit.setClearButtonEnabled(True)
         if password:
             # 2026-09-16 follow-up - reused for the Last.fm credentials
-            # dialog's API-key field (ui/views/settings.py); a credential
+            # dialog's API-key field (ui/views/settings/); a credential
             # typed once during setup is still worth masking on a shared
             # touch panel the way a password field always is.
             self.edit.setEchoMode(QLineEdit.EchoMode.Password)

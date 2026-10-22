@@ -420,7 +420,7 @@ class TestMissingMetadataDashboard:
         _FakeMetadataScanThread.instances = []
 
     def test_first_open_with_no_cache_starts_a_scan_thread(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module, "MetadataScanThread", _FakeMetadataScanThread)
+        monkeypatch.setattr(settings_module.maintenance, "MetadataScanThread", _FakeMetadataScanThread)
 
         view.view_missing_metadata()
 
@@ -428,7 +428,7 @@ class TestMissingMetadataDashboard:
         assert _FakeMetadataScanThread.instances[0].started
 
     def test_reopening_reuses_the_cached_scan_without_rescanning(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module, "MetadataScanThread", _FakeMetadataScanThread)
+        monkeypatch.setattr(settings_module.maintenance, "MetadataScanThread", _FakeMetadataScanThread)
         view._last_metadata_scan = metadata_health.ScanResult()
         monkeypatch.setattr(MissingMetadataDialog, "exec", lambda self: QDialog.Rejected)
 
@@ -458,7 +458,7 @@ class TestMissingMetadataDashboard:
         assert view._last_metadata_scan is not None
 
     def test_clicking_rescan_clears_the_cache_and_starts_a_new_scan(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module, "MetadataScanThread", _FakeMetadataScanThread)
+        monkeypatch.setattr(settings_module.maintenance, "MetadataScanThread", _FakeMetadataScanThread)
         view._last_metadata_scan = metadata_health.ScanResult()
         monkeypatch.setattr(MissingMetadataDialog, "exec", lambda self: MissingMetadataDialog.REFRESH)
 
@@ -572,7 +572,7 @@ class TestImportArtistImagesThreaded:
             settings_module.QFileDialog, "getExistingDirectory",
             staticmethod(lambda *a, **k: str(tmp_path)),
         )
-        monkeypatch.setattr(settings_module, "ArtistImagesImportThread", _FakeThread)
+        monkeypatch.setattr(settings_module.maintenance, "ArtistImagesImportThread", _FakeThread)
         view.import_artist_images()
         assert self.asked
         assert _FakeThread.instances[0].kwargs.get("overwrite") is False
@@ -582,7 +582,7 @@ class TestImportArtistImagesThreaded:
             settings_module.QFileDialog, "getExistingDirectory",
             staticmethod(lambda *a, **k: ""),
         )
-        monkeypatch.setattr(settings_module, "ArtistImagesImportThread", _FakeThread)
+        monkeypatch.setattr(settings_module.maintenance, "ArtistImagesImportThread", _FakeThread)
 
         view.import_artist_images()
 
@@ -593,7 +593,7 @@ class TestImportArtistImagesThreaded:
             settings_module.QFileDialog, "getExistingDirectory",
             staticmethod(lambda *a, **k: str(tmp_path)),
         )
-        monkeypatch.setattr(settings_module, "ArtistImagesImportThread", _FakeThread)
+        monkeypatch.setattr(settings_module.maintenance, "ArtistImagesImportThread", _FakeThread)
 
         view.import_artist_images()
 
@@ -607,7 +607,7 @@ class TestImportArtistImagesThreaded:
             settings_module.QFileDialog, "getExistingDirectory",
             staticmethod(lambda *a, **k: str(tmp_path)),
         )
-        monkeypatch.setattr(settings_module, "ArtistImagesImportThread", _FakeThread)
+        monkeypatch.setattr(settings_module.maintenance, "ArtistImagesImportThread", _FakeThread)
         view._bio_thread = _FakeThread()
         notifications = []
         view.ctx.notified.connect(notifications.append)
@@ -626,7 +626,7 @@ class TestVerifyFilesThreaded:
         _FakeThread.instances = []
 
     def test_starts_a_thread(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module, "VerifyFilesThread", _FakeThread)
+        monkeypatch.setattr(settings_module.files, "VerifyFilesThread", _FakeThread)
 
         view.verify_files()
 
@@ -634,7 +634,7 @@ class TestVerifyFilesThreaded:
         assert _FakeThread.instances[0].started
 
     def test_refuses_to_start_while_another_bulk_job_is_running(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module, "VerifyFilesThread", _FakeThread)
+        monkeypatch.setattr(settings_module.files, "VerifyFilesThread", _FakeThread)
         view._artwork_thread = _FakeThread()
         notifications = []
         view.ctx.notified.connect(notifications.append)
@@ -665,7 +665,7 @@ class TestRematchAllThreaded:
         _FakeThread.instances = []
 
     def test_starts_a_thread(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module, "RematchChartsThread", _FakeThread)
+        monkeypatch.setattr(settings_module.maintenance, "RematchChartsThread", _FakeThread)
 
         view.rematch_all()
 
@@ -673,7 +673,7 @@ class TestRematchAllThreaded:
         assert _FakeThread.instances[0].started
 
     def test_refuses_to_start_while_another_bulk_job_is_running(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module, "RematchChartsThread", _FakeThread)
+        monkeypatch.setattr(settings_module.maintenance, "RematchChartsThread", _FakeThread)
         view._verify_thread = _FakeThread()
         notifications = []
         view.ctx.notified.connect(notifications.append)
@@ -810,7 +810,7 @@ class TestCancelButton:
     def test_starting_a_bulk_action_shows_the_cancel_button(self, view, monkeypatch):
         view.show()
         _FakeThread.instances = []
-        monkeypatch.setattr(settings_module, "VerifyFilesThread", _FakeThread)
+        monkeypatch.setattr(settings_module.files, "VerifyFilesThread", _FakeThread)
 
         view.verify_files()
 
@@ -997,7 +997,7 @@ class TestDownloadArtistProfilesScope:
             def isRunning(self):
                 return False
 
-        monkeypatch.setattr(settings_module, "BioDownloadThread", FakeThread)
+        monkeypatch.setattr(settings_module.maintenance, "BioDownloadThread", FakeThread)
         monkeypatch.setattr(view, "_show_cancel", lambda *a: None)
         return got
 
@@ -1084,7 +1084,7 @@ class TestLibraryBackupButtons:
             def exec(self):
                 return QDialog.Accepted
 
-        monkeypatch.setattr(settings_module, "RestoreBackupDialog", _Pick)
+        monkeypatch.setattr(settings_module.files, "RestoreBackupDialog", _Pick)
         monkeypatch.setattr(
             settings_module.QMessageBox, "question",
             staticmethod(lambda *a, **k: settings_module.QMessageBox.Yes),
@@ -1108,7 +1108,7 @@ class TestLibraryBackupButtons:
             def exec(self):
                 return QDialog.Accepted
 
-        monkeypatch.setattr(settings_module, "RestoreBackupDialog", _Pick)
+        monkeypatch.setattr(settings_module.files, "RestoreBackupDialog", _Pick)
         monkeypatch.setattr(
             settings_module.QMessageBox, "question",
             staticmethod(lambda *a, **k: settings_module.QMessageBox.No),

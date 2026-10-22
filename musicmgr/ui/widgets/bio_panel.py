@@ -65,7 +65,7 @@ class EditBioDialog(QDialog):
     whatever can and does get fetched) or writing a bio by hand when
     nothing's found online at all. Same QDialogButtonBox(Ok|Cancel) shape
     as LastfmCredentialsDialog/DiscogsCredentialsDialog
-    (ui/views/settings.py) - just a QPlainTextEdit instead of their single
+    (ui/views/settings/) - just a QPlainTextEdit instead of their single
     masked field, since a bio is paragraphs, not one secret string."""
 
     def __init__(self, artist_name: str, text: str, parent=None) -> None:

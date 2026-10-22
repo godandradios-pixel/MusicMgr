@@ -1,7 +1,7 @@
 """Move the data folder (database + artwork cache) to a new location.
 
 Shared by ``tools/migrate_data.py`` (the command-line tool) and
-``SettingsView``'s "Move data location…" button (``ui/views/settings.py``)
+``SettingsView``'s "Move data location…" button (``ui/views/settings/``)
 - one copy-and-rewrite implementation, two front ends. This module lives
 inside the ``musicmgr`` package rather than under ``tools/`` specifically
 so it ships inside the frozen PyInstaller build (``MusicMgr.spec`` bundles

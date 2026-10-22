@@ -193,7 +193,7 @@ class ReleaseDetailPanel(QWidget):
 
         # hidden until a lyrics download is running - same embedded
         # progress-bar-plus-label shape as SettingsView's "Scan now"
-        # (ui/views/settings.py::ScanThread), the only other place in the
+        # (ui/views/settings/parts.py::ScanThread), the only other place in the
         # app that runs a QThread with progress feedback
         self.lyrics_progress = QProgressBar()
         self.lyrics_progress.setVisible(False)
