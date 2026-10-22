@@ -172,6 +172,7 @@ class VideosView(BaseView):
                     year=video.year,
                     duration_ms=video.duration_ms,
                     sort_key=video.title_key or video.title.lower(),
+                    thumb=video.thumbnail_path or None,
                 ))
         self.table.set_rows(rows)
         plural = "" if len(rows) == 1 else "s"

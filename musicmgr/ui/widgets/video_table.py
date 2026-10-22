@@ -29,7 +29,8 @@ import string
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -47,6 +48,8 @@ from .common import ChipButton, dim_label
 
 #: which VideoRow.key a leaf row represents; absent (None) on a group header
 ROLE_KEY = Qt.UserRole + 3
+#: size of the picture beside each title (2026-10-22), 16:9
+THUMB_W, THUMB_H = 64, 36
 #: which artist a group-header row represents (absent on a leaf row) - lets
 #: focus_artist() find the right header without parsing its display text
 #: (2026-09-06)
@@ -82,6 +85,8 @@ class VideoRow:
     year: Optional[int]
     duration_ms: Optional[int]
     sort_key: str
+    #: the video's picture (services/video_details.py, 2026-10-22), if any
+    thumb: Optional[str] = None
 
 
 class VideoTable(QWidget):
@@ -130,6 +135,8 @@ class VideoTable(QWidget):
         self.tree.setHeaderLabels([label for _, label in COLUMNS])
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
+        # 2026-10-22: a small picture of each video beside its title
+        self.tree.setIconSize(QSize(THUMB_W, THUMB_H))
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
@@ -344,6 +351,9 @@ class VideoTable(QWidget):
             format_duration(row.duration_ms),
         ])
         item.setData(0, ROLE_KEY, row.key)
+        if row.thumb:
+            # QIcon(path) reads the file only when the row is first drawn
+            item.setIcon(0, QIcon(row.thumb))
         if isinstance(parent, QTreeWidget):
             parent.addTopLevelItem(item)
         else:

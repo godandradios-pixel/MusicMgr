@@ -191,7 +191,8 @@ class LibraryView(BaseView):
         self.search_box.setFixedWidth(640)
         self.search_box.setToolTip(
             "Searches whatever's on screen: Artists by artist name, Albums "
-            "by album title, Tracks by album or track title, Title Details "
+            "by album title, Tracks by album or track title or a featured "
+            "artist, Title Details "
             "by any of its columns - also matches videos the same way "
             "(by artist in Artists/Albums, by title in Tracks) - or tap "
             "letters in the A-Z bar to spell one out"
@@ -640,7 +641,7 @@ class LibraryView(BaseView):
                 title=f"▶ {row['title']}",
                 subtitle=row["artist_name"],
                 year=row["year"],
-                cover_path=row["artist_image_path"],
+                cover_path=row.get("thumbnail_path") or row["artist_image_path"],
                 sort_key=row["sort_key"],
                 kind="video",
                 initials_source=row["artist_name"],

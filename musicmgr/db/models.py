@@ -928,9 +928,10 @@ class Video(Base):
     size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
     mtime: Mapped[Optional[float]] = mapped_column(Float)
     codec: Mapped[Optional[str]] = mapped_column(String(40))
-    #: not populated yet - no frame-grab thumbnailer exists - see
-    #: architecture.md's Known extension points. A video without one falls
-    #: back to the same generated placeholder tile a cover-less album gets.
+    #: a picture beside the video, its embedded cover, or a grabbed frame -
+    #: see services/video_details.py (2026-10-22). NULL = not tried yet,
+    #: "" = tried, nothing found. A video without one falls back to its
+    #: artist's picture / the generated placeholder tile.
     thumbnail_path: Mapped[Optional[str]] = mapped_column(Text)
     is_missing: Mapped[bool] = mapped_column(Boolean, default=False)
     play_count: Mapped[int] = mapped_column(Integer, default=0)

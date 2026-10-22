@@ -150,7 +150,7 @@ def import_video_file(
     """Import or refresh a single video file. Returns the Video.
 
     `force=True` (2026-09-18, "Re-read all tags" scan option in
-    ui/views/settings.py - audio and video scan together under one
+    ui/views/settings/ - audio and video scan together under one
     `ScanThread`) bypasses the unchanged-file shortcut below, mirroring
     services/scanner.py:import_file's own `force` flag.
     """
@@ -171,6 +171,9 @@ def import_video_file(
             result.unchanged += 1
             return existing
         result.updated += 1
+        # a changed file gets its thumbnail found again
+        # (services/video_details.py, 2026-10-22)
+        existing.thumbnail_path = None
     else:
         result.added += 1
 

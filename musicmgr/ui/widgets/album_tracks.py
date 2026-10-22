@@ -72,6 +72,11 @@ class TrackEntry:
     playable: bool
     #: "A"/"B" for a 78's sides, else the number (2026-09-30)
     label: str = ""
+    #: lower-cased names of artists credited on this track who aren't the
+    #: album's own artist - featured guests ("Yeah!" feat. Ludacris) and
+    #: the performer of a compilation track - so the Tracks search finds a
+    #: song on someone else's album (2026-10-22)
+    guests: str = ""
 
 
 @dataclass
@@ -487,6 +492,13 @@ class AlbumTracksPanel(QWidget):
         which album it lives on without flooding the result with every
         other track on it. Emptying the box restores the full document
         exactly as `load()` built it.
+
+        2026-10-22 - James: a featured artist couldn't be found here. A
+        track also matches on its `TrackEntry.guests`: artists credited on
+        the track who aren't the album's own artist (a featured guest, or
+        the performer of a compilation track). The album's own artist is
+        still not a target, so typing "Usher" doesn't pull in every Usher
+        album, but typing "Ludacris" finds Usher's "Yeah!".
         """
         text = text.strip().lower()
         if text == self._filter_text:
@@ -533,7 +545,8 @@ class AlbumTracksPanel(QWidget):
                 matched_tracks = block.tracks
             else:
                 matched_tracks = [
-                    t for t in block.tracks if needle in t.title.lower()
+                    t for t in block.tracks
+                    if needle in t.title.lower() or needle in t.guests
                 ]
                 if not matched_tracks:
                     continue
@@ -661,8 +674,10 @@ class AlbumTracksPanel(QWidget):
         """
         from sqlalchemy import func, select
 
-        from ...db.models import Artist, Genre, MediaFile, Release, Track, Video, release_genres
-        from ...services.matching import normalize
+        from ...db.models import (
+            Artist, Credit, Genre, MediaFile, Release, Track, Video, release_genres,
+        )
+        from ...services.matching import normalize, split_artists
 
         def artist_key(name: str) -> str:
             return normalize(name) or name.lower()
@@ -705,6 +720,21 @@ class AlbumTracksPanel(QWidget):
                         label=track_label(no, pos),
                     )
                 )
+
+            # artists credited on each track (2026-10-22) - kept apart from
+            # the album's own artist below, so only guests become searchable
+            credit_rows = session.execute(
+                select(Credit.track_id, Artist.name, Credit.anv)
+                .join(Artist, Artist.id == Credit.artist_id)
+                .where(Credit.track_id.is_not(None),
+                       Credit.role.in_((Credit.ROLE_MAIN, Credit.ROLE_FEATURING)))
+            )
+            credited: dict[int, list[str]] = {}
+            for tid, name, anv in credit_rows:
+                names = credited.setdefault(tid, [])
+                names.append(name)
+                if anv and anv != name:
+                    names.append(anv)
 
             genre_rows = session.execute(
                 select(release_genres.c.release_id, Genre.name)
@@ -751,6 +781,11 @@ class AlbumTracksPanel(QWidget):
 
             for release in sorted(grouped_by_key.get(key, []), key=release_key):
                 tracks = by_release.get(release.id, [])
+                own = {artist_key(n) for n in split_artists(release.artist_display or "")}
+                own.add(key)
+                for t in tracks:
+                    guests = [n for n in credited.get(t.track_id, ()) if artist_key(n) not in own]
+                    t.guests = " / ".join(guests).lower()
                 blocks.append(
                     Block(
                         kind=KIND_ALBUM,

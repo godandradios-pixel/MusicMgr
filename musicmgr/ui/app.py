@@ -465,6 +465,9 @@ class MainWindow(QMainWindow):
             if view is not None and hasattr(view, "shutdown"):
                 view.shutdown()
         self.ctx.tuner.shutdown()
+        from . import video_details_worker
+
+        video_details_worker.stop(self.ctx)
         # 2026-10-19: today's library backup, the first time the app closes
         # each day (services/library_backup.py) - after everything above has
         # stopped writing, before the window goes
@@ -729,6 +732,12 @@ def main(argv: Optional[list[str]] = None, splash=None) -> int:
         QTimer.singleShot(1500, lambda: window.ctx.notify(message))
     if "--after-update" in argv:
         QTimer.singleShot(1500, lambda: window.ctx.notify(f"Updated to MusicMgr {RELEASE_VERSION}"))
+    # 2026-10-22: video thumbnails and years, in the background a couple of
+    # minutes in - only when some video still needs them (one COUNT query),
+    # so an ordinary start does no extra work (ui/video_details_worker.py)
+    from . import video_details_worker
+
+    QTimer.singleShot(120_000, lambda: video_details_worker.start(window.ctx, only_if_pending=True))
     # 2026-09-24 - James: "I should never be checking for updates or anything
     # that relies on an internet connection at startup" - no update check
     # here any more; Settings → Updates → "Check now" is the only trigger.

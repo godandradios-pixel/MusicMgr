@@ -8,7 +8,7 @@ here too (`list_video_folders`, a thin wrapper around the now-removed
 `VideoFolder` table) - see `db.models.WatchedFolder`'s docstring for the
 2026-09-07 merge that folded video and audio watched folders into one
 table/list, tracked in `db.models.WatchedFolder` and queried directly by
-`ui/views/settings.py` rather than through a per-module helper.
+`ui/views/settings/` rather than through a per-module helper.
 """
 
 from __future__ import annotations
@@ -67,6 +67,8 @@ def list_videos_for_search(session: Session) -> list[dict]:
             "title": video.title,
             "artist_name": artist_name or video.artist_display or "",
             "artist_image_path": artist_image_path,
+            # 2026-10-22: the video's own picture (services/video_details.py)
+            "thumbnail_path": video.thumbnail_path or None,
             "year": video.year,
             "duration_ms": video.duration_ms,
             "sort_key": video.title_key or video.title.lower(),
