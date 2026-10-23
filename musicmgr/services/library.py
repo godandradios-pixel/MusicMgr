@@ -41,9 +41,8 @@ from .matching import normalize, sort_name
 def get_or_create_artist(session: Session, name: str, **kwargs) -> Artist:
     key = normalize(name)
     if not key:
-        # 2026-10-19: a name with no letters ("?", "!!!") keys on itself
-        # rather than collapsing into "Unknown Artist" - see
-        # matching.split_artists
+        # a name with no letters ("?", "!!!") keys on itself rather than
+        # collapsing into "Unknown Artist" - see matching.split_artists
         bare = (name or "").strip()
         if bare and bare.casefold() != "unknown artist":
             key = bare.casefold()
@@ -52,7 +51,7 @@ def get_or_create_artist(session: Session, name: str, **kwargs) -> Artist:
             name = "Unknown Artist"
     artist = session.scalar(select(Artist).where(Artist.name_key == key))
     if artist is None:
-        # 2026-10-19: a spelling merged into another artist (services/
+        # a spelling merged into another artist (services/
         # artist_merge.py) - "Bj Thomas" is B.J. Thomas
         from ..db.models import ArtistAlias
 
@@ -144,10 +143,8 @@ def catalog_set(text: Optional[str]) -> set[str]:
 
 def same_catalog(a: Optional[str], b: Optional[str]) -> bool:
     """Whether two catalog tags can be the same release: one is blank, or
-    they share a number (2026-10-21: Jordin Sparks's album split in two,
-    "88697187522, 88697187522" vs "88697187522" - the stored value from
-    before the scanner learned to drop a repeated number no longer matched
-    the same files read again)."""
+    they share a number (so a stored "88697187522, 88697187522" still
+    matches the deduplicated "88697187522" the scanner reads now)."""
     sa, sb = catalog_set(a), catalog_set(b)
     return not sa or not sb or bool(sa & sb)
 
@@ -238,10 +235,9 @@ def list_artists(session: Session, limit: int = 5000) -> Sequence[Artist]:
 
 def fix_artist_sort_keys(session: Session) -> int:
     """One-time repair for `name_sort` values written by an earlier, buggier
-    `sort_name()` (see matching.py) - a tag with irregular spacing after
-    "The"/"A"/"An" (James's real "The  Romantics", a stray double space)
-    left a leading space in the stored sort key, which then sorted before
-    every other artist since a space is "less than" any letter or digit.
+    `sort_name()` (see matching.py): irregular spacing after "The"/"A"/"An"
+    (e.g. "The  Romantics") left a leading space in the stored sort key,
+    sorting it before every other artist.
 
     Recomputes every artist's `name_sort` from its current `name` and only
     writes the rows that actually change, so this is cheap and safe to run
@@ -301,10 +297,10 @@ def backfill_album_artists(session: Session) -> int:
 
 def fix_single_artist_compilations(session: Session) -> int:
     """Un-mark albums that were filed as various-artists compilations only
-    because their files carry the Compilation flag (2026-10-14 - James's
-    "Da Doo Ron Ron: The Very Best of The Crystals" didn't appear on the
-    Crystals' page; see scanner.is_various_artists). An unchanged file is
-    never re-read by a scan, so the existing rows are put right here.
+    because their files carry the Compilation flag (so a single-artist
+    best-of shows on that artist's page; see scanner.is_various_artists).
+    An unchanged file is never re-read by a scan, so the existing rows are
+    put right here.
 
     A release still counts as a compilation when its album artist is
     "Various Artists" or someone else performs its tracks. A cover saved
@@ -353,9 +349,8 @@ def merge_compilation_duplicates(session: Session) -> int:
     """One-time cleanup for a database scanned before
     `services/scanner.py:_folder_album_artist` existed: an untagged
     various-artists compilation (one album folder, a different performer
-    named on every file, no album-artist tag anywhere) used to create one
-    Release per performer instead of one for the whole folder - a 10-track
-    box set would show up as 10 near-identical album tiles.
+    on every file, no album-artist tag) created one Release per performer
+    instead of one for the whole folder.
 
     Finds groups of releases whose tracks' files all live in the exact same
     folder on disk and, only when they also agree on title, merges them into
@@ -434,20 +429,15 @@ def _merge_release_group(session: Session, group: list[Release]) -> int:
                 survivor.styles.append(s)
                 style_ids.add(s.id)
         for track in list(dup.tracks):
-            # `Release.tracks` is cascade="all, delete-orphan" (unlike the
-            # plain playlist-folder relationships elsewhere in this file) -
-            # reassigning the raw `release_id` column leaves the track sitting
-            # in `dup`'s already-loaded in-memory `tracks` collection, and
-            # deleting `dup` below would cascade-delete it right along with
-            # dup despite the FK already pointing at `survivor` in the
-            # database. Going through the relationship attribute instead
-            # keeps both sides of the in-memory collection in sync, so the
-            # delete-orphan cascade correctly sees nothing left to orphan.
+            # `Release.tracks` is cascade="all, delete-orphan": reassigning
+            # the raw `release_id` column would leave the track in `dup`'s
+            # loaded `tracks` collection, and deleting `dup` below would
+            # cascade-delete it. Going through the relationship attribute
+            # keeps both sides of the in-memory collection in sync.
             track.release = survivor
 
-    # the release-level "Main" credit each duplicate used to carry named its
-    # own single performer - no longer accurate once it's folded into a
-    # various-artists release, so it's replaced rather than left stale
+    # each duplicate's release-level "Main" credit named its own single
+    # performer - wrong for a various-artists release, so it's replaced
     # (track-level credits are untouched; they travel with the track)
     for credit in list(survivor.credits):
         if credit.artist_id != various.id:
@@ -466,14 +456,13 @@ def _merge_release_group(session: Session, group: list[Release]) -> int:
 
 
 def merge_split_releases(session: Session) -> int:
-    """Put back together albums the scanner split in two (2026-10-21 -
-    James: "why does it think there are 2 different albums for Jordin
-    Sparks"). Releases are merged when they have the same title and album
-    artist, catalog numbers that can be the same release (same_catalog),
-    and files in a shared folder - so genuinely different pressings (Rush's
-    "Caress of Steel" ANR-1-603 and 314 534 625-2) and same-named albums in
-    different folders stay apart. Everything folds into the oldest release,
-    so whatever points at it keeps working. One-time per data folder
+    """Put back together albums the scanner split in two. Releases are
+    merged when they have the same title and album artist, catalog numbers
+    that can be the same release (same_catalog), and files in a shared
+    folder - so genuinely different pressings (Rush's "Caress of Steel"
+    ANR-1-603 and 314 534 625-2) and same-named albums in different
+    folders stay apart. Everything folds into the oldest release, so
+    whatever points at it keeps working. One-time per data folder
     (ui/app.py); returns how many releases were merged away."""
     folders: dict[int, set[str]] = {}
     for release_id, path in session.execute(
@@ -660,46 +649,31 @@ def library_stats(session: Session) -> dict:
 def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
     """One row per track for the Title Details table (Genre / Album Artist /
     Album / Track # / Title / Time / Year / Rating / Comment - see
-    ui/widgets/track_details_table.py), replacing the old three-pane Genre
-    browser (2026-09-05; Album column added 2026-09-06; playback fields
-    added 2026-09-06 follow-up; Comment column added 2026-09-17, while
-    chasing why a Comment-based smart playlist rule matched nothing - see
-    services/scanner.py's `_first_id3_comment`). A Jukebox column also
-    lived there from 2026-09-07 until it was removed again 2026-09-13 (see
-    that file's module docstring) - `on_jukebox` is still computed and
-    returned below regardless, since `_row_matches` there still lets a
-    search for the word "jukebox" find these tracks even with no dedicated
-    column to show it.
+    ui/widgets/track_details_table.py). `on_jukebox` is still returned
+    though there's no Jukebox column, since `_row_matches` there lets a
+    search for the word "jukebox" find these tracks.
 
     `on_jukebox` is looked up as one batched `jukebox_svc.board_track_ids`
-    query up front rather than a per-row membership check - the same "one
-    query, not N" rule this function already follows for genres and playable
-    files, and the same lesson this table learned once before the hard way
-    on a real, tens-of-thousands-of-rows library.
+    query up front rather than per row - the same "one query, not N" rule
+    this function follows for genres and playable files, since a real
+    library is tens of thousands of rows.
 
     Genre is release-level, not a track's own column (see `release_genres`),
     so it's joined through the track's release; a release tagged with more
-    than one genre shows them all, slash-separated, rather than picking one
-    arbitrarily. Album Artist prefers the release's linked `Artist` row and
-    falls back to the denormalised `artist_display` string for a release
-    that predates `album_artist_id` and hasn't been backfilled. Album is
-    simply the release's own title. Returns plain dicts rather than ORM
-    objects since a real library is the *entire* table at once - tens of
-    thousands of rows - and the UI model this feeds never needs anything but
-    these fields.
+    than one genre shows them all, slash-separated. Album Artist prefers
+    the release's linked `Artist` row and falls back to the denormalised
+    `artist_display` for a release that predates `album_artist_id` and
+    hasn't been backfilled. Album is the release's own title. Returns plain
+    dicts rather than ORM objects since this is the *entire* table at once
+    and the UI model never needs anything but these fields.
 
-    `path`/`cover_path`/`artist` (James, 2026-09-06: "double click should
-    automatically start playing that track") are what let
-    `TrackDetailRow.to_queue_item()` build a real `QueueItem` straight from
-    the row the table already has in memory, the same reason
-    `ui/widgets/track_panel.py`'s own flat all-library `TrackRow` carries
-    them - no second per-track query needed just to hit play. `path` uses
-    the same "lowest-id present file" rule as that widget's own `playable`
-    subquery: whichever media file for the track isn't flagged missing,
-    picking one deterministically if more than one qualifies. `artist` is
-    the track's own artist_display, falling back to the album artist for a
-    track that never got its own credit - same fallback order
-    `QueueItem.from_track` already uses.
+    `path`/`cover_path`/`artist` let `TrackDetailRow.to_queue_item()` build
+    a real `QueueItem` straight from the row (double-click plays), the same
+    reason `ui/widgets/track_panel.py`'s `TrackRow` carries them. `path`
+    uses that widget's "lowest-id present file" rule: whichever media file
+    isn't flagged missing, picked deterministically. `artist` is the
+    track's own artist_display, falling back to the album artist - same
+    fallback order as `QueueItem.from_track`.
     """
     genre_rows = session.execute(
         select(release_genres.c.release_id, Genre.name)
@@ -745,7 +719,7 @@ def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
             "album_artist": album_artist_name or artist_display or "",
             "album": album_title or "",
             "track_no": track.track_no,
-            # "A"/"B" for a 78's sides (2026-09-30, services/tracknum.py)
+            # "A"/"B" for a 78's sides (services/tracknum.py)
             "track_label": track_label(track.track_no, track.position),
             "title": track.title,
             "duration_ms": track.duration_ms,
@@ -756,9 +730,8 @@ def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
             "path": path,
             "cover_path": cover_path,
             "on_jukebox": track.id in on_jukebox_ids,
-            # 2026-09-17 follow-up (James: "add the comment field to the
-            # title details grid") - Track.comment is already loaded on
-            # `track` itself (no extra join needed), same as `rating`
+            # Track.comment is already loaded on `track` (no extra join
+            # needed), same as `rating`
             "comment": track.comment or "",
         })
     return rows
@@ -779,42 +752,18 @@ def set_track_rating(session: Session, track_id: int, rating: Optional[int]) -> 
     """Persists a Title Details star tap. `rating` is 0-5; both 0 and None
     mean "unrated" - the UI sends 0 for a toggle-off tap (see
     track_details_table.py's `RatingDelegate`), and it's normalised to NULL
-    here so an unrated track always looks the same in the database, however
-    it got that way.
+    here so an unrated track always looks the same in the database.
 
-    Until a 2026-09-07 follow-up, a track that newly reached 5 stars was
-    automatically loaded onto the jukebox, and one that dropped back below 5
-    was pulled back off. James: "I don't like using my 5 stars to get a
-    track on the Jukebox cards" - rating and jukebox membership are now
-    fully independent; this function only ever touches `track.rating`.
-    Jukebox membership itself was handled by Title Details' own Jukebox
-    column (removed 2026-09-13, see track_details_table.py's module
-    docstring) and is still handled by Now Playing's toggle - see
-    `ui/views/nowplaying.py:NowPlayingView._on_jukebox_toggled` - and the
-    Jukebox page's own "+ Add to jukebox" picker."""
+    Rating and jukebox membership are independent; this only touches
+    `track.rating`. Jukebox membership is handled by Now Playing's toggle
+    (`ui/views/nowplaying.py:NowPlayingView._on_jukebox_toggled`) and the
+    Jukebox page's "+ Add to jukebox" picker."""
     track = session.get(Track, track_id)
     if track is None:
         return False
     track.rating = rating or None
     session.flush()
     return True
-
-
-#: 2026-09-13 removal note: `toggle_jukebox_membership(session, track_id)`
-#: used to live here - a plain flip that turned a track's membership on
-#: (always under `jukebox_svc.DEFAULT_JUKEBOX_GENRE`, no genre choice) or
-#: off, called by both Title Details' Jukebox column and Now Playing's
-#: toggle. James: "I want a better UI for the Jukebox 'picker'... The
-#: problem with the tracks is there is no way to select which genre the
-#: track should be on" - both callers now handle "turning on" themselves,
-#: opening `ui/views/jukebox.py`'s `JukeboxPickerDialog` (pre-filled and
-#: pre-checked for the tapped track) so a genre can actually be chosen,
-#: rather than funneling through one shared function that had no room for
-#: that choice. "Turning off" and the "no resolvable album artist" check
-#: are simple enough (`jukebox_svc.find_code_for_track`/`remove_track`,
-#: `album_artist_id_for_track` below) that both callers now just do those
-#: two steps directly rather than through a middleman function only one of
-#: whose two branches they could still share.
 
 
 def format_duration(ms: Optional[int]) -> str:

@@ -1,9 +1,6 @@
-"""Touch-first tile grid for the Playlists page - 2026-09-26.
+"""Touch-first tile grid for the Playlists page.
 
-James: "I would like playlist to have larger touch areas like Artist, Album
-or Jukebox. Maybe have a folder allow an image to press. But then the
-subfolders makes this a challenge." The old page was a MusicBee-style tree
-(small expand arrows, indented rows); this replaces it with one level of
+Large touch targets like the Artist, Album and Jukebox pages, one level of
 tiles at a time. A folder is just another tile - tapping it drills in and
 the page's breadcrumb walks back out - so nesting depth never costs any
 space (the Billboard > 2020-29 > year chart folders are three taps, not
@@ -59,8 +56,8 @@ TILE_ART = 130
 #: two title lines (names like "Most Played - This Month" need them) + one
 #: subtitle line
 TILE_CAPTION = 58
-#: 2026-09-30 tightened 12 -> 4 (with art 150 -> 130, caption 68 -> 58 and
-#: grid spacing 6 -> 4) so three rows of tiles fit the Playlists page
+#: kept small (with TILE_ART, TILE_CAPTION and the grid spacing) so three
+#: rows of tiles fit the Playlists page
 TILE_PAD = 4
 #: how far the "stack" card edges peek out behind a folder's artwork
 STACK_OFFSET = 8

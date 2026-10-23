@@ -1,12 +1,8 @@
-"""In-app updates from GitHub Releases (2026-09-23).
+"""In-app updates from GitHub Releases.
 
-James: "I would like to have the MusicMgr app have a settings option that
-checks for updates to the program... connect to the github to check...
-Realizing the if the MusicMgr.EXE is open, it cannot download a new one and
-write over itself when open... works for both updates on Windows 11 and
-Linux." Decisions (claude/2026-09-23-auto-update-plan.md): Linux Mint as
-the Linux target, *always ask before installing*, a fresh public repo
-(config.UPDATE_REPO), and signed releases from day one.
+Plan: claude/2026-09-23-auto-update-plan.md - Windows 11 and Linux Mint,
+*always ask before installing*, a public repo (config.UPDATE_REPO), and
+signed releases.
 
 Headless on purpose (no Qt import anywhere in this module) so every piece is
 unit-testable; ui/views/settings/ owns the threads and dialogs.
@@ -22,11 +18,11 @@ The pieces, in the order an update actually uses them:
   exe as `<exe>.download`, hashing as it goes. Anything that fails to verify
   is deleted and nothing else happens.
 * **install_downloaded** - the "rename, don't overwrite" swap. Windows won't
-  let a running .exe be written to or deleted, but it *does* allow a rename
-  (James confirmed this on his own Win 11 PC); Linux doesn't care either
-  way. So: running `MusicMgr.exe` -> `MusicMgr.exe.old`, then
-  `MusicMgr.exe.download` -> `MusicMgr.exe`. The running session keeps
-  going from the renamed file; the next launch is the new version.
+  let a running .exe be written to or deleted, but it *does* allow a
+  rename; Linux doesn't care either way. So: running `MusicMgr.exe` ->
+  `MusicMgr.exe.old`, then `MusicMgr.exe.download` -> `MusicMgr.exe`. The
+  running session keeps going from the renamed file; the next launch is
+  the new version.
 * **relaunch** / **wait_for_pid_exit** - "Restart now": start the new exe
   with `--after-update --wait-pid <us>`, then the old one closes normally;
   the new one waits for it to be gone before touching library.db.
@@ -88,7 +84,7 @@ PREF_PREVIOUS_VERSION = "update_previous_version"
 
 
 class UpdateError(Exception):
-    """Anything that stops an update, with a message fit for James to read."""
+    """Anything that stops an update, with a message fit for the user to read."""
 
 
 @dataclass
@@ -523,8 +519,8 @@ _CARRY_FLAGS = ("--fullscreen", "--kiosk", "--maximized")
 
 
 def relaunch_args(exe: Path, pid: int, argv: Iterable[str], after_update: bool = True) -> list[str]:
-    """`after_update=False` (2026-10-13, Settings › Appearance's "Restart
-    now" for a new skin) restarts without the "Updated to MusicMgr x" note."""
+    """`after_update=False` (Settings › Appearance's "Restart now" for a
+    new skin) restarts without the "Updated to MusicMgr x" note."""
     carried = [a for a in argv if a in _CARRY_FLAGS]
     flags = ["--after-update"] if after_update else []
     return [str(exe), *carried, *flags, "--wait-pid", str(pid)]

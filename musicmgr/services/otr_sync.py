@@ -1,7 +1,6 @@
-"""Old-time radio progress through the USB drive (2026-10-01).
+"""Old-time radio progress through the USB drive, so another PC picks up
+where you left off (band moves, current episode, heard/position).
 
-James, after the Radio page's internet stations were added to USB sync:
-"Please add moves for shows ... the Mint PC to pick up where you left off".
 Rides on the Settings › USB sync "Radio" choice, inside the drive's
 library state (services/library_state.py), as a flat dict merged three-way
 key by key like the rest:

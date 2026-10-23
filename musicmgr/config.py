@@ -17,18 +17,11 @@ APP_NAME = "MusicMgr"
 if getattr(sys, "frozen", False):
     PROJECT_ROOT = Path(sys.executable).resolve().parent
     #: Where PyInstaller's `datas` (MusicMgr.spec's musicmgr/assets entry)
-    #: actually land at runtime. This is NOT the same folder as the .exe -
-    #: PyInstaller 6+'s default --onedir layout nests everything except the
-    #: exe itself under a `_internal/` folder to keep dist/MusicMgr/ tidy,
-    #: so PROJECT_ROOT / "musicmgr" / "assets" silently doesn't exist there
-    #: (this is why the splash banner and app icon weren't showing up in
-    #: the built .exe - James, 2026-09-08 - the code ran fine, ASSETS_DIR
-    #: just pointed nowhere and both guards fail quiet-and-safe by design).
-    #: sys._MEIPASS is PyInstaller's own answer to "where did my data files
-    #: go" in both --onedir and --onefile builds, so use it instead of
-    #: assuming datas sit next to the exe. Falls back to PROJECT_ROOT if
-    #: _MEIPASS is somehow unset, matching the old (wrong-for-6+) behavior
-    #: rather than crashing.
+    #: land at runtime. NOT the .exe's folder: PyInstaller 6+'s --onedir
+    #: layout nests everything but the exe under `_internal/`, so
+    #: PROJECT_ROOT / "musicmgr" / "assets" doesn't exist there (and the
+    #: splash/icon guards fail quietly). sys._MEIPASS is right for both
+    #: --onedir and --onefile; falls back to PROJECT_ROOT if it's unset.
     _BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", PROJECT_ROOT))
 else:
     PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -82,7 +75,7 @@ SPLASH_IMAGE = ASSETS_DIR / "splash_banner.png"
 SPLASH_SMALL_IMAGE = ASSETS_DIR / "splash_640.png"
 APP_ICON = ASSETS_DIR / "app_icon.ico"
 
-#: -- in-app updater (services/updater.py, 2026-09-23) --------------------
+#: -- in-app updater (services/updater.py) --------------------------------
 #: The public GitHub repo whose Releases the updater checks. Compiled into
 #: every shipped binary, so changing it strands every install still
 #: pointing at the old one - see claude/2026-09-23-public-repo-setup.md.
@@ -129,19 +122,16 @@ VIDEO_EXTENSIONS = {
     ".mp4", ".m4v", ".mkv", ".mov", ".avi", ".webm", ".wmv", ".flv",
 }
 
-#: folders a library scan never walks into (2026-10-18): GoodSync's own
-#: _gsdata_ (its "_saved_" old versions had been imported as extra copies
-#: of 130+ songs, which then showed up as missing files once GoodSync
-#: cleaned them out) and Windows' own system folders. Matched on the
-#: folder name, case-insensitively - see is_skipped_dir.
+#: folders a library scan never walks into: GoodSync's _gsdata_ (its
+#: "_saved_" old versions would import as extra copies) and Windows' system
+#: folders. Matched on the folder name, case-insensitively - see
+#: is_skipped_dir.
 SKIP_SCAN_DIRS = {"_gsdata_", "$recycle.bin", "system volume information"}
 
 
 def is_hidden_name(name: str) -> bool:
     """A dot-file or dot-folder (".git", ".DS_Store") - but not a name that
-    merely starts with an ellipsis. 2026-10-19: "...But Seriously" (Phil
-    Collins) and "...And Out Come The Wolves" (Rancid) were being skipped
-    as hidden, so 31 songs never made it into the library or onto the USB."""
+    merely starts with an ellipsis, like the album "...But Seriously"."""
     return name.startswith(".") and not name.startswith("..")
 
 
@@ -153,8 +143,8 @@ def is_skipped_dir(name: str) -> bool:
 
 #: Windows paths ignore letter case: "Like A River.mp3" and "Like a
 #: River.mp3" are one file there. Path lookups in the scanners compare
-#: case-insensitively on Windows (2026-10-19 - a retagged/renamed file had
-#: been imported a second time under its new capitalization).
+#: case-insensitively on Windows, so a file renamed only in case isn't
+#: imported a second time.
 CASE_INSENSITIVE_PATHS = os.name == "nt"
 
 #: Touch UI sizing. Bump these if your panel is very high-DPI or very small.
@@ -162,31 +152,15 @@ TOUCH = {
     "row_height": 72,
     "button_height": 64,
     #: nav rail items only (see theme.py's #NavButton/#NavQuit) - separate
-    #: from button_height so shrinking the sidebar's own row height doesn't
-    #: shrink every other button in the app. James, 2026-09-07: "make the
-    #: sidebar space between items smaller" - was implicitly button_height
-    #: (64) before this key existed.
-    #: There used to be a "nav_width" key here (James, 2026-09-07: "make
-    #: the width of the sidebar to be smaller since the short word menu
-    #: items are not that long" - went 220 -> 176 -> back up to 200 the
-    #: same day once the brand icon grew and needed the extra room
-    #: alongside the wordmark). A 2026-09-13 follow-up (James: this app
-    #: runs on a small touchscreen jukebox panel, so "let's make the rail
-    #: a bit smaller ... where I think space may be saved") removed the
-    #: fixed constant entirely rather than hand-picking yet another
-    #: number - by the time it was raised again, the brand icon had long
-    #: since moved to its own stacked row (see ui/app.py's
-    #: `_build_brand_row` docstring), so the icon-needs-room constraint
-    #: that produced 200 didn't even apply anymore. `MainWindow.
-    #: _nav_rail_width` in ui/app.py now measures the real nav buttons'
-    #: own `sizeHint()` instead, so the rail always hugs whatever labels
-    #: are actually on it rather than a guess that goes stale the next
-    #: time one changes.
+    #: from button_height so shrinking the sidebar's row height doesn't
+    #: shrink every other button in the app. There is no width key: the
+    #: rail's width comes from the nav buttons' own `sizeHint()` (see
+    #: `MainWindow._nav_rail_width` in ui/app.py), so it always hugs the
+    #: labels actually on it.
     "nav_item_height": 48,
-    #: theme.make_compact() - 2026-09-26, James on the artist page:
-    #: "Play Everything button is too big". The artist page's header
-    #: actions and its section-header buttons (Edit bio, Fetch popularity)
-    #: use it; everything else keeps button_height - 12.
+    #: theme.make_compact() - the artist page's header actions and its
+    #: section-header buttons (Edit bio, Fetch popularity) use it;
+    #: everything else keeps button_height - 12.
     "compact_button_height": 40,
     "art_size": 168,
     "font_base": 15,

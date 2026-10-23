@@ -1,12 +1,8 @@
-"""Track numbers that aren't numbers (2026-09-30).
+"""Track numbers that aren't numbers.
 
-James's 78 rpm rips are tagged with the record side as the track number -
-"A" and "B" - because that's what matters for a physical 78: "The track
-number is important in the playlist because I indicate Side A and Side
-B." Vinyl rips use the same idea with "A1", "A2", "B1".
-
-`int("A")` has no answer, so until now those files came in with no track
-number at all, and a record's two sides sorted by title. Now:
+78 rpm rips are tagged with the record side as the track number - "A" and
+"B" - because that's what matters for a physical 78. Vinyl rips use the
+same idea with "A1", "A2", "B1".
 
 - `Track.position` keeps the side as written ("A", "B", "A1"), and is what
   every track list shows;
@@ -53,8 +49,8 @@ def label(track_no: Optional[int], position: Optional[str]) -> str:
 
 def with_side(album: Optional[str], position: Optional[str]) -> str:
     """'Bluebird - B-6873 · Side A' for a 78's side, else just the album -
-    what Now Playing and the player bar show under the title (2026-09-30:
-    "This way I know which is side A vs Side B")."""
+    what Now Playing and the player bar show under the title, so the side
+    playing is always visible."""
     if is_side(position):
         return " · ".join(x for x in (album, f"Side {position}") if x)
     return album or ""

@@ -1,10 +1,7 @@
 """Import a playlist from a song list - a CSV or Excel (.xlsx) file.
 
-2026-10-20 - James: a "KLOVE Eras" list (Rank, Artist, Title) had to go in
-as a chart, be saved as a playlist, and the chart deleted again - and the
-songs the library didn't have dropped out silently on the way. This goes
-straight from the file to a manual playlist and reports what it couldn't
-find.
+Goes straight from the file to a manual playlist (no detour through a
+chart) and reports the songs it couldn't find.
 
 Columns are found the same forgiving way chart CSVs are (charts.py's
 aliases): artist/performer/act, title/song/track, and an optional

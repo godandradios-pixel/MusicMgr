@@ -1,123 +1,46 @@
 """Audio-reactive pulse visualizer across the persistent PlayerBar's top
-edge.
+edge. (Design history: architecture.md.)
 
-**History, in order (see architecture.md for the full write-ups):**
-
-1. **2026-09-05, real audio-reactive spectrum.** James's original ask ("is
-   there a pulse visualizer") got a real one: `services/spectrum.py`
-   decodes a track's actual bass/mid/treble energy over time, shown as
-   five small bars in the PlayerBar. He removed it the same day after
-   seeing it live - at that tiny size it didn't read as reacting to the
-   music at all.
-2. **2026-09-05, purely decorative replacement.** In its place: this
-   widget, deliberately touching no audio data whatsoever - each bar eased
-   toward a fresh random target on a timer, "may not sync with music but
-   just a visualizer." Enhanced the same day with a traveling-wave shape
-   (so neighboring bars looked related, not like noise) and an idle
-   "breathing" pulse instead of snapping flat on pause, then moved from
-   Now Playing to the PlayerBar's full width and reshaped into a
-   small-at-the-edges/tall-in-the-middle "mountain" silhouette.
-3. **2026-09-06 follow-up, back to real data.** James: "I still don't like
-   the wave of the visualizer... colors and pulse just isn't working for
-   me. Let's go back to making the visualizer actually use the beat of the
-   actual sound." He confirmed the size/shape/location from step 2 were
-   fine as they were - only the fake motion and the position-based rainbow
-   needed to go. This is that: the random wave generator is gone, replaced
-   by `services/spectrum.py`'s real per-track band analysis (the same
-   engine step 1 built and left as a still-tested orphan after its own
-   widget was removed) feeding this widget's bars instead, plus a beat
-   detector (`services.spectrum.detect_beats`) that layers a brighter,
-   slightly taller flash on top whenever the bass actually spikes. The
-   "mountain" envelope and idle breathing pulse from step 2 are unchanged -
-   James never objected to the shape, only to the fake motion and colors
-   inside it.
-
-**What's real and what's still decorative.** `PlayerBar` hands this widget
-a whole track's precomputed band buckets up front (`set_data`, via a
-background `SpectrumThread` exactly like the original spectrum widget
-used) and its live playback position on every tick (`update_position`);
-between those calls, `_tick()` extrapolates the position forward on its
-own 45ms cadence rather than waiting on however often the underlying
-`QMediaPlayer` actually emits `positionChanged` (which is coarser than
-that), so the motion stays smooth regardless of the real signal's own
-cadence - `update_position` simply resyncs that estimate back to ground
-truth whenever a fresh reading arrives. The only two things that are still
-faked, deliberately: the idle "breathing" pulse while paused/stopped
-(there's no audio to analyze then), and the brief window before a newly-
-started track's analysis finishes (typically well under a second - see
-`services/spectrum.py`) - both fall back to the same gentle ambient sine
-motion in the dim idle color, rather than a jarring flat/dark bar.
+**Data.** `PlayerBar` hands this widget a whole track's precomputed band
+buckets up front (`set_data`, via a background `SpectrumThread` - see
+`services/spectrum.py`) and its live playback position on every tick
+(`update_position`). Between those calls `_tick()` extrapolates the
+position forward on its own 45ms cadence, since `QMediaPlayer` emits
+`positionChanged` more coarsely; `update_position` resyncs the estimate.
+Two things are deliberately decorative: the idle "breathing" pulse while
+paused/stopped, and the brief window before a new track's analysis
+finishes - both use a gentle ambient sine motion in the dim idle color
+rather than a flat/dark bar. An internet station uses live mode instead
+(`set_live` / `push_live`).
 
 **Mapping 5 bands onto many more bars.** `services.spectrum.BAND_FREQS`
-only carries five band centers (bass through treble) per bucket - `
-_spread_bands_across_bars` piecewise-linearly interpolates those five
-values across all `BAR_COUNT` bars so the row reads as one continuous
-shape rather than five blocky steps, the same way a real equalizer's LED
-columns look continuous despite a fixed number of discrete bands
-underneath. The result is still multiplied by the fixed `_ENVELOPE`
-"mountain" curve from step 2, so the overall silhouette (small at the
-edges, tallest in the middle) stays exactly as before - only what fills
-that shape moment to moment is now real.
+carries five band centers (bass through treble) per bucket;
+`_spread_bands_across_bars` interpolates them across all `BAR_COUNT` bars
+so the row reads as one continuous shape. The result is multiplied by the
+fixed `_ENVELOPE` "mountain" curve (small at the edges, tallest in the
+middle).
 
-**Color: frequency mix, not bar position.** The old "yellow at top to blue
-at bottom" gradient colored every bar by *where it sat*, regardless of
-what was actually playing - understandable feedback that it "wasn't
-working" once the bars themselves became real, since a fixed position-
-based gradient has nothing to do with the audio. `_BAND_COLORS` assigns
-one anchor color per band (bass through treble); `_blend_band_color`
-mixes them by each band's share of the current bucket's total energy, so
-the whole strip's color leans toward the bass anchor during a bass-heavy
-passage and the treble anchor during a bright/cymbal-heavy one, shifting
-continuously as the music's frequency balance actually shifts - one color
-for the whole widget each moment (not per-bar), since that's what "which
-frequencies are actually loudest" means for a single mix, not a per-bar
-property.
+**Perceptual scaling.** `compute_spectrum` normalizes every band against
+the loudest instant of the whole track, so most moments sit well below
+1.0. `_apply_visual_gain` (a gain plus a `_VISUAL_GAMMA < 1` power curve)
+lifts quiet-to-moderate values much more than loud ones, the role a dB/log
+scale plays in a normal visualizer, and `_HEIGHT_BOOST` pushes them closer
+to full height while a maxed-out value still saturates at 1.0 before the
+envelope (see
+`test_edge_bars_stay_envelope_capped_even_at_full_band_strength`).
+
+**Color: frequency mix, not bar position.** `_BAND_COLORS` assigns one
+anchor color per band; `_blend_band_color` mixes them by each band's share
+of the current bucket's energy, so the whole strip (one color at a time,
+not per bar) leans toward bass during a bass-heavy passage and toward
+treble during a bright one.
 
 **The beat flash.** `services.spectrum.detect_beats` runs once per track
-(alongside the band analysis) and returns which buckets are bass spikes.
-`_refresh_from_position` sets `self._flash` to full strength the instant
-playback crosses into a flagged bucket; `_tick` decays it every tick
-after. While `_flash` is above zero it does two things on top of the
-continuous band-following motion: brightens the blended color
-(`QColor.lighter`) and adds a small extra height boost to every bar's
-target - a felt "hit" layered on top of the ongoing shape, not a
-replacement for it, matching what James asked for ("actually use the
-beat" alongside continuous frequency motion, not instead of it).
-
-4. **2026-09-06, same day, second follow-up: "not enough motion... we
-   need more dramatic movement."** Step 3 made the bars real, but real
-   linear band energy reads as far too flat to the eye - `compute_spectrum`
-   normalizes every band value against the single loudest instant in the
-   *whole track*, so almost every other moment sits well below 1.0, and
-   most of a bar's travel was getting spent in a narrow, undramatic low
-   range. `_apply_visual_gain` (a small gain nudge plus a `_VISUAL_GAMMA <
-   1` power curve, applied to each bar's real level right before the
-   mountain envelope multiplies it) fixes this the way real spectrum
-   analyzers almost always do: a curve that lifts quiet-to-moderate values
-   much more than already-loud ones, so the bars actually use their
-   height, instead of a flat 1:1 mapping of "share of the track's single
-   peak" straight to pixels. `_RISE`/`_FALL` were also both raised so bars
-   snap toward a new target and fall back again faster - punchier, less
-   mushy - and the beat flash (`_FLASH_HEIGHT_BOOST`/`_FLASH_BRIGHTEN`)
-   was made stronger to match. Still the same real per-bucket band/beat
-   data driving everything - this only changes how that data gets mapped
-   onto pixel height, the same role a dB/log scale plays in a normal audio
-   visualizer.
-
-5. **2026-09-07 follow-up - James: "The pulse visualizer only seem to rise
-   up half way in the space, can you almost double the pulse side of the
-   bars so it show more dramatic size differences."** Step 4's gain/gamma
-   curve helped, but typical (not-loudest-instant) moments were still only
-   reaching roughly half the widget's height in practice. `_HEIGHT_BOOST`
-   multiplies the already-gained level (post `_apply_visual_gain`, still
-   clamped to `[0, 1]`) by roughly 1.9x *before* the mountain envelope
-   shapes it - not folded into `_VISUAL_GAIN` itself, so a genuinely
-   maxed-out real value still saturates at exactly 1.0 going into the
-   envelope and the edges stay capped exactly as before (see
-   `test_edge_bars_stay_envelope_capped_even_at_full_band_strength`); only
-   the moderate/quiet levels below that ceiling now map noticeably closer
-   to it, so ordinary playback actually uses most of the available height
-   instead of hovering around the middle.
+and returns which buckets are bass spikes. `_refresh_from_position` sets
+`self._flash` to full strength when playback crosses into a flagged
+bucket; `_tick` decays it. While above zero it brightens the blended color
+(`QColor.lighter`) and adds a small height boost to every bar - a "hit"
+layered on top of the continuous band-following motion.
 """
 
 from __future__ import annotations
@@ -132,8 +55,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 from ...services.spectrum import BAND_FREQS, BUCKET_MS
 from ..theme import COLORS
 
-#: enough bars to read as dense across a whole window's width (2026-09-06
-#: mountain reshape - see module docstring's history)
+#: enough bars to read as dense across a whole window's width
 BAR_COUNT = 72
 
 #: the "mountain" envelope's floor at both edges - not fully 0 so the
@@ -168,11 +90,8 @@ VISUALIZER_HEIGHT = 40
 #: calls (see module docstring)
 _TICK_MS = 45
 #: eases toward the target faster on the way up than down, the "hit then
-#: settle" shape a real VU-meter/spectrum display uses. Raised from the
-#: original 0.35/0.12 in the 2026-09-06 "more dramatic movement"
-#: follow-up (see module docstring) - the old fall rate in particular left
-#: bars lingering high enough between hits that motion read as mushy
-#: rather than punchy.
+#: settle" shape a real VU-meter/spectrum display uses; a fast fall keeps
+#: the motion punchy rather than lingering between hits
 _RISE = 0.45
 _FALL = 0.22
 _SETTLE_EPS = 0.002
@@ -196,17 +115,9 @@ _IDLE_SPATIAL = 2 * math.pi / BAR_COUNT
 #: mix" note). Bass/mid reuse this app's own accent/"good" tokens rather
 #: than inventing unrelated hues; low-mid/high-mid/treble fill in the rest
 #: of a warm-to-cool run so the blend has somewhere to travel between them.
-#:
-#: 2026-09-13 follow-up (James: "the pulse while playing should be in the
-#: brown pallete" - see ui/theme.py's #Primary comment for the rest of
-#: this cleanup): only the bass anchor moves - it's the one actually
-#: sourced from this app's own accent token (now jukebox_key_hi, the
-#: brighter walnut tone already used everywhere else a color needs to
-#: read clearly on its own against a dark background, e.g. BigNumber and
-#: the scrollbar's pressed handle above). Low-mid/high-mid/treble are
-#: their own distinct hues, not this app's brand color - they're what
-#: makes this a *spectrum* (bass-to-treble, warm-to-cool) rather than one
-#: color pulsing at different sizes, so they're untouched by this pass.
+#: The bass anchor is the brown palette's jukebox_key_hi walnut (see
+#: ui/theme.py's #Primary); the others stay distinct hues so the strip
+#: reads as a spectrum rather than one color.
 _BAND_COLORS = [
     QColor(COLORS["jukebox_key_hi"]),  # 60Hz (bass) - warm walnut brown
     QColor("#f2994a"),  # 250Hz (low-mid) - orange
@@ -223,38 +134,24 @@ assert len(_BAND_COLORS) == len(BAND_FREQS), (
 #: even at a fast tempo
 _FLASH_DECAY = 0.75
 #: extra normalized bar height added at full flash strength, on top of the
-#: real band-following target. Raised from 0.22 in the "more dramatic
-#: movement" follow-up (see module docstring) to match the punchier
-#: _RISE/_FALL and _VISUAL_GAIN/_VISUAL_GAMMA changes alongside it.
+#: real band-following target
 _FLASH_HEIGHT_BOOST = 0.32
-#: QColor.lighter() factor added at full flash strength (100 = unchanged).
-#: Raised from 55 alongside _FLASH_HEIGHT_BOOST above.
+#: QColor.lighter() factor added at full flash strength (100 = unchanged)
 _FLASH_BRIGHTEN = 75
 
 #: perceptual scaling applied to each bar's real band level, right before
-#: the mountain envelope multiplies it in - see module docstring's
-#: "more dramatic movement" follow-up. `compute_spectrum` normalizes every
-#: value against the single loudest instant across the *whole track*, so
-#: almost every other moment sits well below 1.0 - fed straight through,
-#: that reads as barely any motion at all. `_VISUAL_GAIN` nudges the whole
-#: range up slightly first; `_VISUAL_GAMMA` (<1, applied as a power curve)
-#: lifts quiet-to-moderate values much more than already-loud ones, the
-#: same role a dB/log scale plays in a normal audio visualizer. Both ends
-#: stay fixed (0 stays 0, 1 stays ~1) - only what happens in between gets
-#: reshaped.
+#: the mountain envelope multiplies it in - see the module docstring's
+#: "perceptual scaling". `_VISUAL_GAIN` nudges the whole range up slightly;
+#: `_VISUAL_GAMMA` (<1, a power curve) lifts quiet-to-moderate values much
+#: more than loud ones. Both ends stay fixed (0 stays 0, 1 stays ~1).
 _VISUAL_GAIN = 1.2
 _VISUAL_GAMMA = 0.55
 
 #: a further amplification of the already-gained level, applied right
 #: after `_apply_visual_gain` and re-clamped to [0, 1] before the mountain
-#: envelope shapes it - see the module docstring's 2026-09-07 follow-up
-#: ("only seem to rise up half way in the space... almost double the
-#: pulse side of the bars"). Kept as its own separate multiplier rather
-#: than raised into `_VISUAL_GAIN` so that a genuinely maxed-out real
-#: value (which `_apply_visual_gain` already saturates to ~1.0 on its
-#: own) still saturates at exactly 1.0 here too - the envelope keeps
-#: capping the edges exactly as before regardless of this boost; only
-#: values below that ceiling get pushed noticeably higher.
+#: envelope shapes it, so ordinary playback uses most of the height. Kept
+#: separate from `_VISUAL_GAIN` so a maxed-out value still saturates at
+#: exactly 1.0 and the envelope keeps capping the edges.
 _HEIGHT_BOOST = 1.9
 
 
@@ -323,7 +220,7 @@ class PulseVisualizer(QWidget):
     """A full-width row of bars, tallest in the middle and tapering to a
     sliver at both edges (`_ENVELOPE`), driven by a track's real band
     energy and beat data while `set_active(True)` and a track is loaded -
-    see the module docstring for the full history and design. Settles into
+    see the module docstring for the design. Settles into
     a slow ambient breathing pulse whenever paused/stopped, or briefly
     while a just-started track's analysis is still running."""
 
@@ -355,7 +252,7 @@ class PulseVisualizer(QWidget):
         self._known_ms = 0.0
         self._elapsed_since_sync = 0.0
 
-        #: 2026-10-03 live mode (an internet station - see set_live): band
+        #: live mode (an internet station - see set_live): band
         #: readings arrive as the stream plays rather than up front, queued
         #: here and played out one per bucket_ms
         self._live = False
@@ -404,8 +301,7 @@ class PulseVisualizer(QWidget):
         return self._live
 
     def set_live(self, live: bool) -> None:
-        """An internet station is playing (James, 2026-10-03: "Any way the
-        visualizer at the bottom can pulse with radio broadcasts"): there's
+        """An internet station is playing: there's
         no whole-track analysis to follow by position, so readings come in
         as the stream plays (`push_live`, from PlayerController.liveBands)
         instead."""

@@ -1,332 +1,57 @@
-"""Jukebox: a persistent 45-selector favorites board (2026-09-06).
+"""Jukebox: a persistent 45-selector favorites board.
 
-James: "I want a new sidebar option called jukebox with something like a 45
-RPM selector panel... make it feel very authentic... I would like the user
-to be able to select an artist and add 2 songs per title strip. This becomes
-a favorites capability. Any record with 5 star rating gets added to a title
-strip." (The automatic 5-star route described here was removed in a
-2026-09-07 follow-up - see services/jukebox.py's module docstring for why -
-so this founding quote is kept as-is for history, not as current
-behavior.) See services/jukebox.py's module docstring for the full list of
-how slots get filled today (this view's own "+ Add to jukebox" button,
-Title Details' Jukebox column, and Now Playing's Jukebox toggle - all
-three share this view's `JukeboxPickerDialog` as of a 2026-09-13
-follow-up) and ui/widgets/jukebox_strip.py for how one title strip is
-drawn and played.
+Each title strip (ui/widgets/jukebox_strip.py) holds one artist's two
+sides. Slots are filled from this view's "+ Add to jukebox" button, Title
+Details' Jukebox column and Now Playing's Jukebox toggle - all three open
+`JukeboxPickerDialog`; see services/jukebox.py's module docstring.
 
-Tapping a side's key plays it immediately, the same way a real jukebox
-button does (James, when asked whether a tap should just queue the song
-silently: "play like a normal jukebox") - `ctx.play_tracks` is the one seam
-every other "hit play" action in the app already funnels through, so this
-gets Now Playing navigation for free rather than needing its own.
+Tapping a side's key plays it immediately, like a real jukebox, through
+`ctx.play_tracks`. The "NOW PLAYING — A7" header follows
+`ctx.player.trackChanged`, so it lights up however a board song is played.
 
-The "NOW PLAYING — A7" header display tracks `ctx.player.trackChanged`
-directly rather than only reacting to jukebox taps, so it also lights up
-when a 5-star favorite already on the board gets played some other way
-(Now Playing's own controls, a playlist, Title Details) - the display
-should never lag behind what's actually on the speakers.
+Layout: the number of rows and columns (MIN_/MAX_ROWS, MIN_/MAX_COLUMNS)
+is decided at every `refresh()` and resize (`_rows_that_fit` /
+`_cols_that_fit`); card size never changes, only how many fit per page. A
+MAX_ROWS x MAX_COLUMNS pool of strips is built up front and
+`_arrange_grid()` re-places them (QGridLayout must be told every cell).
+The pager sits in the header so the grid gets that row. `_root`'s left
+margin and `self.grid`'s contents margins are zeroed so the cards sit
+close to the nav rail; what's left is the strip's own 4px frame.
 
-2026-09-07 follow-up (James: "is there a way I can move these jukebox
-cards around?"): tapping a strip's "⇄" button opens `JukeboxMoveDialog`
-- a picker of every other slot currently on the board, by number and
-artist - and moving `_on_move_requested` below calls
-`services.jukebox.swap_slots` with whichever one was chosen, then
-refreshes. Both sides of a strip travel together, same as picking up a
-real record.
+Genres: a chip row filters the board (resetting to page 0). The genre list
+is persisted and editable (services/jukebox.py). Holding a `_GenreChip`
+(GENRE_CHIP_LONG_PRESS_MS) or right-clicking it opens its menu (Rename,
+Delete, Play all, Shuffle); dragging a chip sideways reorders the genres.
+Rename swaps the chip for an
+`_InlineGenreEdit` (pre-filled, selected, focused); the trailing "+" chip
+opens the same box blank to add a genre. Enter, focus-out or Escape end an
+edit through `_finish_genre_edit`; a rejected name (blank or a
+case-insensitive duplicate) is reported, not silently reverted. Only one
+edit is open at a time (`self._genre_editor`). Delete confirms, naming how
+many cards it relabels (services/jukebox.py:delete_genre), and refuses the
+last genre. Every edit rebuilds the chip row (`_build_genre_chips`); the
+QButtonGroup itself is kept, so its one connection stays. Chips use the
+object name "ChipWarm" (ui/theme.py).
 
-An actual drag-and-drop version of this shipped first the same day and
-was pulled back out once James tried it: there was no way to drag a card
-from page 2 onto a target back on page 1, since `self.strips` only ever
-holds one page's worth of widgets - there was nothing on screen to drop
-onto once the target had paged out of view. Picking a slot *number*
-instead of a target *card* doesn't have that problem: `JukeboxMoveDialog`
-lists every slot regardless of which page it would show up on, so source
-and destination never need to be visible together.
+Card actions (see jukebox_strip.py for the widget side):
 
-2026-09-07, later same-day follow-up (James: "I would like to right click
-on the jukebox card and delete it by removing both songs from that
-card"): the same right-click menu gained a "Remove from jukebox…" action
-alongside "Move to a different slot…". `_on_remove_requested` below
-confirms first (`QMessageBox.question` - this only takes the card off the
-board, not the underlying tracks, but there's no undo once it's gone) then
-calls `services.jukebox.remove_slot`, which deletes the whole
-`JukeboxSlot` regardless of what's loaded on either side.
-
-2026-09-07, a third same-day follow-up - James, looking at the same 3x3
-board: "Does this need to be a fixed 3x3? I want the cards to stay the
-same size but would like it to expand to 3x4 if the page is high enough."
-The grid now builds MAX_ROWS x GRID_COLUMNS strip widgets up front instead
-of a fixed nine, and `_rows_that_fit` decides - at every `refresh()` and
-again on every resize, via `resizeEvent` - whether the window actually has
-room for a fourth row, always falling back to MIN_ROWS when it doesn't.
-Card size itself never changes either way, only how many of the
-already-fixed-size strips get shown per page, matching the same "cards
-don't resize" constraint from the two 2026-09-07 follow-ups above.
-
-2026-09-07, a fourth same-day follow-up: James asked to make this the
-app's default startup page (see ui/app.py's `MainWindow.__init__`), and
-pointed out the pager ("Page 1 of 3") was eating a whole row of its own
-under the grid for not much information - `self.prev_btn`/`page_label`/
-`next_btn` moved into the header, just left of "+ Add to jukebox", giving
-that row back to the grid (see `__init__` below; `refresh()`'s own
-`page_label.setText(...)` call didn't need to change, only where the
-label lives). He also asked for the strip key badges ("A7"/"B7") to move
-off red, which read as an alert color against this app's own warm brown/
-gold branding - see ui/widgets/jukebox_strip.py's docstring for the new
-color.
-
-2026-09-07, a fifth same-day follow-up (James: "I would like the jukebox
-page to have a chip of 5 genres: Classic Rock, Country, Pop, Hairbands,
-Rock. Then have the pages of the cards where you can select the location
-and what genre page a track will be organized by"): a row of
-`ChipButton`s (`services.jukebox.JUKEBOX_GENRES`) sits between the header
-and the grid, exclusive like every other chip row in this app
-(cover_grid.py's sort chips, Now Playing's "Up next"/"Lyrics" chips).
-Picking a chip is purely a display filter - `refresh()` passes
-`genre=self._genre` through to `slot_count`/`page_count`/`list_slot_rows`
-- and resets to page 0, since a page number from one genre's board has no
-particular meaning on another's. `JukeboxAddDialog` (renamed
-`JukeboxPickerDialog` in a 2026-09-13 follow-up - see that class's own
-docstring) grew a genre combo
-(preselected to whichever chip is active) so a freshly-added card is filed
-under the right board from the start; the right-click dialog, renamed
-`JukeboxOrganizeDialog` (from `JukeboxMoveDialog`) and reached through the
-renamed `_on_organize_requested` (from `_on_move_requested`), grew a
-second, independent genre combo alongside its existing slot-location
-picker, since re-filing a card's genre and moving its board position are
-orthogonal operations (`services.jukebox.set_slot_genre` vs. `swap_slots`)
-that this one dialog now exposes together. Unlike the old move-only
-dialog, the Organize dialog's OK button is never disabled for having no
-other slot to swap with - reassigning just the genre is a complete,
-valid action even on a single-card board, so the "No other slot to move
-this to yet" early bailout is gone.
-
-2026-09-07, a sixth same-day follow-up - James: "great job on the Genre
-on the jukebox option. Please add 2 more chips: Christian, 80's. Then
-reorder them from left to right: Country, Christian, Classic Rock, Rock,
-80's, Hairbands, Pop. And then make the pills not red but the brown
-color." `services.jukebox.JUKEBOX_GENRES` grew from five entries to seven
-and its tuple order changed to match - the chip row here builds one
-`ChipButton` per entry in that same order, so reordering the tuple is the
-entire fix for the on-screen left-to-right order, and every genre combo
-box (`JukeboxAddDialog`/`JukeboxPickerDialog`, `JukeboxOrganizeDialog`)
-picks up the new order
-and members for free, being built the same way. Each chip's object name
-is overridden from `ChipButton`'s own default ("Chip") to "ChipWarm"
-right after construction, so `ui/theme.py`'s new `#ChipWarm:checked` rule
-(walnut-brown, reusing the jukebox key palette) applies only to these
-genre chips - every other chip row in the app (the ones named in the
-paragraph above) keeps the ordinary red `#Chip:checked` look.
-
-2026-09-08 follow-up - James: "add 3 more genres to the jukebox: Metal,
-R&B, Hip/Hop." `services.jukebox.JUKEBOX_GENRES` grew from seven entries
-to ten, appended after Pop rather than interleaved into the existing
-order (unlike the sixth follow-up above, this one didn't ask for a
-reorder). Nothing else here changed - same ChipButton-per-entry loop,
-same ChipWarm styling, same genre combo boxes built off the same tuple.
-
-2026-09-13 follow-up - James: "the cards don't need to be a forced 3 cols
-by 4 rows. It should adjust as the window in the app adjusts." Column
-count used to be the fixed `GRID_COLUMNS = 3` constant, with only the row
-count (`_rows_that_fit`) responding to the window's actual size - an
-asymmetry left over from the fourth same-day 2026-09-07 follow-up above,
-which only ever asked "does this need to be a fixed 3x3," not "does this
-need to be a fixed *3-wide*." `GRID_COLUMNS` is gone, replaced by
-`MIN_COLUMNS`/`MAX_COLUMNS` and a `_cols_that_fit()` that mirrors
-`_rows_that_fit()` exactly - same "measure grid_host, divide by one fixed
-strip size plus spacing, walk down from the max" logic, just against
-`grid_host.width()` and the strips' width instead of height. The strip
-pool is now built MAX_ROWS x MAX_COLUMNS up front (bigger than before,
-but still trivial - see the third same-day 2026-09-07 follow-up for why
-pre-building beats constructing strips on demand), and `_arrange_grid()`
-re-places however many of them the current page needs at their new
-(row, col) whenever either dimension changes - `QGridLayout` has to be
-told every cell explicitly, so a widget's spot from the last arrangement
-doesn't just carry over the way its fixed size already does. Card size
-itself still never changes, same as every resizing-related follow-up
-above - only how many fit, in either direction now instead of just one.
-
-2026-09-13, later same-day follow-up (James: "close the gap of the space
-from the left sidebar menu options and the cards. too much empty space"):
-`BaseView`'s shared 20px left content margin (see ui/views/base.py) reads
-as a much wider band than that once the nav rail's own fixed width is
-added on top of it, and on this page - unlike, say, Library's own list
-view - there's no other visual element (a search box, a filter row)
-between the rail and the first column to make that band read as
-intentional spacing rather than empty space. `JukeboxView.__init__`
-narrows just its own `self._root` left margin to 6px right after calling
-`super().__init__`, rather than changing `BaseView`'s default and
-affecting every other page that didn't ask for this.
-
-Same day, next follow-up (James, after narrowing `_root`'s margin above
-still left "too much space" at the smallest window size): the remaining
-gap wasn't `_root` at all - `self.grid`, the `QGridLayout` the cards sit
-in, carries its own separate ~9px default contents margin on every side,
-independent of whatever margin its parent layout already applies. Zeroed
-in `__init__` alongside the other `self.grid.set*` calls, next to
-`_GridHost` (see that class's own docstring for the *other* Qt
-"minimum size" gotcha this same grid ran into).
-
-Same day, third follow-up (James: "still too much space" - this time
-confirmed after a full app restart, ruling out a stale running process
-as the cause): with both of the above already zeroed, the only thing
-left between the rail and the cards was `JukeboxStripWidget`'s own 4px
-outer frame margin (see ui/widgets/jukebox_strip.py) - real, but small.
-James still wanted it tighter, so `_root`'s left margin went from 6px
-to 0 in `JukeboxView.__init__`; that 4px card-frame inset is what's left
-today, and it's shared by every card on every side (it's also most of
-the visible gap *between* columns, on top of the grid's own 16px
-horizontal spacing), not something to strip out just for the leftmost
-column without changing how every card looks against its neighbors.
-
-2026-09-13, a later follow-up (James: "I want a better UI for the
-Jukebox 'picker'... I want a standard UI. [a] picker box that allows you
-to select a genre and search by track and/or artist"): `JukeboxAddDialog`
-was reworked into `JukeboxPickerDialog` (see that class's own docstring)
-- a single dialog, used both from this view's own "+ Add to jukebox"
-button and, new as of this follow-up, from a track-level Jukebox toggle
-turning ON (Title Details' column, Now Playing's toggle - see those two
-views' `_on_jukebox_toggle_requested`/`_on_jukebox_toggled`). Until now
-those two toggles had no genre picker of their own at all and silently
-filed every track under the default "Rock" page
-(`services/jukebox.py:DEFAULT_JUKEBOX_GENRE`) - James confirmed the
-toggle should open this same full picker dialog, pre-selected to
-whichever track was actually tapped, rather than a smaller
-genre-only popup of its own.
-
-Same day, a follow-up to the follow-up (James, looking at the picker's
-one combined "Search by track or artist" box: "I want the picker with
-two seperate search boxes. One for artist and one for track. I'll
-usually select an artist first, and then want to search within that
-artist for a song"): `JukeboxPickerDialog`'s single `search_box` became
-two - `artist_search` and `track_search` - ANDed together rather than
-either matching on its own the way the one combined box did, so typing
-an artist narrows the board and typing a track further narrows *within*
-whatever the artist box already matched. See the class's own docstring
-and `services/jukebox.py:search_addable_tracks` for how the two combine.
-
-Same day, a third follow-up (James, looking at a one-song card's greyed
-"OPEN" second banner: "when I have a jukebox card with one song, I would
-like to click on the card and have the picker allow me to select a 2nd
-song"): that banner is a real tap target now - see
-`ui/widgets/jukebox_strip.py`'s own module docstring for the widget-side
-half of this - and `_on_fill_requested` below opens the very same
-`JukeboxPickerDialog`, pre-filled with the card's own artist and genre
-and capped at one pick, rather than a second, purpose-built dialog just
-for this one entry point.
-
-Same day, a fourth follow-up (James: "let me right click on a jukebox
-card and allow me to edit the songs on the card"): a new "Edit songs…"
-entry on the card's right-click menu (see `ui/widgets/jukebox_strip.py`'s
-own module docstring for the widget-side half) opens the new
-`JukeboxEditSongsDialog` below, which shows both of the slot's sides -
-filled or not - with Change…/Clear controls per side. "Change…" reuses
-`JukeboxPickerDialog` yet again as a nested dialog (`show_genre=False`,
-`max_picks=1`); the outer dialog only tracks a plan until it's accepted,
-and `_on_edit_requested` applies it in one pass via the new
-`services/jukebox.py:set_slot_side` - the first place any of the three
-jukebox entry points can *replace* an already-filled side, not just fill
-an open one.
-
-2026-09-18 follow-up - James asked for drag-and-drop card reordering
-again, after asking for it pulled back out the first time (see this
-docstring's own 2026-09-07 note above): the reason it didn't work out
-then - a card on page 2 had nowhere on-screen to be dropped onto a target
-still sitting on page 1 - gets solved this time instead of sidestepped.
-`JukeboxStripWidget` is now a drag source and drop target on its own (see
-its own module docstring); dropping one card onto another emits
-`reorderRequested(source_slot, target_slot)`, wired here to
-`_on_reorder_requested`. Both stay on the board side-by-side: a drag only
-ever reorders within the genre page currently showing (there's nothing
-else visible to drop onto), so "Organize card…" is still how a card gets
-moved across genre boards.
-
-Same day, a follow-up: `_on_reorder_requested` first called
-`services.jukebox.swap_slots` - the exact same two-way trade
-`_on_organize_requested`'s dialog already makes, just reached by a drag
-instead of picking a slot number from a dropdown. James, after trying it:
-"If the page is full, it doesn't seem to allow the drop and have it
-automatically shift the last one to the next page." A swap was never
-actually refusing anything - every card on a full page already has a
-slot_number, so any of them is a valid drop target - but trading exactly
-two cards' positions isn't the same as inserting the dragged card where
-it was dropped and having everything after it shift down to make room,
-which is what "shift the last one to the next page" was asking for.
-`_on_reorder_requested` now calls `services.jukebox.reorder_slot` instead
-- see that function's own docstring for how the rank-based reassignment
-works. Nothing here had to change to make an overflowing card land on the
-next page: `refresh()` re-renders whichever `per_page` cards now fall on
-the current page in slot_number order, exactly like it already does for
-any other change to the board.
-
-What actually closes the old page-1/page-2 gap is `prev_btn`/`next_btn`:
-both get `setAcceptDrops(True)` and an installed event filter here, so
-hovering a dragged card over either arrow starts `_page_flip_timer`
-(`PAGE_FLIP_HOVER_MS`); if the hover is still there when it fires,
-`_flip_page_during_drag` calls the same `_change_page`/`refresh()` the
-arrow's own click handler uses and restarts the timer, so holding a card
-over "›" keeps walking forward one page at a time for as long as there's
-another page in that direction (`next_btn`/`prev_btn.isEnabled()` is the
-same bound the visible arrows already respect). Qt's `QDrag.exec()` runs
-its own nested event loop while a drag is active, which is what lets this
-timer keep firing - and `refresh()` keep repainting the grid underneath
-the cursor - without the drag itself being interrupted. Neither arrow is
-ever a real *drop* target for a card (`QEvent.Drop` is explicitly
-ignored in the filter below) - releasing over one just ends the drag with
-nothing swapped, same as releasing over any other empty space.
-
-2026-09-22 follow-up - James, looking at the fixed row of genre chips:
-"I would like the ability to modify the genre titles at the top. Ability
-to add, delete and rename a genre. The Rename would be by holding your
-finger on the genre for a couple of seconds and it places your cursor in
-the text box." See `services/jukebox.py`'s own module docstring for the
-persisted-list side of this (the chips are no longer a hardcoded tuple);
-everything below is the chip row's side.
-
-`_GenreChip` (subclasses `ChipButton`, same plain checkable pill every
-other chip row in the app uses, so those are untouched) adds the
-long-press gesture and a right-click menu on top of the ordinary tap-to-
-filter click it already had: holding a chip down for
-`GENRE_CHIP_LONG_PRESS_MS` without moving or releasing fires
-`renameRequested`; "Rename genre…"/"Delete genre…" on the right-click
-menu are the mouse equivalent (there's no long-press *delete* - a long
-press is already spoken for by rename, so deleting is menu-only, same
-as `ui/widgets/jukebox_strip.py`'s "Remove from jukebox…" is menu-only
-for cards).
-
-`renameRequested` swaps the chip for an `_InlineGenreEdit` right in its
-place (`_begin_rename_genre`/`_open_genre_editor`) - a plain `QLineEdit`,
-pre-filled with the chip's current name, selected and focused, so the
-cursor is already in the box and typing immediately replaces the
-selection, exactly as James described. The trailing "+" chip
-(`_begin_add_genre`) opens the same box blank, in its own place, for
-adding a new genre rather than renaming an existing one - `_open_genre_
-editor` takes a `mode` ("rename"/"add") so `_finish_genre_edit` knows
-which `services/jukebox.py` mutation to call once the box closes. Enter,
-losing focus, or Escape (`_InlineGenreEdit.cancelled` - `QLineEdit` has
-no built-in "reverted" signal, so this box adds one) all end an edit,
-routed through the same `_finish_genre_edit(commit=...)`; a rejected
-commit (a blank name, or a case-insensitive duplicate) notifies rather
-than silently reverting, so a typo doesn't just vanish with no
-explanation. Only one edit can be open at a time (`self._genre_editor`
-is this view's "something's mid-edit right now" flag) - a second
-long-press or "+" tap while one's already open is a no-op.
-
-Deleting (`_on_delete_genre_requested`) confirms first, same "destructive
-action gets a confirmation" pattern `_on_remove_requested` already uses
-for a single card - naming how many cards will move rather than a bare
-"are you sure," since a delete relabels every card still on that genre's
-board (`services/jukebox.py:delete_genre`'s own fallback) rather than
-removing them. Refuses outright, before ever prompting, if it's the last
-genre left - this page always needs at least one chip to show.
-
-Every successful add/rename/delete rebuilds the whole chip row from
-scratch (`_build_genre_chips`) rather than patching in just what changed
-- genre edits are rare, and a full rebuild is far simpler than tracking
-exactly which chip moved/appeared/vanished by hand. `self._genre_chips`
-(the `QButtonGroup`) itself is kept across rebuilds, only its member
-buttons come and go, so the one `buttonClicked` connection from `__init__`
-never needs remaking.
+- **Organize card…** (`JukeboxOrganizeDialog`): move to any slot number,
+  on any page, and/or re-file under another genre (`swap_slots` /
+  `set_slot_genre`).
+- **Remove from jukebox…**: confirms, then `remove_slot` (the tracks
+  themselves are untouched).
+- **An open side's banner**: `_on_fill_requested` opens the picker
+  pre-filled with the card's artist and genre, capped at one pick.
+- **Edit songs…** (`JukeboxEditSongsDialog`): change or clear either side;
+  `_on_edit_requested` applies the plan via `set_slot_side`.
+- **Drag a card onto another**: `_on_reorder_requested` ->
+  `reorder_slot`, which inserts it there and shifts the rest down (the
+  last card overflows to the next page). Hovering a dragged card over a
+  page arrow for PAGE_FLIP_HOVER_MS flips the page, and keeps flipping
+  while held (`_flip_page_during_drag`); QDrag.exec()'s nested event loop
+  keeps the timer and repaints running. The arrows never take the drop.
+  A drag only reorders within the genre showing; Organize moves a card
+  across genres.
 """
 
 from __future__ import annotations
@@ -365,20 +90,11 @@ from ..widgets.common import ChipButton, EmptyState, TouchButton, dim_label
 from ..widgets.jukebox_strip import SLOT_MIME_TYPE, JukeboxStripWidget
 from .base import BaseView
 
-#: 3-6 columns and 3-4 rows, both decided at runtime from how much space
-#: `grid_host` actually has - a full page readable at arm's length on a
-#: touch panel without its own scrolling (James, 2026-09-06: "make the
-#: jukebox 3 columns instead of 2"; 2026-09-07 follow-up: "Does this need
-#: to be a fixed 3x3? ... would like it to expand to 3x4 if the page is
-#: high enough"; 2026-09-13 follow-up: "the cards don't need to be a
-#: forced 3 cols by 4 rows. It should adjust as the window in the app
-#: adjusts"). `JukeboxView._rows_that_fit`/`_cols_that_fit` do the actual
-#: measuring - MIN_ROWS/MIN_COLUMNS is what the board always shows even
-#: when there's no room for more, MAX_ROWS/MAX_COLUMNS is the most it will
-#: ever show (and how big a strip-widget pool gets built up front - see
-#: `__init__`). services/jukebox.py's SLOTS_PER_PAGE (9) stays put as that
-#: module's own documented default for any other caller; this view always
-#: passes its own dynamically computed per_page instead of relying on it.
+#: 3-6 columns and 3-4 rows, decided at runtime from how much space
+#: `grid_host` has (`JukeboxView._rows_that_fit` / `_cols_that_fit`) - a
+#: full page readable at arm's length without scrolling. MAX_* is also the
+#: size of the strip pool built in `__init__`. This view always passes its
+#: own per_page rather than services/jukebox.py's SLOTS_PER_PAGE default.
 MIN_ROWS = 3
 MAX_ROWS = 4
 MIN_COLUMNS = 3
@@ -390,8 +106,7 @@ MAX_COLUMNS = 6
 MAX_PICKS = 2
 
 #: how long a card has to hover over a page-arrow button, mid-drag, before
-#: that direction's page flips underneath it (2026-09-18 follow-up - see
-#: the module docstring's drag-and-drop note). Long enough that passing
+#: that direction's page flips underneath it. Long enough that passing
 #: over the arrow on the way to a normal in-page drop doesn't flip a page
 #: by accident; short enough that walking a card several pages over by
 #: holding it there doesn't feel like waiting.
@@ -399,92 +114,36 @@ PAGE_FLIP_HOVER_MS = 600
 
 
 class JukeboxPickerDialog(QDialog):
-    """The standard "Add to jukebox" picker (2026-09-13 follow-up) - James:
-    "I want a better UI for the Jukebox 'picker'... The problem with the
-    tracks is there is no way to select which genre the track should be
-    on. I want a standard UI. [a] picker box that allows you to select a
-    genre and search by track and/or artist." One dialog, used from both
-    of the app's two places that add a track to the board:
+    """The standard "Add to jukebox" picker, used by both places that add a
+    track to the board:
 
-    - The Jukebox page's own "+ Add to jukebox" button
+    - The Jukebox page's "+ Add to jukebox" button
       (`JukeboxView._open_add_dialog`).
-    - A track-level Jukebox toggle turning ON - Title Details' own column
+    - A track-level Jukebox toggle turning ON - Title Details' column
       (`ui/views/library.py`'s `_on_jukebox_toggle_requested`) and Now
       Playing's toggle (`ui/views/nowplaying.py`'s `_on_jukebox_toggled`).
-      Neither of those had a genre picker of its own before this - a
-      track added that way silently landed on the default "Rock" page
-      every time (see `services/library.py:toggle_jukebox_membership`,
-      which no longer calls `place_track` itself for the "turning on"
-      case - see those two views for the replacement flow). Opened from
-      here, `initial_artist_query`/`initial_track_query`/`check_track`
-      pre-fill and pre-check the actual track that was tapped, so the
-      person just picks a genre and taps OK rather than re-finding the
-      song they already clicked on.
+      There `initial_artist_query`/`initial_track_query`/`check_track`
+      pre-fill and pre-check the tapped track, so the person just picks a
+      genre and taps OK.
 
-    Replaces the previous "Add to jukebox" dialog's artist-first flow
-    (pick one artist from a dropdown, then check that artist's tracks one
-    artist at a time via `list_tracks_for_album_artist`) with two live
-    search boxes, `artist_search` and `track_search`, ANDed together
-    (`search_tracks`, backed by `services/jukebox.py:search_addable_tracks`)
-    - James confirmed replacing the dropdown outright rather than keeping
-    it alongside search, and a same-day follow-up split what started as
-    one combined "track or artist" box into these two separate ones:
-    "I'll usually select an artist first, and then want to search within
-    that artist for a song" - typing into `artist_search` narrows the
-    board down to that artist, and `track_search` narrows further within
-    whatever `artist_search` currently matches, rather than either field
-    needing to name the same track/artist pair on its own the way the one
-    combined box did. `genre_combo` and the checkbox-list mechanics
-    (capped at `max_picks` - the module `MAX_PICKS` by default, overridden
-    to 1 by `JukeboxView._on_fill_requested` when only one card side is
-    actually open - a real `QCheckBox` per row so a tap anywhere on the
-    label toggles it, see the 2026-09-07 fix this inherits unchanged) are
-    otherwise the same as before.
+    Two live search boxes, `artist_search` and `track_search`, are ANDed
+    (`search_tracks`, backed by `services/jukebox.py:search_addable_tracks`):
+    pick an artist, then search within it for a song. Picks are capped at
+    `max_picks` (MAX_PICKS, or 1 when only one card side is open); each row
+    is a real `QCheckBox` so a tap anywhere on the label toggles it.
 
-    Picks persist across searches: `self._picks` (a `{track_id:
-    artist_id}` dict) is the source of truth for what's selected, not
-    whatever happens to be checked in the currently-visible results list
-    - typing into either search box re-renders the list from scratch
-    (`_render_results`), so a track picked under one search stays picked
-    (and, if it reappears under a later search, shows checked again) even
-    while it's scrolled out of view. Search can span multiple artists in
-    one go now (unlike the old artist-first flow), so picks are tracked
-    as `(track_id, artist_id)` pairs rather than one shared artist id plus
-    a bare list of track ids - `selected_picks()` replaces the old
-    `selected_artist_id()`/`selected_track_ids()` pair for exactly that
-    reason.
+    Picks persist across searches: `self._picks` (`{track_id: artist_id}`)
+    is the source of truth, not what's checked in the visible list, which
+    `_render_results` rebuilds on every search. Results can span artists,
+    hence `(track_id, artist_id)` pairs from `selected_picks()`.
 
-    2026-09-13, fourth follow-up - reused as the nested "pick a
-    replacement" step inside `JukeboxEditSongsDialog`'s "Change…" button
-    (James: "let me right click on a jukebox card and allow me to edit the
-    songs on the card"). Two small additions support that reuse without
-    touching either existing call site's behavior: `show_genre=False`
-    hides `genre_combo` and its label entirely, since editing a slot's
-    songs never touches its genre; and `selected_rows()` returns each
-    pick's title alongside its ids (`self._pick_titles`, populated in
-    `_render_results`/`_on_checkbox_toggled`/`check_track` right alongside
-    `self._picks`) because the edit dialog needs the picked title to show
-    in its own side-by-side summary, which plain `selected_picks()`
-    doesn't carry.
+    Also the nested "pick a replacement" step in `JukeboxEditSongsDialog`:
+    `show_genre=False` hides the genre control, and `selected_rows()` adds
+    each pick's title.
 
-    2026-09-18 follow-up - James, on a large library: "when I go back to
-    enter another track, it seems I can enter one letter but then it
-    bounces back to the artist." Both search boxes used to call
-    `search_tracks` straight from `textChanged`, so every keystroke ran a
-    real query against the whole library - long enough on a big collection
-    to visibly freeze the dialog, which is exactly the kind of pause that
-    gets a person to re-click the field they think stopped responding; a
-    stray click made mid-freeze doesn't get delivered until the query
-    finally returns, and it's *that* click - not anything this dialog does
-    on purpose - that was moving focus. `_search_timer` now debounces
-    `_run_search` by 220ms of no further typing (`_schedule_search`,
-    mirroring `ui/views/search.py`'s own `SearchView._schedule`/
-    `_run_search`), so a query only fires once someone's actually paused.
-    `_render_results` also now disposes of each search's checkbox widgets
-    before clearing the list, rather than leaking them as invisible
-    orphans of `track_list`'s viewport - the more searches a session ran,
-    the larger and slower `track_list` silently got, which only made the
-    freeze-and-mis-click above worse the longer the dialog stayed open.
+    Searching is debounced (`_search_timer`, 220ms) because each query
+    scans the whole library; searching on every keystroke froze the dialog
+    on a big library, and clicks queued during the freeze moved focus.
     """
 
     def __init__(
@@ -501,54 +160,23 @@ class JukeboxPickerDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        # Widened from the original 460x560 (2026-09-20 follow-up) - James:
-        # "expand the Add to jukebox window so I can see more text for the
-        # songs and their albums." Each row's checkbox label is a single
-        # unwrapped line ("Title — Artist (Album)"), so a narrow dialog just
-        # clipped long titles/albums behind track_list's horizontal
-        # scrollbar rather than shrinking the text - widening the dialog
-        # itself is what actually shows more of that line. `resize` (not
-        # just a taller `setMinimumSize` floor) sets the size the dialog
-        # actually opens at; it stays user-resizable beyond this in either
-        # direction since nothing here caps it with setMaximumSize.
+        # wide enough to show long "Title — Artist (Album)" rows (each is one
+        # unwrapped line); `resize` sets the opening size, and the dialog
+        # stays resizable
         self.setMinimumSize(460, 560)
         self.resize(820, 640)
-        #: `(artist_query, track_query) -> results` - see the class
-        #: docstring for how the two boxes below combine (ANDed, not
-        #: either/or the way the single box this replaced worked).
+        #: `(artist_query, track_query) -> results`, ANDed
         self._search_tracks = search_tracks
-        #: overridable per call site (2026-09-13 follow-up) - defaults to
-        #: the module `MAX_PICKS` (a fresh card's two open sides), but
-        #: `JukeboxView._on_fill_requested` passes 1 when there's only one
-        #: open side left to fill on an existing card.
+        #: MAX_PICKS by default; 1 when only one side of a card is open
         self._max_picks = max_picks
-        #: {track_id: artist_id} - see class docstring; insertion order is
-        #: preserved (plain dict, py3.7+) though nothing currently relies
-        #: on that ordering.
+        #: {track_id: artist_id} - see class docstring
         self._picks: dict[int, int] = {}
-        #: {track_id: title} - kept alongside `self._picks` (2026-09-13,
-        #: fourth follow-up) purely for `selected_rows()`; unused by either
-        #: of the original two call sites, which only ever read
-        #: `selected_picks()`.
+        #: {track_id: title} - kept alongside `self._picks` for
+        #: `selected_rows()`
         self._pick_titles: dict[int, str] = {}
-        #: debounces `_run_search` off of raw keystrokes (2026-09-18
-        #: follow-up) - James: "when I go back to enter another track, it
-        #: seems I can enter one letter but then it bounces back to the
-        #: artist." `_search_tracks` runs a real, synchronous query
-        #: against the whole library (no index-friendly prefix on either
-        #: `ilike`/`like` pattern - see `search_addable_tracks`'s own
-        #: docstring), and this dialog used to call it on every single
-        #: keystroke in either box - fine on a small library, but on a
-        #: large one each keystroke could visibly freeze the dialog for a
-        #: few hundred ms. A frozen dialog is exactly what makes a person
-        #: re-click the field they think lost focus - that stray click
-        #: just queues up behind the frozen keystroke and lands the moment
-        #: the query finally returns, which is what actually moves focus;
-        #: nothing here was deliberately sending it to `artist_search`.
-        #: Same 220ms-after-the-last-keystroke debounce `ui/views/
-        #: search.py`'s own `SearchView` already uses for the same reason
-        #: - `_schedule_search`/`_run_search` mirror its `_schedule`/
-        #: `_run_search` naming for that reason.
+        #: debounces `_run_search` (see class docstring) - the same 220ms
+        #: debounce as ui/views/search.py's SearchView, whose
+        #: `_schedule`/`_run_search` naming this mirrors
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(220)
@@ -579,10 +207,7 @@ class JukeboxPickerDialog(QDialog):
                 self.genre_combo.setCurrentIndex(idx)
         layout.addWidget(self.genre_combo)
         if not show_genre:
-            # 2026-09-13, fourth follow-up (see class docstring): editing a
-            # slot's songs never touches its genre, so the nested picker
-            # inside `JukeboxEditSongsDialog` hides this control entirely
-            # rather than showing a genre choice that's simply ignored.
+            # editing a slot's songs never touches its genre
             self.genre_label.hide()
             self.genre_combo.hide()
 
@@ -603,30 +228,19 @@ class JukeboxPickerDialog(QDialog):
 
         self._update_hint()
         if initial_artist_query or initial_track_query:
-            # blocked while both boxes are filled in, then searched once at
-            # the end - filling them one at a time without blocking would
-            # fire an extra, immediately-superseded search on the first
-            # setText() alone (e.g. artist-only, before the track query
-            # that narrows it is in place)
+            # blocked while both boxes are filled in, then searched once
             self.artist_search.blockSignals(True)
             self.track_search.blockSignals(True)
             self.artist_search.setText(initial_artist_query)
             self.track_search.setText(initial_track_query)
             self.artist_search.blockSignals(False)
             self.track_search.blockSignals(False)
-            # a pre-filled query (from a track-level Jukebox toggle - see
-            # the class docstring) searches immediately rather than
-            # waiting out the debounce below, the same way `SearchView.
-            # refresh()` runs its own `_run_search()` straight away for a
-            # query that's already sitting in the box.
+            # a pre-filled query searches immediately, without the debounce
             self._run_search()
 
     def _schedule_search(self, _text: str = "") -> None:
-        """`textChanged` handler for both search boxes (2026-09-18
-        follow-up - see `self._search_timer`'s own comment). Restarts the
-        debounce timer on every keystroke rather than searching directly;
-        `_run_search` is what actually queries and re-renders, once
-        typing has paused for `_search_timer`'s interval."""
+        """`textChanged` handler for both search boxes: restarts the
+        debounce timer; `_run_search` queries once typing pauses."""
         self._search_timer.start()
 
     def _run_search(self) -> None:
@@ -640,14 +254,10 @@ class JukeboxPickerDialog(QDialog):
         self._render_results(results)
 
     def _render_results(self, results: list[dict]) -> None:
-        # QListWidget.clear() deletes the QListWidgetItems but - a known
-        # Qt quirk - leaves any widget set via setItemWidget() behind as
-        # an orphaned, invisible child of the list's viewport rather than
-        # deleting it too. Every search used to leak that render's whole
-        # batch of checkboxes this way; explicitly detaching and disposing
-        # of each one first is the documented way to avoid it (Qt's own
-        # QListWidget::removeItemWidget() docs: "the ownership of the
-        # widget is passed to the caller").
+        # QListWidget.clear() leaves widgets set via setItemWidget() behind
+        # as orphaned children of the viewport, so each search would leak
+        # its checkboxes; detach and dispose of them first (see
+        # QListWidget::removeItemWidget())
         for row_index in range(self.track_list.count()):
             item = self.track_list.item(row_index)
             widget = self.track_list.itemWidget(item)
@@ -660,8 +270,7 @@ class JukeboxPickerDialog(QDialog):
             item = QListWidgetItem()
             item.setData(Qt.UserRole, track_id)
             # tall enough that the checkbox's own click area (its label +
-            # indicator, not the bare row) is a real touch target - see the
-            # 2026-09-07 fix note in the class docstring
+            # indicator, not the bare row) is a real touch target
             item.setSizeHint(QSize(0, TOUCH["row_height"]))
             label = f"{row['title']} — {row['artist_name']}"
             if row.get("album"):
@@ -670,8 +279,7 @@ class JukeboxPickerDialog(QDialog):
             checkbox.setProperty("track_id", track_id)
             checkbox.setProperty("artist_id", row["artist_id"])
             checkbox.setProperty("title", row["title"])
-            # reflects a pick made under an earlier search term - see the
-            # class docstring's "picks persist across searches" note
+            # reflects a pick made under an earlier search term
             checkbox.setChecked(track_id in self._picks)
             checkbox.toggled.connect(self._on_checkbox_toggled)
             self.track_list.addItem(item)
@@ -685,9 +293,8 @@ class JukeboxPickerDialog(QDialog):
         title = box.property("title")
         if checked:
             if len(self._picks) >= self._max_picks and track_id not in self._picks:
-                # last one over the limit - put it back rather than silently
-                # bumping an earlier pick, so the person's own two choices
-                # stick (2026-09-07 fix, carried over unchanged)
+                # over the limit - put it back rather than silently bumping
+                # an earlier pick
                 box.blockSignals(True)
                 box.setChecked(False)
                 box.blockSignals(False)
@@ -713,16 +320,10 @@ class JukeboxPickerDialog(QDialog):
                 return
 
     def check_track(self, track_id: int, artist_id: int, title: str = "") -> None:
-        """Pre-selects one track - used when this dialog is opened from a
-        track-level Jukebox toggle (see the class docstring) so the track
-        that was actually tapped starts out already picked, rather than
-        the person having to find and re-check it themselves after typing
-        a search for it. Call after construction (typically right after
-        `initial_artist_query`/`initial_track_query` have already narrowed
-        the results down to that exact track, so its row is visible to
-        show as checked). `title` is optional (2026-09-13, fourth
-        follow-up) - only `selected_rows()` callers need it; the two
-        original call sites don't pass it and don't need to."""
+        """Pre-selects one track - used when opened from a track-level
+        Jukebox toggle so the tapped track starts out picked. Call after
+        construction, once the initial queries have narrowed the results to
+        it. `title` is only needed by `selected_rows()` callers."""
         self._picks[track_id] = artist_id
         if title:
             self._pick_titles[track_id] = title
@@ -745,10 +346,8 @@ class JukeboxPickerDialog(QDialog):
 
     def selected_rows(self) -> list[dict]:
         """Every current pick as `{"track_id", "artist_id", "title"}`
-        dicts (2026-09-13, fourth follow-up) - like `selected_picks()` but
-        carrying the title too, for `JukeboxEditSongsDialog`'s own summary
-        of what was just picked. `selected_picks()` is left as-is for the
-        two original call sites, neither of which needs a title."""
+        dicts - like `selected_picks()` but with the title, for
+        `JukeboxEditSongsDialog`'s summary."""
         return [
             {"track_id": tid, "artist_id": aid, "title": self._pick_titles.get(tid, "")}
             for tid, aid in self._picks.items()
@@ -756,28 +355,15 @@ class JukeboxPickerDialog(QDialog):
 
 
 class JukeboxEditSongsDialog(QDialog):
-    """"Edit songs…" (2026-09-13 follow-up) - James: "let me right click on
-    a jukebox card and allow me to edit the songs on the card." Shows this
-    slot's two sides, each with its current song title (or "— empty —")
-    and a Change…/Clear pair of buttons. "Change…" opens a nested
-    `JukeboxPickerDialog` (search by artist/track, capped at one pick,
-    `show_genre=False` since this never touches the slot's genre) scoped
-    by default to the slot's own artist, exactly like the picker
-    `JukeboxView._on_fill_requested` already opens for an *open* side -
-    this dialog is what extends that same picking flow to an already
-    filled side, and to both sides at once rather than just whichever one
-    happens to be open.
+    """"Edit songs…": this slot's two sides, each with its current title
+    (or "— empty —") and Change…/Clear buttons. "Change…" opens a nested
+    `JukeboxPickerDialog` (one pick, no genre) scoped to the slot's artist.
 
-    Only tracks a plan (`self._plan`) while open - `{"A": (track_id_or_
-    None, title), ...}`, one entry per side actually touched or cleared;
-    a side left alone entirely doesn't appear in `plan()`'s result at all,
-    so `JukeboxView._on_edit_requested` knows to leave it exactly as-is
-    rather than re-writing it to its own current value. All actual writes
-    happen there, via `services.jukebox.set_slot_side`, once, after this
-    dialog is accepted - the same "widget/dialog only reports the intent,
-    the view owns the database" split every other card action already
-    follows (`sideActivated`, `moveRequested`, `removeRequested`,
-    `fillRequested`)."""
+    Only tracks a plan (`self._plan`) while open; `plan()` returns just the
+    sides touched, so `JukeboxView._on_edit_requested` leaves the rest
+    as-is. All writes happen there, via `services.jukebox.set_slot_side`,
+    after the dialog is accepted - the dialog reports intent, the view owns
+    the database, like every other card action."""
 
     #: sentinel meaning "this side hasn't been touched" - distinct from a
     #: real planned value of `(None, "")` (an explicit Clear).
@@ -859,44 +445,25 @@ class JukeboxEditSongsDialog(QDialog):
         self._refresh_label(side)
 
     def plan(self) -> dict[str, tuple[Optional[int], str]]:
-        """`{"A": (track_id_or_None, title), ...}` - only sides actually
-        touched (changed or cleared) this session; see the class
-        docstring for why an untouched side is left out entirely rather
-        than included at its current value."""
+        """`{"A": (track_id_or_None, title), ...}` - only sides changed or
+        cleared this session."""
         return {side: value for side, value in self._plan.items() if value is not self._UNCHANGED}
 
 
 class JukeboxOrganizeDialog(QDialog):
-    """"Organize card…" (2026-09-07 follow-up; renamed from
-    `JukeboxMoveDialog` the same day genre chips were added) - combines the
-    original "move to slot #" picker with a second, independent genre
-    combo, since re-filing a card's genre chip and moving its board
-    position are orthogonal operations (`services.jukebox.set_slot_genre`
-    vs. `swap_slots`) that James asked to control from the one card menu
-    ("select the location and what genre page a track will be organized
-    by").
+    """"Organize card…": a genre combo plus a "move to slot #" picker -
+    re-filing a card's genre and moving its board position are independent
+    operations (`services.jukebox.set_slot_genre` vs. `swap_slots`).
 
-    The location picker lists every *other* slot on the board that shares
-    the genre currently selected just above it, by number and artist,
-    rather than asking for a bare number to type in: slot numbers are
-    assigned once and never reused or renumbered even after a slot is
-    removed (see services/jukebox.py:JukeboxSlot), so an in-use library can
-    easily have gaps - a plain 1..N spinner would happily suggest numbers
-    that don't exist. `slots` is a list of (slot_number, artist_name,
-    genre) triples for every slot on the whole board, not just the current
-    page - the genre combo starts on the card's current genre (the page
-    the "Organize card…" menu was opened from) but changing it re-filters
-    the location list live to that genre's own slots instead, since
-    picking a target slot on a board you're not filing this card onto
-    would be confusing (2026-09-07, same-day follow-up - James: "I only
-    want to be able to see [the currently selected genre] on my slots to
-    move dropdown"). The entire point of this half of the dialog over the
-    drag-and-drop it originally replaced is that source and target never
-    need to be visible together. A leading "Stay in place" entry
-    (`itemData=None`) means the location half is optional now that
-    genre-only reassignment is a complete action on its own - OK is never
-    disabled here, unlike the old move-only dialog, which refused to open
-    with nothing else on the board to swap with.
+    The location picker lists every *other* slot in the selected genre, by
+    number and artist, rather than taking a typed number: slot numbers are
+    never reused or renumbered (see services/jukebox.py:JukeboxSlot), so
+    there can be gaps. `slots` is (slot_number, artist_name, genre) for the
+    whole board, not just the current page, so source and target never
+    need to be visible together; changing the genre re-filters the list
+    live. A leading "Stay in place" entry (`itemData=None`) makes the move
+    optional - a genre-only change is a complete action, so OK is never
+    disabled.
     """
 
     def __init__(
@@ -937,10 +504,8 @@ class JukeboxOrganizeDialog(QDialog):
         layout.addWidget(buttons)
 
     def _refresh_slot_options(self, genre: str) -> None:
-        """Rebuilds the location list from scratch for `genre` - called once
-        up front for the card's starting genre, and again every time the
-        genre combo above changes, so the two controls never disagree about
-        which board a target slot belongs to."""
+        """Rebuilds the location list for `genre` - up front and whenever
+        the genre combo changes, so the two controls always agree."""
         self.combo.clear()
         self.combo.addItem("Stay in place", None)
         for number, artist_name, slot_genre in self._slots:
@@ -957,15 +522,11 @@ class JukeboxOrganizeDialog(QDialog):
 
 
 #: how long a genre chip has to be held down, without moving or letting go,
-#: before it starts an inline rename - James, 2026-09-22: "The Rename would
-#: be by holding your finger on the genre for a couple of seconds and it
-#: places your cursor in the text box." Long enough that an ordinary tap
-#: (picking which genre's board is showing - still this chip's everyday
-#: job) never accidentally starts a rename; short enough that "a couple of
-#: seconds" doesn't feel like it's ignoring the touch.
+#: before its menu opens. Long enough that an ordinary tap (picking which
+#: genre's board is showing) never opens it by accident.
 GENRE_CHIP_LONG_PRESS_MS = 600
 
-#: custom MIME type carrying a dragged genre chip's name (UTF-8) - 2026-09-26
+#: custom MIME type carrying a dragged genre chip's name (UTF-8) - chip
 #: drag-to-reorder (see _GenreChip). Distinct from jukebox_strip.py's
 #: SLOT_MIME_TYPE so a card can't be dropped on a chip or vice versa.
 GENRE_MIME_TYPE = "application/x-musicmgr-jukebox-genre"
@@ -981,49 +542,28 @@ def _decode_genre(mime: QMimeData) -> Optional[str]:
 
 
 class _GenreChip(ChipButton):
-    """One genre chip on the Jukebox page's filter row - `ChipButton` (the
-    plain checkable pill `cover_grid.py`'s sort chips and Now Playing's
-    "Up next"/"Lyrics" chips also use) plus the long-press-to-rename
-    gesture and right-click menu James asked for (2026-09-22 follow-up -
-    see `services/jukebox.py`'s module docstring). Subclassed here, not
-    added to `ChipButton` itself, so every other chip row in the app keeps
-    its own plain tap-to-toggle behavior unchanged.
+    """One genre chip on the Jukebox page's filter row - `ChipButton` plus
+    a long-press menu, a right-click menu and drag-to-reorder. Subclassed
+    here, not added to `ChipButton`, so every other chip row in the app
+    keeps plain tap-to-toggle behaviour.
 
-    `renameRequested`/`deleteRequested` are plain no-argument signals -
-    `JukeboxView` already knows which genre this chip represents (it reads
-    `property("genre")`, same as the click handler for the ordinary
-    checkable behavior already does) when it connects them, so the signal
-    itself doesn't need to carry anything.
+    `renameRequested`/`deleteRequested` carry nothing - `JukeboxView`
+    reads the chip's `property("genre")` when it connects them.
 
-    A long press fires `renameRequested` *while the button is still held
-    down*, the same "hold still past the threshold" idiom real long-press
-    UIs use - `_press_timer` starts on press and is cancelled by any move
-    or release before it fires. `_long_press_fired` is what tells
-    `mouseReleaseEvent` to swallow the click that would otherwise follow -
-    without it, releasing the button after a successful long press would
-    also toggle the chip's checked state as an ordinary click, right as
-    the inline editor is opening underneath it. A quick tap (the timer
-    never fires) is completely untouched: `mouseReleaseEvent` falls
-    through to `ChipButton`/`QPushButton`'s own handling exactly as
-    before.
+    A long press fires *while the button is still held*: `_press_timer`
+    starts on press and any move or release before it fires cancels it.
+    `_long_press_fired` tells `mouseReleaseEvent` to swallow the click that
+    would otherwise follow and toggle the chip. A quick tap is untouched.
 
-    The right-click menu ("Rename genre…"/"Delete genre…") is the mouse
-    equivalent of the same two actions, for anyone driving this app with a
-    pointer rather than a touch panel - same "menu as the desktop
-    counterpart to a touch gesture" idea `ui/widgets/jukebox_strip.py`'s
-    own card context menu already follows, just one level up (chips, not
-    cards)."""
+    The right-click menu offers the same actions for pointer users, like
+    `ui/widgets/jukebox_strip.py`'s card menu."""
 
     renameRequested = Signal()
     deleteRequested = Signal()
-    #: "Play all" / "Shuffle" on the chip's menu (2026-09-30 - James: "those
-    #: Play All and Shuffle take up too much space. Let's right click or
-    #: hold down a genre and place those two options under the rename
-    #: genre and delete genre"). Argument: shuffle.
+    #: "Play all" / "Shuffle" on the chip's menu. Argument: shuffle.
     playRequested = Signal(bool)
     #: (dragged genre, genre it was dropped on, dropped on its right half) -
-    #: 2026-09-26 drag-to-reorder, James: "I'd like to drag n drop move the
-    #: genres at the top to reorder". Press a chip and slide it sideways
+    #: drag-to-reorder. Press a chip and slide it sideways
     #: past the drag threshold to pick it up; drop it on another chip's
     #: left or right half to land before or after it. A bar on that edge
     #: shows where it'll go while hovering. JukeboxView turns this into
@@ -1165,8 +705,8 @@ class _GenreChip(ChipButton):
 
     def _on_long_press_timeout(self) -> None:
         """Holding a chip opens the same menu a right-click does (Rename,
-        Delete, Play all, Shuffle) - 2026-09-30; it used to go straight to
-        renaming. `popup`, not `exec`, so it doesn't block."""
+        Delete, Play all, Shuffle). `popup`, not `exec`, so it doesn't
+        block."""
         self._long_press_fired = True
         self._menu = self._build_context_menu()
         self._menu.popup(self.mapToGlobal(self.rect().bottomLeft()))
@@ -1175,11 +715,9 @@ class _GenreChip(ChipButton):
         self._build_context_menu().exec(event.globalPos())
 
     def _build_context_menu(self) -> QMenu:
-        """Split out from `contextMenuEvent` so a test can trigger either
-        action directly (find it by its text, then `.trigger()`) rather
-        than needing to drive `QMenu.exec()`'s real popup event loop -
-        same reason `ui/widgets/jukebox_strip.py:_build_context_menu`
-        already does this for the card's own right-click menu."""
+        """Split out from `contextMenuEvent` so a test can trigger an
+        action directly (find it by text, `.trigger()`) without driving
+        `QMenu.exec()` - as `ui/widgets/jukebox_strip.py` does for cards."""
         menu = QMenu(self)
         rename_action = menu.addAction("Rename genre…")
         rename_action.triggered.connect(self.renameRequested.emit)
@@ -1196,8 +734,7 @@ class _GenreChip(ChipButton):
 
 class _InlineGenreEdit(QLineEdit):
     """The text box a genre chip turns into mid-rename (or that the "+"
-    add-chip turns into) - James: "it places your cursor in the text
-    box." Plain `QLineEdit` plus one addition: `QLineEdit` has no built-in
+    add-chip turns into). Plain `QLineEdit` plus one addition: `QLineEdit` has no built-in
     "the user backed out" signal, so Escape is caught here and turned into
     one (`cancelled`) rather than doing nothing, or - Qt's usual default
     for Escape inside a dialog - closing a window this box doesn't own.
@@ -1220,23 +757,13 @@ class _GridHost(QWidget):
     behavior of asking its layout, which would otherwise report however
     much space the *currently placed* fixed-size strips need.
 
-    2026-09-13 fix (James: "the cards don't need to be a forced 3 cols by
-    4 rows. It should adjust as the window in the app adjusts" - see the
-    module docstring): with `self.grid.setSizeConstraint(QLayout.
-    SetNoConstraint)` alone, growing to a wide arrangement (say
-    MAX_COLUMNS=6 on a maximized window) still locked the *whole
-    application window* at that width and it could never be narrowed
-    again - SetNoConstraint only stops the grid layout from forcing this
-    widget's own `minimumSize()` up, but `minimumSizeHint()` (a different,
-    unaffected method that a *parent* layout consults - here, `BaseView`'s
-    own `self._root`) still delegates straight to the grid layout's
-    computed minimum regardless of that flag, so the oversized hint
-    propagated up through this view and pinned the whole window's minimum
-    width right along with it. A plain QWidget has no such override
-    available from outside, hence this tiny subclass - the actual "how
-    many strips fit" decision already lives entirely in `_rows_that_fit`/
-    `_cols_that_fit`, which is what should decide the size, not whatever
-    was left over from the last arrangement."""
+    Without it, growing to a wide arrangement (e.g. MAX_COLUMNS on a
+    maximized window) pinned the whole window's minimum width: the grid's
+    SetNoConstraint stops it forcing this widget's `minimumSize()` up, but
+    a parent layout (`BaseView._root`) consults `minimumSizeHint()`, which
+    still delegates to the grid's computed minimum. `_rows_that_fit` /
+    `_cols_that_fit` decide how many strips fit, not the last
+    arrangement."""
 
     def minimumSizeHint(self) -> QSize:  # noqa: D102 - Qt override
         return QSize(0, 0)
@@ -1247,45 +774,22 @@ class JukeboxView(BaseView):
 
     def __init__(self, ctx: AppContext, parent=None) -> None:
         super().__init__(ctx, parent)
-        # 2026-09-13 follow-up (James: "close the gap of the space from the
-        # left sidebar menu options and the cards. too much empty space"):
-        # `BaseView.__init__` sets a 20px left margin on `self._root` that
-        # every view shares (library, playlists, charts, settings, etc.),
-        # so it isn't something to change globally just because this one
-        # page's grid makes the gap more noticeable. Narrowed here, after
-        # `super().__init__` already built `self._root`, rather than
-        # touching `BaseView`'s own default.
-        #
-        # First narrowed to 6px, paired with zeroing `self.grid`'s own
-        # separate default margin below - James confirmed after a real
-        # app restart that the two together got the gap down to just this
-        # view's `JukeboxStripWidget` cards' own 4px outer frame (see
-        # ui/widgets/jukebox_strip.py's `outer.setContentsMargins`), but
-        # still asked for it tighter still. Taken all the way to 0 here -
-        # that remaining 4px card frame inset is the only thing left
-        # between the rail and the cards now, and it's shared by every
-        # side of every card (including the row spacing between columns),
-        # not something worth special-casing away just for the leftmost
-        # one.
+        # no left margin on this page (BaseView's shared 20px is left alone
+        # for the other views): with `self.grid`'s margins zeroed too, the
+        # only gap left by the rail is the cards' own 4px frame
+        # (ui/widgets/jukebox_strip.py)
         _left, top, right, bottom = self._root.getContentsMargins()
         self._root.setContentsMargins(0, top, right, bottom)
         self._page = 0
-        # settled by the first refresh()/resize measurement - MIN_ROWS/
-        # MIN_COLUMNS are just the starting guess so `resizeEvent`'s "did
-        # this actually change" check has something to compare against
-        # before that.
+        # settled by the first refresh()/resize measurement; a starting
+        # value for `resizeEvent`'s "did this change" check
         self._current_rows = MIN_ROWS
         self._current_cols = MIN_COLUMNS
-        # which genre chip is active - see the module docstring's fifth
-        # same-day 2026-09-07 follow-up. Starts on DEFAULT_JUKEBOX_GENRE
-        # ("Rock") rather than the first chip in the row, so a track filed
-        # with no genre picker of its own (Title Details'/Now Playing's
-        # one-tap toggle, or a pre-existing card from before this follow-up
-        # shipped) shows up on whichever page is already open at launch.
+        # which genre chip is active. Starts on DEFAULT_JUKEBOX_GENRE rather
+        # than the first chip, the genre a card filed without a choice gets
         self._genre = jkb_svc.DEFAULT_JUKEBOX_GENRE
 
-        # drag-and-drop page-flip (2026-09-18 follow-up - see the module
-        # docstring): fires _flip_page_during_drag once a dragged card has
+        # drag-and-drop page-flip (see the module docstring): fires _flip_page_during_drag once a dragged card has
         # hovered a page arrow for PAGE_FLIP_HOVER_MS; _page_flip_delta is
         # which direction that hover was over (-1/prev_btn, +1/next_btn),
         # set fresh on every DragEnter in eventFilter below.
@@ -1300,21 +804,9 @@ class JukeboxView(BaseView):
         self.header.addStretch(1)
 
 
-        # the pager (2026-09-07 follow-up, James: "Now at the bottom of the
-        # jukebox page there is a page 1 of 3 which takes up a whole row of
-        # space. Recommend we move that to the left of the top + Add to
-        # jukebox button") - used to be its own centered row under the grid
-        # (see refresh()'s page_label.setText below, unchanged); moving it
-        # into the header next to "+ Add to jukebox" gives that whole row
-        # back to the grid instead.
-        # "JukeboxPageArrow", not the shared "RowPageArrow" every other
-        # pager in the app uses (cover_grid.py's own horizontal rows) -
-        # 2026-09-18 follow-up, James: "let's make those < and > bigger."
-        # A dedicated object name (see ui/theme.py's own note on it) keeps
-        # this page's arrows resizable on their own without also growing
-        # Library's pager, the same "give it its own style" fix
-        # GatefoldCoverflow's #CoverflowNavArrow already set the precedent
-        # for (2026-09-16 follow-up - see that widget's own docstring).
+        # the pager lives in the header, giving its row to the grid.
+        # "JukeboxPageArrow", not the shared "RowPageArrow", so this page's
+        # arrows can be styled bigger on their own (see ui/theme.py).
         self.prev_btn = TouchButton("‹")
         self.prev_btn.setObjectName("JukeboxPageArrow")
         self.prev_btn.clicked.connect(lambda: self._change_page(-1))
@@ -1322,9 +814,8 @@ class JukeboxView(BaseView):
         self.next_btn = TouchButton("›")
         self.next_btn.setObjectName("JukeboxPageArrow")
         self.next_btn.clicked.connect(lambda: self._change_page(1))
-        # 2026-09-18 follow-up: lets a dragged jukebox card flip the page
-        # by hovering over either arrow - see the module docstring and
-        # eventFilter/_flip_page_during_drag below.
+        # lets a dragged card flip the page by hovering over either arrow -
+        # see eventFilter/_flip_page_during_drag below
         self.prev_btn.setAcceptDrops(True)
         self.next_btn.setAcceptDrops(True)
         self.prev_btn.installEventFilter(self)
@@ -1335,40 +826,18 @@ class JukeboxView(BaseView):
         self.header.addSpacing(20)
 
         add_btn = TouchButton("+ Add to jukebox", primary=True)
-        # 2026-09-07 follow-up - James: "let's also change the red color on
-        # the Now Playing, Add to Jukebox and the Play button at the
-        # bottom to the same MusicMgr color palett[e]." Overriding the
-        # object name TouchButton(primary=True) just set swaps this one
-        # button onto ui/theme.py's #PrimaryWarm (brown) rule instead of
-        # the ordinary #Primary (red-orange) every other "primary" button
-        # in the app still uses - see theme.py's COLORS comment for why
-        # the shared accent token itself wasn't retinted.
+        # its own object name so ui/theme.py's #PrimaryWarm rule styles this
+        # button apart from the generic #Primary
         add_btn.setObjectName("PrimaryWarm")
         add_btn.clicked.connect(self._open_add_dialog)
         self.header.addWidget(add_btn)
 
-        # genre chips (2026-09-07 follow-up) - exclusive like every other
-        # chip row in this app (cover_grid.py's sort chips, Now Playing's
-        # "Up next"/"Lyrics"); which board is showing, not a search filter.
-        # Built in `get_jukebox_genres` order, which is exactly the
-        # left-to-right order James asked for (sixth same-day follow-up)
-        # and, as of the 2026-09-22 follow-up below, whatever order he's
-        # since edited it into - no separate ordering logic needed here
-        # either way.
-        #
-        # 2026-09-22 follow-up (James: "I would like the ability to modify
-        # the genre titles at the top. Ability to add, delete and rename a
-        # genre"): the fixed for-loop that used to build this row once,
-        # straight from the old `JUKEBOX_GENRES` constant, is now
-        # `_build_genre_chips` below - callable again any time the
-        # persisted list changes (an add, a rename, a delete), not just
-        # here at construction. `self.chip_row` and `self._add_chip` are
-        # kept as attributes for exactly that reason: rebuilding needs to
-        # find and clear whatever's currently in the row before repopulating
-        # it. `chip_row.addStretch(1)` stays here, added once and never
-        # touched again - every rebuild only ever inserts widgets *before*
-        # it (see `_stretch_index`), so it stays the trailing element the
-        # row was built to keep the chips left-aligned around.
+        # genre chips - exclusive, like every other chip row in the app; they
+        # pick which board is showing. Built by `_build_genre_chips` from the
+        # persisted list, in its order, and rebuilt after every edit -
+        # hence `self.chip_row` / `self._add_chip`. The trailing stretch is
+        # added once and every rebuild inserts before it (`_stretch_index`),
+        # keeping the chips left-aligned.
         chip_row = QHBoxLayout()
         chip_row.setSpacing(8)
         self.chip_row = chip_row
@@ -1376,13 +845,10 @@ class JukeboxView(BaseView):
         self._genre_chips.setExclusive(True)
         self._genre_chips.buttonClicked.connect(self._on_genre_chip_clicked)
         self._add_chip: Optional[QWidget] = None
-        # the chip/add-button currently swapped out for `_genre_editor`,
-        # and what its edit is doing - see `_begin_rename_genre`/
-        # `_begin_add_genre`/`_finish_genre_edit`. `_genre_editor is None`
-        # is this view's "nothing being edited right now" state, checked
-        # by both of those `_begin_*` methods so a second long-press (or a
-        # tap on "+") can't open a *second* editor while one's already
-        # open.
+        # the chip/add-button currently swapped out for `_genre_editor`, and
+        # what its edit is doing - see `_begin_rename_genre` /
+        # `_begin_add_genre` / `_finish_genre_edit`. `_genre_editor is None`
+        # means nothing is being edited; only one editor opens at a time.
         self._genre_editor: Optional[_InlineGenreEdit] = None
         self._genre_editor_target: Optional[QWidget] = None
         self._genre_editor_original: Optional[str] = None
@@ -1391,62 +857,32 @@ class JukeboxView(BaseView):
         self._build_genre_chips()
         self.body().addLayout(chip_row)
 
-        # "Rate a track 5 stars..." dropped from this hint 2026-09-07 - the
-        # automatic 5-star route it described was removed the same day
-        # (see services/jukebox.py's module docstring: James, "I don't
-        # like using my 5 stars to get a track on the Jukebox cards") and
-        # the leftover copy kept advertising a way in that no longer
-        # existed. "+ Add to jukebox" is the only route this empty state
-        # needs to point at now.
+        # "+ Add to jukebox" is the only way onto the board
         self.empty_state = EmptyState(
             "No favorites yet",
             "Tap “+ Add to jukebox” to load one.",
         )
         self.body().addWidget(self.empty_state)
 
-        # _GridHost (see its own docstring) plus SetNoConstraint together
-        # stop this container's size from ever being dictated by however
-        # many strips happen to be placed in it right now - see _GridHost's
-        # docstring for why both are needed. Without them, growing past the
-        # old fixed 3 columns (2026-09-13 follow-up - see the module
-        # docstring) would permanently widen the whole application window
-        # the first time a wide screen fit more of them, with no way back.
+        # _GridHost plus SetNoConstraint keep this container's size from
+        # being dictated by however many strips are placed in it - see
+        # _GridHost's docstring
         self.grid_host = _GridHost()
         self.grid = QGridLayout(self.grid_host)
-        # vertical spacing tightened from 16 to 8 (2026-09-13 follow-up -
-        # see the module docstring's note on _rows_that_fit) - James
-        # reported the 4th row never showing even fully maximized; logging
-        # the real numbers showed _rows_that_fit was measuring correctly
-        # all along; a 4th row needs 4 strips + 3 gaps of vertical room,
-        # and on his display that came out just 5px short of what
-        # maximized actually offers (14px short of what his smallest
-        # window offered) - nothing to do with resize timing after all.
-        # Horizontal spacing (between columns) stays 16 - only the row gap
-        # was the tight dimension.
+        # rows get 8px, not 16: on a typical maximized window a 4th row
+        # (4 strips + 3 gaps) was just a few px short at 16
         self.grid.setHorizontalSpacing(16)
         self.grid.setVerticalSpacing(8)
         self.grid.setSizeConstraint(QLayout.SetNoConstraint)
-        # 2026-09-13, later same-day follow-up (James, after the left-margin
-        # narrowing below still left "too much space between the menu
-        # options and the first row of cards" at the smallest window size):
-        # `QGridLayout` carries its own default ~9px contents margin on
-        # every side, on top of whatever margin `self._root` (this view's
-        # outer `QVBoxLayout`, set in `__init__` below) already has - that
-        # hidden second margin, not `_root`'s, turned out to be most of
-        # what was left of the gap once `_root`'s own left margin had
-        # already been narrowed. Zeroed here since the outer margin already
-        # controls how far the grid sits from the rail; nothing else in
-        # this layout depends on the grid having its own interior margin.
+        # QGridLayout has its own default ~9px contents margin on top of
+        # `self._root`'s; zeroed so the outer margin alone sets how far the
+        # grid sits from the rail
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.body().addWidget(self.grid_host, 1)
 
-        # built MAX_ROWS x MAX_COLUMNS up front regardless of what actually
-        # fits right now (2026-09-13 follow-up widened this from MAX_ROWS x
-        # 3 - see the module docstring) - a strip is cheap and this avoids
-        # ever constructing one on demand mid-resize (see the third
-        # same-day 2026-09-07 follow-up for why that matters). None of them
-        # are placed into `self.grid` yet - `_arrange_grid()` does that
-        # once the actual column count for the current size is known.
+        # built MAX_ROWS x MAX_COLUMNS up front regardless of what fits now -
+        # a strip is cheap, and this avoids constructing one mid-resize.
+        # `_arrange_grid()` places them once the column count is known.
         self.strips: list[JukeboxStripWidget] = []
         for _ in range(MAX_ROWS * MAX_COLUMNS):
             strip = JukeboxStripWidget()
@@ -1470,9 +906,8 @@ class JukeboxView(BaseView):
         header and pager - independent of how many strips happen to be
         visible inside it at the moment - which is what makes measuring it
         here safe rather than circular. Never returns below MIN_ROWS: a
-        short (or not-yet-shown) window still gets a full page of MIN_ROWS
-        rows at their fixed size, same as before this follow-up, rather
-        than shrinking the cards or the row count any further."""
+        short (or not-yet-shown) window still gets MIN_ROWS rows at their
+        fixed size rather than smaller cards."""
         strip_height = self.strips[0].sizeHint().height()
         spacing = self.grid.verticalSpacing()
         available = self.grid_host.height()
@@ -1483,10 +918,8 @@ class JukeboxView(BaseView):
         return MIN_ROWS
 
     def _cols_that_fit(self) -> int:
-        """`_rows_that_fit`'s exact same measure-and-walk-down logic against
-        `grid_host.width()` instead of height (2026-09-13 follow-up - see
-        the module docstring). Never returns below MIN_COLUMNS, for the
-        same reason `_rows_that_fit` never returns below MIN_ROWS."""
+        """`_rows_that_fit`'s logic against `grid_host.width()`. Never
+        returns below MIN_COLUMNS."""
         strip_width = self.strips[0].sizeHint().width()
         spacing = self.grid.horizontalSpacing()
         available = self.grid_host.width()
@@ -1500,15 +933,10 @@ class JukeboxView(BaseView):
         """Places however many strips the current page size
         (`_current_rows` x `_current_cols`) needs into `self.grid` at their
         (row, col) for that column count, in reading order. `QGridLayout`
-        has to be told every cell explicitly - unlike a strip's fixed size,
-        which is set once and never revisited, a strip's *position* is only
-        ever correct for the column count it was placed under, so this has
-        to run again every time either dimension changes, not just once in
-        `__init__` (2026-09-13 follow-up - see the module docstring).
-        Removing every strip first (rather than tracking what moved) is the
-        same "clear and rebuild" idiom other widgets in this app use for
-        their own layout changes (e.g. `VideoTable._rebuild`); with only a
-        few dozen strips in the pool this is not worth optimizing further."""
+        has to be told every cell, and a strip's position is only correct
+        for the column count it was placed under, so this runs whenever
+        either dimension changes. Clear-and-rebuild is fine for a few dozen
+        strips."""
         for strip in self.strips:
             self.grid.removeWidget(strip)
         per_page = self._current_cols * self._current_rows
@@ -1522,28 +950,15 @@ class JukeboxView(BaseView):
         # widget's children can be posted rather than applied synchronously
         # - so a zero-delay singleShot defers the actual measurement to the
         # next trip through the event loop, after Qt has settled the new
-        # geometry. Same "recompute, only act if it changed" idiom
-        # ui/widgets/album_tracks.py's TrackListWidget.resizeEvent already
-        # uses for width instead of height.
-        #
-        # 2026-09-13 follow-up - James reported the board settling one row
-        # short after maximizing. First suspected as this exact kind of
-        # measure-too-early race and "fixed" with a second, later-delayed
-        # recheck below - temporary diagnostic logging then showed that
-        # guess was wrong: _rows_that_fit was measuring correctly the whole
-        # time, and the window genuinely didn't have the ~576px of height a
-        # 4th row needs (it had 571, maximized) - a spacing issue, fixed in
-        # __init__ by tightening the grid's vertical spacing instead (see
-        # its own note there). The second recheck stays anyway - it's a
-        # no-op whenever the first one already got it right, so it costs
-        # nothing, and some future, much bigger jump could yet need it.
+        # geometry. Same "recompute, only act if it changed" idiom as
+        # ui/widgets/album_tracks.py's TrackListWidget.resizeEvent. The
+        # later second recheck is a no-op when the first got it right, and
+        # covers a big jump that settles late.
         QTimer.singleShot(0, self._apply_grid_for_current_size)
         QTimer.singleShot(200, self._apply_grid_for_current_size)
 
     def _apply_grid_for_current_size(self) -> None:
-        """Renamed from `_apply_rows_for_current_size` (2026-09-13 follow-up
-        - see the module docstring) now that both dimensions respond to a
-        resize, not just rows."""
+        """Re-measure rows and columns; refresh only if either changed."""
         rows = self._rows_that_fit()
         cols = self._cols_that_fit()
         if rows == self._current_rows and cols == self._current_cols:
@@ -1569,16 +984,10 @@ class JukeboxView(BaseView):
         self._page = 0
         self.refresh()
 
-    # -- genre management (2026-09-22 follow-up) -----------------------------
-    # James: "I would like the ability to modify the genre titles at the
-    # top. Ability to add, delete and rename a genre. The Rename would be
-    # by holding your finger on the genre for a couple of seconds and it
-    # places your cursor in the text box." See services/jukebox.py's
-    # module docstring for the persisted-list side of this; everything
-    # below is the chip row's side: building it from that list,
-    # `_GenreChip`'s long-press/right-click signals, and the inline
-    # `_InlineGenreEdit` box a chip (or the trailing "+" chip) turns into
-    # mid-edit.
+    # -- genre management ----------------------------------------------------
+    # The chip row's side of the editable genre list (services/jukebox.py
+    # holds the list): building the row, `_GenreChip`'s signals, and the
+    # inline `_InlineGenreEdit` box a chip (or the "+" chip) turns into.
 
     def _stretch_index(self) -> int:
         """`chip_row`'s trailing stretch (added once in `__init__` and
@@ -1593,14 +1002,11 @@ class JukeboxView(BaseView):
         commits (`_finish_genre_edit`, `_on_delete_genre_requested`).
         Tearing the whole row down and rebuilding it fresh, rather than
         trying to patch in just what changed, mirrors this same class's
-        `refresh()` for the card grid below - genre edits are rare enough
-        events that a full rebuild's simplicity is worth far more than
-        whatever a diff-and-patch version would save.
+        `refresh()` for the card grid - genre edits are rare.
 
-        `self._genre_chips` (the `QButtonGroup`) is reused across rebuilds
-        rather than replaced - only its member buttons come and go - so
-        the one `buttonClicked` connection made in `__init__` keeps
-        working without needing to be remade here every time."""
+        `self._genre_chips` (the `QButtonGroup`) is reused across rebuilds,
+        so the `buttonClicked` connection made in `__init__` keeps
+        working."""
         for button in list(self._genre_chips.buttons()):
             self._genre_chips.removeButton(button)
             self.chip_row.removeWidget(button)
@@ -1621,14 +1027,11 @@ class JukeboxView(BaseView):
 
         for genre in genres:
             # "&&": a lone "&" is a Qt keyboard-shortcut marker, so "R&B"
-            # showed as "RB" with the B underlined (2026-09-30). The real
+            # would show as "RB" with the B underlined. The real
             # name lives in the "genre" property, set just below.
             chip = _GenreChip(genre.replace("&", "&&"))
-            # "make the pills not red but the brown color" (2026-09-07,
-            # sixth same-day follow-up) - overrides ChipButton's own
-            # "Chip" object name so only these genre chips pick up
-            # ui/theme.py's brown #ChipWarm:checked rule; every other chip
-            # row in the app keeps the ordinary red #Chip:checked look.
+            # overrides ChipButton's "Chip" object name so only these chips
+            # pick up ui/theme.py's #ChipWarm:checked rule
             chip.setObjectName("ChipWarm")
             chip.setProperty("genre", genre)
             chip.setChecked(genre == self._genre)
@@ -1650,13 +1053,10 @@ class JukeboxView(BaseView):
         self._add_chip = add_chip
 
     def _begin_rename_genre(self, chip: "_GenreChip", genre: str) -> None:
-        """Fired by a chip's `renameRequested` (a long press, or "Rename
-        genre…" from its right-click menu) - swaps that one chip out for
-        an `_InlineGenreEdit` pre-filled with its current name, selected
-        and focused, so typing immediately replaces it and the cursor is
-        already sitting in the box, exactly as James asked. Ignored if an
-        edit is already open elsewhere in the row (another chip, or the
-        "+" add-chip) - only one at a time."""
+        """Fired by a chip's `renameRequested` ("Rename genre…" on its
+        menu) - swaps that chip for an `_InlineGenreEdit` pre-filled with
+        its name, selected and focused, so typing replaces it. Ignored if
+        an edit is already open - only one at a time."""
         if self._genre_editor is not None:
             return
         self._open_genre_editor(chip, initial_text=genre, mode="rename", original=genre)
@@ -1690,25 +1090,15 @@ class JukeboxView(BaseView):
 
     def _finish_genre_edit(self, commit: bool) -> None:
         """Ends whichever edit `_open_genre_editor` started - reached from
-        either `_InlineGenreEdit.cancelled` (Escape) or its ordinary
-        `editingFinished` (Enter, or focus lost), both wired to this same
-        method in `_open_genre_editor`. The `self._genre_editor is None`
-        guard up front is what keeps those two from double-handling one
-        edit: Escape finishes it (and clears `_genre_editor`) synchronously
-        by calling this with `commit=False`, but hiding/removing the box
-        right after can still cause Qt to deliver `editingFinished` to it
-        a moment later anyway - by then this method has already run once
-        and returns immediately the second time.
+        `_InlineGenreEdit.cancelled` (Escape) or `editingFinished` (Enter,
+        or focus lost). The `self._genre_editor is None` guard stops the
+        two double-handling one edit: removing the box after Escape can
+        still deliver `editingFinished` a moment later.
 
-        Removes the text box and restores whichever chip/add-button it
-        replaced either way (cancelled or committed-but-rejected); a
-        successful commit goes on to call the matching
-        `services/jukebox.py` mutation and, only if that actually changed
-        something, rebuilds the whole row via `_build_genre_chips` and
-        refreshes the board (a rename can change which genre `self._genre`
-        itself now means; a rebuild is the simplest way to keep every
-        chip's checked state and the "+" chip's position consistent no
-        matter what changed)."""
+        Either way the box goes and the chip/add-button it replaced comes
+        back; a commit then calls the matching `services/jukebox.py`
+        mutation and, if it changed something, rebuilds the row
+        (`_build_genre_chips`) and refreshes the board."""
         if self._genre_editor is None:
             return
         editor = self._genre_editor
@@ -1766,13 +1156,9 @@ class JukeboxView(BaseView):
 
     def _on_delete_genre_requested(self, genre: str) -> None:
         """Fired by a chip's `deleteRequested` ("Delete genre…" on its
-        right-click menu - there's no long-press equivalent, since the
-        long press is already spoken for by rename). Confirms first,
-        naming how many cards (if any) will move rather than just
-        "are you sure" - deleting a genre isn't undoable and, unlike
-        removing a single jukebox card, silently relabels every card
-        still filed under it (see `services/jukebox.py:delete_genre`'s
-        own docstring) rather than deleting them."""
+        menu). Confirms first, naming how many cards will move - deleting
+        a genre can't be undone and relabels every card still filed under
+        it (see `services/jukebox.py:delete_genre`)."""
         if self._genre_editor is not None:
             return
         with self.ctx.session() as session:
@@ -1839,11 +1225,9 @@ class JukeboxView(BaseView):
         return jkb_svc.find_code_for_track(session, current.track_id)
 
     def _on_track_changed(self, item) -> None:
-        """Keep the "NOW PLAYING" display current, and - 2026-09-30, James:
-        "when it shuffles the jukebox songs, and you are still on the
-        jukebox page, I would like it to flip the genre page where the song
-        is playing" - turn to the page holding the playing song's card
-        when that card is on the genre board being shown."""
+        """Keep the "NOW PLAYING" display current, and turn to the page
+        holding the playing song's card when that card is on the genre
+        board being shown (so a shuffled genre's cards follow the music)."""
         if item is not None:
             per_page = max(1, self._current_cols * self._current_rows)
             with self.ctx.session() as session:
@@ -1856,7 +1240,7 @@ class JukeboxView(BaseView):
         self._page += delta
         self.refresh()
 
-    # -- drag-and-drop page-flip (2026-09-18 follow-up) ----------------------
+    # -- drag-and-drop page-flip ----------------------------------------------
 
     def eventFilter(self, obj, event):  # noqa: D102 - Qt override
         """Watches `prev_btn`/`next_btn` (installed on them in `__init__`)
@@ -1886,8 +1270,7 @@ class JukeboxView(BaseView):
                 self._page_flip_timer.stop()
                 return True
             if etype == QEvent.Drop:
-                # neither arrow is a real drop target for a card - see the
-                # module docstring's closing paragraph.
+                # neither arrow is a real drop target for a card
                 event.ignore()
                 self._page_flip_timer.stop()
                 return True
@@ -1928,8 +1311,7 @@ class JukeboxView(BaseView):
         # play_tracks() must be called while the session is still open -
         # QueueItem.from_track() lazily reads track.release/primary_file,
         # which raises DetachedInstanceError (silently, from inside this
-        # Qt slot) once the session that loaded `track` has closed. Fixed
-        # 2026-09-06 after James reported a key tap not starting playback.
+        # Qt slot) once the session that loaded `track` has closed.
         with self.ctx.session() as session:
             track = session.get(Track, track_id)
             tracks = [track] if track is not None else []
@@ -1937,26 +1319,13 @@ class JukeboxView(BaseView):
                 self.ctx.play_tracks(tracks, source="jukebox")
 
     def _on_fill_requested(self, slot_number: int) -> None:
-        """A tap on a one-song card's empty "OPEN" banner (2026-09-13
-        follow-up - James: "when I have a jukebox card with one song, I
-        would like to click on the card and have the picker allow me to
-        select a 2nd song"). Looks the slot up fresh
-        (`jkb_svc.get_slot_row`) rather than trusting whatever the strip
-        widget last rendered, since the board could have changed between
-        that render and the tap (another add, a removal, a re-file to a
-        different genre); a slot that's vanished in the meantime is a
-        silent no-op - the very next `refresh()` (triggered elsewhere, by
-        whatever actually changed the board) will already show its
-        current, correct state.
+        """A tap on a one-song card's empty "OPEN" banner. Looks the slot
+        up fresh (`jkb_svc.get_slot_row`) since the board may have changed
+        since the strip rendered; a vanished slot is a silent no-op.
 
-        Opens the same `JukeboxPickerDialog` the page's own "+ Add to
-        jukebox" button uses, pre-filled with this card's own artist and
-        genre - a search starting from "this card" rather than blank -
-        and capped at one pick (`max_picks=1`): unlike a fresh "+ Add to
-        jukebox" placement, there's exactly one open side here to fill,
-        not two, and a second pick would have nowhere on *this* card to
-        land (`services/jukebox.py:place_track` would just start a new
-        card for it, defeating the point of tapping this one)."""
+        Opens `JukeboxPickerDialog` pre-filled with this card's artist and
+        genre, capped at one pick - a second pick would have nowhere on
+        this card to land (`place_track` would start a new card)."""
         with self.ctx.session() as session:
             row = jkb_svc.get_slot_row(session, slot_number)
             genres = jkb_svc.get_jukebox_genres(session)
@@ -1984,14 +1353,9 @@ class JukeboxView(BaseView):
         self.refresh()
 
     def _on_edit_requested(self, slot_number: int) -> None:
-        """"Edit songs…" (2026-09-13 follow-up) - James: "let me right
-        click on a jukebox card and allow me to edit the songs on the
-        card." Same fresh-lookup-and-silently-bail pattern as
-        `_on_fill_requested` above if the slot's vanished by the time this
-        fires. `JukeboxEditSongsDialog.plan()` only reports sides that
-        were actually touched, so an empty plan (dialog accepted with no
-        changes made, or cancelled) is a no-op - nothing to write, no
-        `refresh()` needed."""
+        """"Edit songs…". Same fresh lookup as `_on_fill_requested`.
+        `JukeboxEditSongsDialog.plan()` only reports sides actually
+        touched, so an empty plan is a no-op."""
         with self.ctx.session() as session:
             row = jkb_svc.get_slot_row(session, slot_number)
         if row is None:
@@ -2009,21 +1373,10 @@ class JukeboxView(BaseView):
         self.refresh()
 
     def _on_organize_requested(self, slot_number: int) -> None:
-        """"Organize card…" (2026-09-07 follow-up; renamed from
-        `_on_move_requested` the same day genre chips were added) - fetches
-        every slot on the whole board (with its genre) so the dialog can
-        filter the location list down to whichever genre is selected in its
-        own genre combo, live, as James asked when he found the list showing
-        every board's cards mixed together ("I only want to be able to see
-        [the currently selected genre] on my slots to move dropdown") -
-        `JukeboxOrganizeDialog._refresh_slot_options` does the actual
-        filtering; this just hands it the full unfiltered set once so
-        changing the genre combo doesn't need another DB round-trip.
-        Swapping board position itself is still a pure `swap_slots`
-        operation unaffected by genre. Unlike the old move-only handler,
-        there's no "only one slot on the board" early bailout any more -
-        reassigning just the genre chip is a complete, valid action even
-        when there's nothing else to swap with."""
+        """"Organize card…" - hands the dialog every slot on the board with
+        its genre, once, so `JukeboxOrganizeDialog._refresh_slot_options`
+        can filter by the selected genre without another DB round-trip.
+        A genre-only change is a complete action; moving is a `swap_slots`."""
         with self.ctx.session() as session:
             total = jkb_svc.slot_count(session)
             rows = jkb_svc.list_slot_rows(session, page=0, per_page=max(total, 1))
@@ -2048,33 +1401,21 @@ class JukeboxView(BaseView):
         self.refresh()
 
     def _on_reorder_requested(self, source_slot: int, target_slot: int) -> None:
-        """A card dropped onto a different card (2026-09-18 follow-up - see
-        the module docstring). Unlike `_on_organize_requested`'s dialog,
-        which does a pure two-way `swap_slots`, this calls
-        `services.jukebox.reorder_slot`: the dragged card takes the
-        target's rank and every card from there on shifts over by one -
-        real list reordering, not a swap - which is also what makes a card
-        landing on the next page "just happen" rather than needing
-        anything special here: `refresh()` re-renders whichever `per_page`
-        cards now fall on the current page, in the new slot_number order,
-        same as any other change to the board. `reorder_slot` returning
-        False (the board changed out from under the drag, or - shouldn't
-        happen given a drop only ever lands on a currently-visible, same-
-        genre card - a genre mismatch) is a silent no-op, matching every
-        other "board changed while a gesture was in flight" guard on this
-        view."""
+        """A card dropped onto a different card. Unlike Organize's
+        two-way `swap_slots`, `services.jukebox.reorder_slot` gives the
+        dragged card the target's rank and shifts every card after it by
+        one, so the last card on a full page moves to the next one;
+        `refresh()` shows the new order. False (the board changed under the
+        drag) is a silent no-op."""
         with self.ctx.session() as session:
             reordered = jkb_svc.reorder_slot(session, source_slot, target_slot)
         if reordered:
             self.refresh()
 
     def _on_remove_requested(self, slot_number: int) -> None:
-        """James, 2026-09-07: "I would like to right click on the jukebox
-        card and delete it by removing both songs from that card." A
-        confirmation prompt first since this is destructive to the board
-        (though not to the library - see services.jukebox.remove_slot's
-        docstring), matching the confirm-before-delete pattern playlists
-        and folders already use elsewhere in the app."""
+        """"Remove from jukebox…" - takes the whole card off the board
+        after a confirmation (the songs stay in the library - see
+        services.jukebox.remove_slot)."""
         confirm = QMessageBox.question(
             self,
             "Remove from jukebox",
@@ -2115,10 +1456,7 @@ class JukeboxView(BaseView):
     def _search_addable_tracks(self, artist_query: str, track_query: str) -> list[dict]:
         """`JukeboxPickerDialog`'s `search_tracks` callback - straight to
         `services/jukebox.py:search_addable_tracks`, debounced by the
-        dialog's own `_search_timer` (2026-09-18 follow-up) rather than
-        firing on every keystroke, and still nothing like the old
-        artist-first dialog's "load one artist's whole discography up
-        front" approach."""
+        dialog's own `_search_timer`."""
         with self.ctx.session() as session:
             return jkb_svc.search_addable_tracks(session, artist_query, track_query)
 

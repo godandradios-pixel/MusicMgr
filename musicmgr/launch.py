@@ -1,14 +1,11 @@
-"""Fast first frame (2026-10-21 - James: "determine if the splash screen is
-appearing when it should").
+"""Fast first frame.
 
-It wasn't. Timed on PC1's library, a launch spent about a second loading
-MusicMgr's own code - every page of the app, imported by ui/app.py - with
-nothing on screen, and the splash only appeared after that. Before even
-that, the single-file MusicMgr.exe unpacks itself to a temp folder on every
-launch (PyInstaller --onefile), again with nothing on screen.
+A launch spends about a second importing MusicMgr's own code (every page,
+via ui/app.py), and before that the single-file MusicMgr.exe unpacks itself
+to a temp folder (PyInstaller --onefile) - both with nothing on screen.
 
-Two splashes now cover that, showing the same picture in the same place so
-the hand-over is invisible:
+Two splashes cover that, showing the same picture in the same place so the
+hand-over is invisible:
 
 1. PyInstaller's own splash (MusicMgr.spec, Windows build) appears the
    moment the exe starts, before it unpacks - drawn by the exe itself, no

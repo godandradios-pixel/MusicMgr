@@ -1,12 +1,8 @@
-"""Name-based artwork files, MusicBee style (2026-09-24, USB sync step 2).
+"""Name-based artwork files, MusicBee style (USB sync step 2 - plan:
+claude/2026-09-23-usb-sync-plan.md §2).
 
-James: "Notice how MusicBee names the artist thumb picture the same name"
-(E:\\MusicBee\\Artist Pictures\\Thumb\\Captain & Tennille.jpg). Plan:
-claude/2026-09-23-usb-sync-plan.md §2.
-
-Before this, image files were named after local database ids
-(`artwork\\release_6357_8c79….jpg`, `artists\\1003_The_Weeknd.jpg`). Ids
-differ between PCs, so the folders couldn't be shared. Now:
+Image files are named after what they show, not local database ids (which
+differ between PCs), so the folders can be shared:
 
     artists\\Captain & Tennille.jpg
     artwork\\Captain & Tennille - Love Will Keep Us Together.jpg
@@ -261,14 +257,12 @@ def save_release_cover(release: Release, data: bytes, *, ext_hint: Optional[str]
 
 
 # --------------------------------------------------------------------------
-# a 78's own label per side (2026-10-17)
+# a 78's own label per side
 # --------------------------------------------------------------------------
 #
-# James: "I need the 78s to show each label A and B". A record is one album
-# with one cover, so both sides showed whichever label was saved first -
-# "Marie" (25523-B) showed the Song of India label (25523-A). A side whose
-# file carries a different picture now gets its own image next to the
-# record's cover, named after it plus the side:
+# A record is one album with one cover, but each side of a 78 has its own
+# label. A side whose file carries a different picture gets its own image
+# next to the record's cover, named after it plus the side:
 #
 #     artwork\Tommy Dorsey And His Orchestra - Victor - 25523.jpg      (record)
 #     artwork\Tommy Dorsey And His Orchestra - Victor - 25523 - B.jpg  (side B)
@@ -634,7 +628,7 @@ def _set_aside_unused(folder: Path, in_use: set[str], wanted_keys: set[str],
         if entry.name.casefold() in in_use:
             continue
         if entry.name.casefold().startswith("playlist_"):
-            # a playlist/folder tile image ("Choose image…", 2026-09-26):
+            # a playlist/folder tile image ("Choose image…"):
             # travels with the artwork folder, never set aside
             continue
         if lookup_key(Path(entry.name).stem) in wanted_keys:

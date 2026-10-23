@@ -1,53 +1,31 @@
 """Fetch an artist's real Last.fm "top tracks" chart - see `ArtistTopTrack`
 in db/models.py.
 
-2026-09-16 same-day follow-up #2 - this module replaces a same-day first
-attempt, spotify_popularity.py, which used Spotify's `GET /v1/artists/{id}/
-top-tracks` endpoint instead. James went to actually set that up and found
-Spotify's Developer Mode now requires the app owner to hold a Premium
-subscription - and worse, a February 2026 Spotify change removed the
-artist-top-tracks endpoint entirely for Development Mode apps, with no
-replacement short of "Extended Quota Mode" (an approval process meant for
-apps serving many outside users, not a personal single-user app like this
-one). Spotify was a dead end regardless of the Premium question, so this
-picks Last.fm's `artist.getTopTracks` instead: a free API key is all it
-needs (no OAuth, no user login, no Premium anything - see
-last.fm/api/account/create), and the response is Last.fm's own ranked
-"top tracks" for the artist, each with a real `playcount`/`listeners`
-figure - the same kind of authoritative outside signal James was after,
-just from a source that's actually still reachable by a hobby app.
+Uses Last.fm's `artist.getTopTracks`: a free API key is all it needs (no
+OAuth or user login - see last.fm/api/account/create), and the response is
+Last.fm's own ranked "top tracks" for the artist, each with a real
+`playcount`/`listeners` figure. (Spotify's top-tracks endpoint is no longer
+available to personal Development Mode apps, which is why this isn't
+Spotify.)
 
 Same "read from local files, no network calls" exception the app already
 made for lyrics (LRCLIB) and biographies (Wikipedia) - see
-lyrics_downloader.py's module docstring for the precedent. The one API key
-is stored in the existing generic `Setting` key/value table (see
-services/jukebox.py for the only other user of that table) rather than a
-new one built just for it - simpler than spotify_popularity.py's
-client-id/secret pair, since Last.fm's key-only auth needs just the one
-value.
+lyrics_downloader.py's module docstring for the precedent. The API key is
+stored in the generic `Setting` key/value table (see services/jukebox.py
+for the only other user of that table).
 
-2026-09-16 follow-up #4 (James: "I don't want the list to be constrained
-by only copies I own, I want the top songs to be their top songs whether
-they are in the library or not") - this module used to also match each
-Last.fm track against the artist's locally-owned tracks (by normalized
-title) and stamp a `Track.lastfm_popularity` score directly onto whichever
-pressings matched. That meant the artist page's Top Tracks list could only
-ever show songs James already owned - it wasn't really "this artist's top
-tracks", just "this artist's top tracks, restricted to what's on your
-drive". `update_popularity_for_artist` below now simply stores Last.fm's
-whole returned chart as `ArtistTopTrack` rows (replacing whatever was
-there from a previous fetch) - no ownership matching happens here at all
-anymore. Whether a given entry is something James owns, and which pressing
-represents it, is worked out later, at display time, by
-ui/widgets/artist_panel.py:_refresh_top_tracks - see that function and
-ArtistTopTrack's own docstring for why doing it there (rather than here,
-once, at fetch time) means adding a missing song to the library is
-recognized immediately, with no new fetch needed.
+`update_popularity_for_artist` stores Last.fm's whole returned chart as
+`ArtistTopTrack` rows (replacing a previous fetch), whether or not the
+library owns those songs - the list is the artist's top tracks, not just
+the owned ones. Which entries are owned, and which pressing represents
+each, is worked out at display time by
+ui/widgets/artist_panel.py:_refresh_top_tracks (see ArtistTopTrack's
+docstring), so a song added to the library is recognized without a new
+fetch.
 
-Unlike the Spotify attempt, there's no artist-id search/resolution step at
-all: `artist.getTopTracks` takes the artist's name directly (with
-`autocorrect=1` to paper over minor spelling differences), so there's
-nothing to cache - no `Artist.lastfm_id` column exists or is needed.
+`artist.getTopTracks` takes the artist's name directly (with
+`autocorrect=1` to paper over minor spelling differences), so there's no
+artist-id lookup to cache - no `Artist.lastfm_id` column is needed.
 """
 
 from __future__ import annotations
@@ -97,7 +75,7 @@ class ArtistPopularityOutcome:
     status: str
     detail: str = ""
     #: how many ArtistTopTrack rows this fetch stored - independent of how
-    #: many of them James actually owns (see module docstring)
+    #: many of them the library owns (see module docstring)
     stored: int = 0
 
 
@@ -265,11 +243,9 @@ def update_popularity_for_artists(
     batch of one, the artist page's own per-artist "Fetch popularity"
     button (see PopularityDownloadThread in ui/widgets/common.py).
 
-    2026-09-22 - James: "add a real cancel button that stops any process
-    running within Settings". `should_stop`, checked once per artist before
-    that artist's own lookup starts, same safe-to-interrupt shape
-    `artist_bio_downloader.download_bios_for_artists` just adopted - every
-    artist already looked up this run is already committed below."""
+    `should_stop` (Settings' Cancel) is checked once per artist before its
+    lookup starts, as in `artist_bio_downloader.download_bios_for_artists`;
+    every artist already looked up this run is already committed."""
     result = PopularityResult()
     total = len(artist_ids)
 

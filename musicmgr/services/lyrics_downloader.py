@@ -3,26 +3,15 @@ them to the same sidecar path `services/lyrics.py` already reads from.
 
 This is a deliberate, requested exception to the rest of the app's "read
 from local files, no network calls" stance (see `services/lyrics.py`'s
-module docstring, and `architecture.md`) - James asked for it explicitly,
-after uploading a standalone script (`lrc_downloader.py`) that did the same
-job against a bare folder tree with no database behind it. The lookup,
-retry and matching logic below is ported from that script essentially
-unchanged; what differs is where the track metadata comes from and how a
-track's own existing-lyrics check works:
+module docstring, and `architecture.md`). The lookup, retry and matching
+logic is ported from a standalone script (`lrc_downloader.py`), with two
+differences:
 
-- The original script reads title/artist/album/duration from the audio
-  file's own tags via mutagen, since it has nothing else to go on. MusicMgr
-  already carries the same metadata in its database (and, for the currently
-  playing track, right on the in-memory `QueueItem`) - including any manual
-  corrections made in Title Details - so callers here just pass that in
-  directly (`LyricsTrackInput`) instead of this module re-reading tags off
-  disk.
-- The original script's default behavior skips an entire album folder if it
-  already contains *any* .lrc file. James was asked about this directly and
-  chose to check every track individually instead (AskUserQuestion,
-  2026-09-07) - so `download_lyrics_for_album` below has no folder-level
-  shortcut at all: each track's own sidecar path is checked on its own
-  merits, every time.
+- Track metadata comes from the database (or the playing `QueueItem`),
+  including manual corrections made in Title Details, passed in as
+  `LyricsTrackInput` rather than re-read from the file's tags.
+- There's no folder-level "skip an album that has any .lrc" shortcut:
+  `download_lyrics_for_album` checks each track's own sidecar path.
 
 `download_lyrics_for_track` is the single-track worker (used for the
 Now Playing panel's per-track button); `download_lyrics_for_album` just
@@ -31,10 +20,10 @@ loops it over a list of tracks and aggregates the outcomes into one
 "batch of one", the per-track button too - one result shape instead of
 two parallel ones).
 
-2026-10-21: YouTube Music (`ytmusic_lyrics.py`) is a second source. When
-LRCLIB has no lyrics for a track, or only plain text, the download asks
-YouTube Music too - signed out, so it doesn't depend on James's
-subscription. LRCLIB stays first: it's the purpose-built synced-lyrics
+YouTube Music (`ytmusic_lyrics.py`) is a second source. When LRCLIB has
+no lyrics for a track, or only plain text, the download asks YouTube Music
+too - signed out, so it doesn't depend on a subscription. LRCLIB stays
+first: it's the purpose-built synced-lyrics
 database, and it's the one source with no unofficial-API risk.
 """
 
@@ -99,10 +88,10 @@ class AlbumLyricsResult:
     #: LRCLIB had a match, but only plain (unsynced) text, and the caller
     #: passed save_plain=False - distinct from not_found so a synced-only
     #: run can report "we found it, it just isn't synced" instead of a
-    #: plain miss (2026-09-20, James: force synced-only downloads)
+    #: plain miss
     plain_only: int = 0
     #: how many of `downloaded` came from YouTube Music rather than LRCLIB
-    #: (2026-10-21) - shown in summary() so James can see the fallback work
+    #: - shown in summary() so the fallback's effect is visible
     from_ytmusic: int = 0
     errors: list[str] = field(default_factory=list)
     outcomes: list[TrackLyricsOutcome] = field(default_factory=list)
@@ -277,13 +266,12 @@ def download_lyrics_for_track(
     text, no highlight), so there's no reason to leave a found-but-unsynced
     lyric on the table.
 
-    `save_plain=False` is the synced-only mode (2026-09-20, James: "force
-    LRCLIB to get only Synced lyrics"): a track where LRCLIB only has plain
+    `save_plain=False` is the synced-only mode: a track where LRCLIB only has plain
     text is left alone rather than getting a plain sidecar, and comes back
     as `status="plain_only"` - not `"not_found"` - so callers can tell
     "nothing on LRCLIB at all" apart from "found it, it's just not synced".
 
-    `use_ytmusic=True` (2026-10-21): when LRCLIB has no synced lyrics,
+    `use_ytmusic=True`: when LRCLIB has no synced lyrics,
     YouTube Music is asked too, in this order of preference:
     LRCLIB synced > YouTube Music synced > LRCLIB plain > YouTube Music
     plain (the plain ones only with `save_plain`). A track LRCLIB marks
@@ -395,7 +383,7 @@ def fetch_lyrics_text(
     session: Optional[requests.Session] = None,
 ) -> LyricsTextFetch:
     """Look a track up on LRCLIB and hand back its lyric text, for the
-    lyric editor's "Load from LRCLIB" button (2026-09-28). Unlike
+    lyric editor's "Load from LRCLIB" button. Unlike
     `download_lyrics_for_track`, this never touches the sidecar file - the
     editor decides what to keep, and only its own Save writes anything.
 

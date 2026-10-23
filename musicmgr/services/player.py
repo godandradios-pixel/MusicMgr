@@ -3,16 +3,14 @@
 The queue holds plain dataclasses rather than ORM objects so nothing detached
 is passed between the UI and the database session.
 
-**2026-10-01 - gapless hand-off, crossfade, and volume levelling.** James
-picked these as the first two items off the "what could MusicMgr add"
-list. Playback now runs on two "decks" (each a QMediaPlayer with its own
-QAudioOutput) instead of one player:
+**Gapless hand-off, crossfade, and volume levelling.** Playback runs on two
+"decks" (each a QMediaPlayer with its own QAudioOutput):
 
 - While a track plays, the next one in play order is already loaded on the
   idle deck (`_refresh_preload`).
 - **No crossfade (the default):** when the playing deck reaches the end, the
-  idle deck - already opened and probed - starts straight away, rather than
-  the old open-the-next-file-then-play. Not sample-perfect gapless (that
+  idle deck - already opened and probed - starts straight away. Not
+  sample-perfect gapless (that
   would need one continuous audio stream, which QMediaPlayer can't do), but
   the gap shrinks to the audio device starting up.
 - **Crossfade (1-12 s, Settings > Playback):** the idle deck starts that many
@@ -27,8 +25,8 @@ QAudioOutput) instead of one player:
   background, then eases to its real level. QAudioOutput can't go above
   full volume, so levelling only ever turns tracks down - it can't clip.
 
-The play-history rules are unchanged: a crossfade or gapless hand-off
-counts the outgoing track as completed, exactly like reaching its end did.
+A crossfade or gapless hand-off counts the outgoing track as completed in
+play history, exactly like reaching its end.
 """
 
 from __future__ import annotations
@@ -96,7 +94,7 @@ class QueueItem:
     duration_ms: int = 0
     cover_path: Optional[str] = None
     position: Optional[str] = None
-    # 2026-10-01 levelling/crossfade data, filled in by `from_track` or
+    # levelling/crossfade data, filled in by `from_track` or
     # lazily by `PlayerController._hydrate` (looked up by path) for items
     # built elsewhere (track tables, track panel)
     media_file_id: Optional[int] = None
@@ -104,7 +102,7 @@ class QueueItem:
     rg_track_gain: Optional[float] = None
     rg_album_gain: Optional[float] = None
     hydrated: bool = False
-    #: 2026-10-01 radio tuner: "track" (the music library), "episode" (an
+    #: "track" (the music library), "episode" (an
     #: old-time radio episode - services/otr.py) or "stream" (an internet
     #: station; `path` is its URL). Only tracks write play history, have
     #: lyrics, preload, crossfade or get looked up by path.
@@ -116,7 +114,7 @@ class QueueItem:
 
     def __post_init__(self) -> None:
         # a 78 side with its own label shows that, not the record's cover
-        # (2026-10-17, services/artwork_names.side_cover)
+        # (services/artwork_names.side_cover)
         if self.kind == "track" and self.position and self.cover_path:
             from .artwork_names import side_cover
 
@@ -226,7 +224,7 @@ class _Deck:
 
     def __init__(self, name: str, parent=None) -> None:
         self.name = name
-        # parented to the PlayerController (2026-10-04): Qt then deletes
+        # parented to the PlayerController: Qt then deletes
         # them in a fixed order after the live tap - see PlayerController
         self.audio = QAudioOutput(parent)
         self.player = QMediaPlayer(parent)
@@ -288,11 +286,10 @@ class PlayerController(QObject):
     #: the volume slider value changed (0..1) - the tuner's VOLUME knob and
     #: the player bar's slider keep each other in step through this
     volumeChanged = Signal(float)
-    #: how an internet station is coming in (2026-10-03, the tuner's magic
-    #: eye): "none" (not a stream), "connecting", "good", "buffering" or
+    #: how an internet station is coming in (the tuner's magic eye): "none" (not a stream), "connecting", "good", "buffering" or
     #: "lost" (the stream errored or ended - a station never ends by itself)
     signalChanged = Signal(str)
-    #: a live station's sound as it plays (2026-10-03, the visualizer):
+    #: a live station's sound as it plays (for the visualizer):
     #: five band levels 0..1 every BUCKET_MS, and whether the bass spiked
     liveBands = Signal(list, bool)
 
@@ -314,14 +311,11 @@ class PlayerController(QObject):
         self._volume = 0.8
         self._prefs = playback_prefs.PlaybackPrefs()
         # The live-radio tap (QAudioBufferOutput) is created before the
-        # decks, all three children of this controller. 2026-10-04: the
-        # 1.9.13 release run crashed (exit 139) after every test had passed.
-        # At shutdown Qt destroyed a deck's QMediaPlayer before the tap
-        # attached to it, and the tap's destructor then called back into
-        # the deleted player. Qt deletes children in the order they were
-        # added, so the tap now goes first and detaches from a live player;
-        # parented decks are no longer destroyed on their own in whatever
-        # order PySide happens to visit them at exit.
+        # decks, all three children of this controller. Qt deletes children
+        # in the order they were added, so at shutdown the tap goes first and
+        # detaches from a still-live player; destroyed after a deck's
+        # QMediaPlayer, its destructor would call into the deleted player
+        # and crash on exit.
         self._tap = None
         if QAudioBufferOutput is not None:
             self._tap = QAudioBufferOutput(self)
@@ -346,7 +340,7 @@ class PlayerController(QObject):
         self._measuring: set[int] = set()
         self._measure_tried: set[int] = set()
         self._signal = "none"
-        #: the radio dial's reception, 0..1 (2026-10-03) - a station fading
+        #: the radio dial's reception, 0..1 - a station fading
         #: under the static as the pointer moves off it. 1 everywhere else.
         self._reception = 1.0
         from .spectrum import LiveSpectrum
@@ -713,7 +707,7 @@ class PlayerController(QObject):
 
     def refresh_tracks(self, track_ids, moves: Optional[dict] = None) -> int:
         """Bring queued songs up to date after their tags were edited
-        (2026-10-06, the tag editor - services/tag_editor.py). `moves` maps
+        (the tag editor - services/tag_editor.py). `moves` maps
         an old track id to the one its file belongs to now (a song filed
         under a new album gets a new track), so the play that's under way
         is recorded against the right song. Returns how many items
@@ -1140,7 +1134,7 @@ class PlayerController(QObject):
                 track_id = item.track_id
                 if session.get(Track, track_id) is None and item.path:
                     # the song's tags were edited while it played and its
-                    # file now belongs to another track (2026-10-06)
+                    # file now belongs to another track
                     moved = session.scalar(select(MediaFile.track_id)
                                            .where(MediaFile.path == item.path))
                     if moved is not None:

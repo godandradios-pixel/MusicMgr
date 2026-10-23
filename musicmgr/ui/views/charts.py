@@ -1,32 +1,20 @@
 """Charts: imported Billboard-style rankings, organised into a folder tree,
 the same shape the playlist pane uses.
 
-The built-in "Most Played" playback charts that used to live here (a window
-chip bar switching between today/week/month/etc.) moved to the Playlists
-view on 2026-08-30 - see ui/views/playlists.py and
-services/playlists.py's "playback playlists" section.
+The "Most Played" playback charts live in the Playlists view - see
+ui/views/playlists.py and services/playlists.py's "playback playlists"
+section.
 
-**Admin density, not touch (added 2026-08-30):** James's framing - Charts is
-where you sit down and curate imported data before turning it into
-playlists, not something you tap through mid-listen the way the rest of
-this app is - so the browse column deliberately breaks from touch sizing.
+**Admin density, not touch:** Charts is where imported data is curated
+before turning it into playlists, not something tapped through
+mid-listen, so the browse column deliberately breaks from touch sizing.
 It's `ChartTable` (ui/widgets/chart_table.py): a dense, sortable,
-multi-select table (Name/Type/Source/Coverage) with a search box, replacing
-the old single-column `TouchTree`. See that module's docstring for the
-widget's own reasoning.
+multi-select table (Name/Type/Source/Coverage) with a search box.
 
-**Two panes, not three (revised 2026-08-30, same day):** the first cut had
-a chart's editions in their own middle pane, separate from the browse tree.
-James asked why editions weren't "in the main column with just another
-subfolder" - a fair question, since folders already expand to reveal
-charts the same way. So editions moved into the tree itself as a third
-level (Folder -> Chart -> Edition, see `ChartTable`'s own docstring for how
-that's kept cheap even for a 3,393-edition real chart), the middle pane is
-gone, and this view is now two panes: the tree on the left, and the
-currently-selected edition's positions on the right. Selecting a chart
-(rather than one specific edition under it) still shows its most recent
-edition, same as before - you just get there by clicking the chart instead
-of it happening automatically in a pane that no longer exists.
+**Two panes:** editions sit in the tree as a third level (Folder -> Chart
+-> Edition; see `ChartTable`'s docstring for how that stays cheap for a
+3,393-edition chart), with the selected edition's positions on the right.
+Selecting a chart (rather than an edition) shows its most recent edition.
 """
 
 from __future__ import annotations
@@ -90,11 +78,9 @@ class MatchTrackDialog(QDialog):
     "Clear match" button appears - there's nothing to clear on an entry
     that's already unmatched.
 
-    "Browse for file..." (`import_file`, 2026-09-17 follow-up) covers the
-    case search can never solve: the file is sitting right there on disk
-    but was never scanned into the library, so there's no Track row for
-    any search to find - James: "I would like to be able to pick a file
-    from a directory and then have it added to the match chart." Picking
+    "Browse for file..." (`import_file`) covers the case search can never
+    solve: the file is on disk but was never scanned into the library, so
+    there's no Track row for any search to find. Picking
     a file scans just that one file in (`services/scanner.py:import_file`,
     the same per-file logic a folder scan uses) and drops the resulting
     track into the results list as the only row, already selected -
@@ -120,10 +106,9 @@ class MatchTrackDialog(QDialog):
         self._import_file = import_file
         #: remembers the folder "Browse for file..." last opened/picked
         #: from, persisted via chart_svc's Setting-backed
-        #: get_last_browse_dir/set_last_browse_dir - James works through
-        #: one album/box-set folder at a time, so re-opening this dialog
-        #: for the next unmatched entry should pick up where he left off
-        #: rather than always starting at his home folder.
+        #: get_last_browse_dir/set_last_browse_dir - matching is done one
+        #: album/box-set folder at a time, so the next unmatched entry
+        #: picks up where the last left off rather than at the home folder.
         self._get_last_dir = get_last_dir
         self._set_last_dir = set_last_dir
         #: set by _on_accept/_on_clear - see ChartsView._fix_match for how
@@ -245,9 +230,8 @@ class MatchTrackDialog(QDialog):
 
 
 class ChartEntryDialog(QDialog):
-    """"Add song…" / "Edit song…" on the Charts page (2026-10-03, James: "I
-    would like to be able to edit my Chart songs" - e.g. the 2003 Billboard
-    Top Country chart missing #40 Trace Adkins - Then They Do). Position,
+    """"Add song…" / "Edit song…" on the Charts page - e.g. a position the
+    imported CSV was missing. Position,
     title and artist, plus the optional last week / peak / weeks figures a
     weekly chart carries; 0 in those shows as "—" and means blank. After
     Ok, `values()` holds what was entered."""
@@ -375,14 +359,9 @@ class ChartsView(BaseView):
         splitter.addWidget(left)
 
         splitter.addWidget(self._entry_pane())
-        # The Charts pane got noticeably wider on 2026-08-30, alongside the
-        # ChartTable rebuild: real columns (Name/Type/Source/Coverage) don't
-        # fit readably in the 300px this pane used to get when it was a
-        # single-column TouchTree - see chart_table.py's minimum-section-
-        # size fix for the crushed-to-unreadable bug this caused before the
-        # pane was widened to match. Two panes now, not three - editions
-        # moved into the tree itself the same day (see module docstring),
-        # so the entries pane picks up the width the old middle pane used.
+        # The Charts pane is wide so ChartTable's real columns
+        # (Name/Type/Source/Coverage) stay readable - see chart_table.py's
+        # minimum-section-size note.
         splitter.setSizes([620, 900])
         self.body().addWidget(splitter, 1)
 
@@ -399,8 +378,7 @@ class ChartsView(BaseView):
         self.entry_title.setStyleSheet("font-size: 18px; font-weight: 600;")
         head.addWidget(self.entry_title)
         head.addStretch(1)
-        # 2026-09-17 follow-up, James: a checkbox filter for "only the
-        # positions that aren't matched yet" - the list this reads is
+        # "only the positions that aren't matched yet" - the list is
         # already just this edition's positions, so it's a pure client-
         # side narrowing in _load_entries(), not a new query.
         self.unmatched_only = QCheckBox("Unmatched only")
@@ -426,14 +404,12 @@ class ChartsView(BaseView):
         self.rematch_btn = TouchButton("Re-match library")
         self.rematch_btn.clicked.connect(self._rematch)
         # Manually fix (or fill in) one position's match - acts on
-        # whichever row was last clicked in entry_list below. Added
-        # alongside services/charts.py:set_entry_track, since fuzzy
-        # title/artist matching (match_entry) is never going to get every
-        # position right.
+        # whichever row was last clicked in entry_list below (via
+        # services/charts.py:set_entry_track), since fuzzy title/artist
+        # matching (match_entry) never gets every position right.
         self.fix_match_btn = TouchButton("Fix match…")
         self.fix_match_btn.clicked.connect(self._fix_match)
-        # Moved here from the old middle pane (removed 2026-08-30) - it acts
-        # on whichever edition is currently shown below, same as before.
+        # acts on whichever edition is currently shown below
         self.delete_issue_btn = TouchButton("Delete edition")
         self.delete_issue_btn.clicked.connect(self.delete_selected_issue)
         for b in (
@@ -444,9 +420,8 @@ class ChartsView(BaseView):
         actions.addStretch(1)
         layout.addLayout(actions)
 
-        # 2026-10-03, James: "I would like to be able to edit my Chart
-        # songs" - fix one edition's positions in place (a row the CSV
-        # was missing, a typo) rather than re-importing it.
+        # fix one edition's positions in place (a row the CSV was missing,
+        # a typo) rather than re-importing it.
         edit_actions = QHBoxLayout()
         edit_actions.setSpacing(8)
         self.add_entry_btn = TouchButton("Add song…")
@@ -461,13 +436,10 @@ class ChartsView(BaseView):
         layout.addLayout(edit_actions)
 
         self.entry_list = TouchList(row_height=76)
-        # 2026-09-17 follow-up, James: a single click used to both select
-        # AND immediately play the row (itemActivatedPayload fires off
-        # TouchList's own itemClicked) - fine on its own, but it fights
-        # "Fix match", which needs to select a row *without* also jumping
-        # playback to it. Single click now only selects (Qt's own default
-        # QAbstractItemView behaviour - nothing to wire up for that part);
-        # double-click is what plays a specific position now.
+        # Single click only selects (Qt's default), so a row can be lined
+        # up for "Fix match" without jumping playback to it; double-click
+        # plays a position. (TouchList's itemActivatedPayload would fire on
+        # a single click.)
         self.entry_list.itemDoubleClicked.connect(self._on_entry_double_clicked)
         layout.addWidget(self.entry_list, 1)
         return box
@@ -672,14 +644,9 @@ class ChartsView(BaseView):
             entries = chart_svc.issue_entries(session, self._issue_id)
             owned, total = chart_svc.issue_coverage(session, self._issue_id)
             for entry in entries:
-                # Movement (NEW/up/down) used to be this row's whole trail
-                # badge - 2026-09-17 follow-up, James: that badge "isn't
-                # very useful" (it's "NEW" on every position of a Year-End
-                # chart, which has no real last-week to compare against)
-                # and the trail column itself should show the matched
-                # file's location instead. Movement is still real
-                # information on an actual weekly chart, so it moves into
-                # the stats line below rather than disappearing outright.
+                # The trail column shows the matched file's location.
+                # Movement (NEW/up/down) goes in the stats line below - as
+                # a badge it would say "NEW" on every Year-End position.
                 stats = []
                 if entry.peak_pos:
                     stats.append(f"peak {entry.peak_pos}")
@@ -699,8 +666,7 @@ class ChartsView(BaseView):
                         file_name += " (missing)"
                     # The file's full containing directory (not just its
                     # immediate parent, and not the filename - that's
-                    # already on the line above) - James, 2026-09-17
-                    # follow-ups: expected "D:\Music\Billboard\1940-49\1946",
+                    # already on the line above): "D:\Music\Billboard\1940-49\1946",
                     # not just "1946".
                     file_location = str(Path(media_file.path).parent)
                     file_color = COLORS["warn"] if media_file.is_missing else COLORS["text_dim"]
@@ -711,9 +677,8 @@ class ChartsView(BaseView):
                 rows.append({
                     "lead": str(entry.rank),
                     "lead_bold": True,
-                    # 2026-09-13 follow-up (see ui/theme.py's #Primary
-                    # comment for this whole cleanup) - top-10 highlight,
-                    # walnut brown now instead of red-orange.
+                    # top-10 highlight, walnut brown (see ui/theme.py's
+                    # #Primary comment).
                     "lead_color": COLORS["jukebox_key_hi"] if entry.rank <= 10 else COLORS["text_dim"],
                     "primary": entry.title,
                     "secondary": " · ".join(
@@ -738,9 +703,8 @@ class ChartsView(BaseView):
 
     @staticmethod
     def _movement(rank: int, last_week: Optional[int]) -> str:
-        # Used to be its own coloured trail badge - see _load_entries'
-        # 2026-09-17 comment for why it folded into the plain-text stats
-        # line instead, alongside peak/weeks-on-chart.
+        # in the plain-text stats line alongside peak/weeks-on-chart, not a
+        # trail badge - see _load_entries.
         if not last_week:
             return "NEW"
         delta = last_week - rank
@@ -754,7 +718,7 @@ class ChartsView(BaseView):
 
     def _on_entry_double_clicked(self, item) -> None:
         """Double-click plays that position - single click is reserved for
-        selection only now (see entry_list's wiring comment above)."""
+        selection (see entry_list's wiring comment above)."""
         payload = self.entry_list.payload_at(self.entry_list.row(item))
         if not payload or payload.get("key") is None:
             self.ctx.notify("That title is not in your library yet")
@@ -772,7 +736,7 @@ class ChartsView(BaseView):
         self.ctx.play_tracks(self._tracks, start=start, source=f"chart:{self._chart_id}")
 
     def _save_playlist(self) -> None:
-        """Asks which playlist folder to save into (2026-10-01). Defaults to
+        """Asks which playlist folder to save into. Defaults to
         where this edition's playlist already lives if it was saved before,
         otherwise to the folder last picked here this session."""
         if self._issue_id is None:
@@ -843,11 +807,10 @@ class ChartsView(BaseView):
         self.refresh()
 
     def _rematch(self) -> None:
-        """Re-match the edition on screen against the library (2026-09-30:
-        this used to re-match the whole chart - every edition - on the UI
-        thread, which for the Hot 100 Weekly chart meant ~355,000 rows and
-        a frozen window. Re-matching every chart at once, with progress and
-        Cancel, is Settings' bulk "Re-match" button)."""
+        """Re-match the edition on screen against the library - only this
+        edition, since a whole chart (~355,000 rows for the Hot 100 Weekly)
+        would freeze the UI thread. Re-matching every chart, with progress
+        and Cancel, is Settings' bulk "Re-match" button."""
         if self._issue_id is None:
             return
         with self.ctx.session() as session:
@@ -860,10 +823,8 @@ class ChartsView(BaseView):
         selected position matches - for the fraction `match_entry`'s fuzzy
         matching gets wrong (a cover version, an unresolved "feat." credit,
         ...) or leaves unmatched entirely. Acts on whichever row is
-        currently selected in entry_list - a single click there just
-        selects now (see entry_list's wiring comment in _entry_pane), so
-        clicking a row to line it up for "Fix match" no longer also jumps
-        playback to it."""
+        currently selected in entry_list (a single click there only
+        selects - see entry_list's wiring comment in _entry_pane)."""
         payload = self.entry_list.current_payload()
         entry_id = payload.get("entry_id") if payload else None
         if entry_id is None:
@@ -898,7 +859,7 @@ class ChartsView(BaseView):
         self.ctx.libraryChanged.emit()
         self._load_entries()
 
-    # -- editing positions (2026-10-03) ---------------------------------------
+    # -- editing positions ----------------------------------------------------
 
     def _ask_entry(self, heading: str, **initial) -> Optional[dict]:
         """Show ChartEntryDialog; the values entered, or None if cancelled.
@@ -1097,10 +1058,8 @@ class ChartsView(BaseView):
         return name.strip() if ok else None
 
     def import_csv(self) -> None:
-        """2026-09-30 - James: "change Import chart CSV… to add to whichever
-        chart you have selected instead of asking for a name". The name box
-        (pre-filled "Billboard Hot 100") had sent a weekly Hot 100 file into
-        the Pop Year End chart, whose internal name matched.
+        """Import chart CSV… into the selected chart rather than by name
+        (a name can match the wrong chart's internal name).
 
         - A chart (or one of its editions) selected: the files are added to
           that chart, after a confirm naming it.
@@ -1174,9 +1133,7 @@ class ChartsView(BaseView):
     def _notify_no_valid_target(self, verb: str) -> None:
         """Rename/Move/Delete all act on folders and charts, never on an
         edition - a selected edition isn't "nothing selected," so it gets
-        its own message instead of the generic one, which used to read as
-        confusing/wrong when James had clearly selected *something*, just
-        not a chart or folder."""
+        its own message instead of the generic one."""
         if self._selected_payloads and all(
             p.get("type") == "issue" for p in self._selected_payloads
         ):
@@ -1213,7 +1170,7 @@ class ChartsView(BaseView):
 
     def _bulk_targets(self) -> list[dict]:
         """Every currently-selected chart/folder node - the table multi-
-        selects (added 2026-08-30), so Move and Delete act on all of them at
+        selects, so Move and Delete act on all of them at
         once rather than whatever single node happened to be tapped last.
         Editions are excluded here on purpose - deleting one is a dedicated
         action ("Delete edition" in the entry pane), not part of the

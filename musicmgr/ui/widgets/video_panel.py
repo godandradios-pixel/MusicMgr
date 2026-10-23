@@ -18,37 +18,13 @@ reparenting the same QVideoWidget and control bar into a separate
 frameless top-level window rather than building (and wiring) a second copy
 of everything - see toggle_fullscreen.
 
-2026-09-07 follow-up - James, looking at the embedded player: "That full
-screen 'button' at the bottom takes up too much space and makes my video
-window smaller." Originally `fullscreen_btn` lived inside `self.controls`
-alongside the (while embedded, hidden) playback widgets, so that whole
-touch-sized bar - built for a full transport row - stayed visible the
-entire time embedded just to host one button, stealing a fixed slice of
-height from `video_widget`'s own stretch factor. `fullscreen_btn` now
-lives in the top title bar instead (`self._top_layout`, next to "‹ Back"
-and the title) while embedded, and `self.controls` is hidden outright
-there rather than merely emptied - Qt's layouts don't reserve space for a
-hidden widget, so hiding it (rather than just hiding what's inside it)
-actually gives that reclaimed row back to the video. `toggle_fullscreen`
-reparents `fullscreen_btn` into `self.controls`' own row alongside the
-playback widgets for the fullscreen window - the same "move it out and
-back" idiom already used there for `video_widget`/`self.controls`
-themselves - so it still travels into full-screen and back exactly as
-before; only its embedded home moved.
-
-2026-09-23 follow-up - James: "Can we remove the title above the video and
-allow the video window to be larger. I don't need a 'If I Could Turn Back
-Time - Cher' at the top and then the same in the play window at the
-bottom." The centered `title_label` that used to sit between "‹ Back" and
-"⤢ Full screen" is gone outright (not merely hidden): the PlayerBar
-already shows title + artist for the whole time a video plays (`play()`
-hands it both via `ctx.videoPlaybackStarted`, see enter_video_mode), so
-this was a second copy of the same two strings a few hundred pixels
-apart. The top row now holds only the two buttons, pushed to either edge,
-and gave up its own padding to the picture. VideosView hides the rest of
-the browse chrome (page header, search row, A-Z jump bar) for as long as
-this pane is up - see `_set_browse_chrome_visible` there; between the two
-changes the video widget gets roughly a third of the window back.
+While embedded, the top row holds only "‹ Back" and "⤢ Full screen", at
+either edge - no title, since the PlayerBar already shows title and
+artist. `self.controls` is hidden outright (Qt's layouts don't reserve
+space for a hidden widget), so its row goes to the video; `fullscreen_btn`
+moves into `self.controls` for full screen and back again. VideosView
+also hides its browse chrome while this pane is up - see
+`_set_browse_chrome_visible` there.
 """
 
 from __future__ import annotations
@@ -66,14 +42,10 @@ from .common import PAUSE_GLYPH, TouchButton, dim_label
 
 
 class VideoPlayerPanel(QWidget):
-    #: the "‹ Back" button was tapped. Generic and target-less by design -
-    #: this panel doesn't know (or care) what should happen next; its one
-    #: connection (VideosView._build_player) just re-emits
+    #: the "‹ Back" button was tapped. Target-less by design - its one
+    #: connection (VideosView._build_player) re-emits
     #: ctx.videosBackRequested, which MainWindow answers by returning to
-    #: whatever section was active before a search match routed here (see
-    #: that signal's own docstring - a brief 2026-09-15 detour had this
-    #: drop onto Videos' own table instead, back while Videos had a real
-    #: sidebar entry of its own).
+    #: whatever section was active before (see that signal's docstring).
     backRequested = Signal()
 
     def __init__(self, ctx, parent=None) -> None:
@@ -90,29 +62,23 @@ class VideoPlayerPanel(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        # 6 rather than 10 (2026-09-23) - with the title gone this row is
-        # two buttons and nothing else; no reason to hold the picture that
-        # far off them.
+        # the top row is just two buttons; no reason to hold the picture
+        # far off them
         root.setSpacing(6)
 
         top = QHBoxLayout()
-        # Labeled "‹ Back" rather than "‹ Videos" (2026-09-06) - it no longer
-        # returns to the Videos table (see backRequested's docstring below
-        # and VideosView._build_player), so naming a destination it doesn't
-        # go to would be actively misleading. Matches NowPlayingView's own
-        # "‹ Back" button, the same fix for the same kind of dead end.
+        # "‹ Back", not "‹ Videos" - it returns to wherever the video was
+        # opened from (see backRequested), matching NowPlayingView's own
+        # "‹ Back" button.
         back = TouchButton("‹ Back")
         back.setFixedWidth(130)
         back.clicked.connect(self.backRequested.emit)
         top.addWidget(back)
-        # a centered title label used to live here between the two buttons -
-        # removed 2026-09-23 (see module docstring): the PlayerBar below is
-        # already showing the same title and artist for as long as the video
-        # plays. One stretch now, not two, so the buttons sit at the edges.
+        # no title label: the PlayerBar shows title and artist. One
+        # stretch, so the buttons sit at the edges.
         top.addStretch(1)
-        # embedded home for the full-screen toggle (2026-09-07 follow-up -
-        # see module docstring) - moved out to self.controls' own row while
-        # actually full screen, via toggle_fullscreen.
+        # embedded home for the full-screen toggle - moved into
+        # self.controls' row while full screen, via toggle_fullscreen.
         self.fullscreen_btn = TouchButton("⤢ Full screen")
         self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
         top.addWidget(self.fullscreen_btn)
@@ -134,12 +100,8 @@ class VideoPlayerPanel(QWidget):
 
         self.controls = self._build_controls()
         self._stage_layout.addWidget(self.controls)
-        # nothing inside it shows while embedded any more (fullscreen_btn
-        # moved to the top bar above; the playback widgets are already
-        # hidden individually) - hide the row itself too, rather than just
-        # its contents, so Qt reclaims the space for video_widget instead
-        # of leaving an empty bar's own padding behind (2026-09-07 follow-
-        # up, see module docstring).
+        # nothing inside it shows while embedded - hide the row itself, not
+        # just its contents, so Qt gives the space to video_widget.
         self.controls.setVisible(False)
 
         root.addWidget(self.stage, 1)
@@ -180,9 +142,8 @@ class VideoPlayerPanel(QWidget):
     # -- playback ---------------------------------------------------------
 
     def play(self, video_id: int, path: str, title: str, artist: Optional[str]) -> None:
-        # title/artist aren't drawn here any more (2026-09-23) - they go
-        # straight out to the PlayerBar via videoPlaybackStarted below,
-        # which is the one place on screen that shows them now.
+        # title/artist are shown by the PlayerBar, via
+        # videoPlaybackStarted below
         self.ctx.player.pause()  # don't talk over a video with background music
         self.controller.play_path(path, video_id)
         self.ctx.videoPlaybackStarted.emit(self.controller, title, artist or "")
@@ -230,11 +191,8 @@ class VideoPlayerPanel(QWidget):
         self._stage_layout.removeWidget(self.controls)
         layout.addWidget(self.video_widget, 1)
         layout.addWidget(self.controls)
-        # fullscreen_btn moves out of the top bar (not part of this new
-        # window - it stays behind in the main window) and into self.
-        # controls' own row alongside the playback widgets, the same as it
-        # sat before the 2026-09-07 "takes up too much space" follow-up -
-        # otherwise there'd be no way to see/click it once full screen.
+        # fullscreen_btn moves out of the top bar (which stays behind in the
+        # main window) into self.controls' row, so it's reachable full screen
         self._top_layout.removeWidget(self.fullscreen_btn)
         self.controls.layout().addWidget(self.fullscreen_btn)
         # the PlayerBar (and the rest of the main window) isn't reachable in

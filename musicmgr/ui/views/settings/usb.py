@@ -1,9 +1,9 @@
-"""Settings › USB sync (split out of settings.py, 2026-10-22).
+"""Settings › USB sync.
 
 See services/usb_sync.py. The flow: poll_usb notices the drive (every
 5 s), check_usb walks and compares both sides in UsbCompareThread,
-UsbSyncDialog shows what it found, and UsbSyncThread copies what James
-left checked and then imports just those files into the library."""
+UsbSyncDialog shows what it found, and UsbSyncThread copies what is left
+checked and then imports just those files into the library."""
 
 from __future__ import annotations
 
@@ -41,11 +41,10 @@ class UsbSection:
     methods share the view's state."""
 
     def _build_usb(self, section) -> None:
-        """Build the Usb group (moved out of __init__, 2026-10-22)."""
-        # ---- USB sync (2026-09-23) ----
-        # James: "I would like to eliminate GoodSync from my workflow...
-        # a check for new music against my USB thumb drive", two-way for
-        # music, videos and movies. See services/usb_sync.py and
+        """Build the Usb group."""
+        # ---- USB sync ----
+        # Two-way sync of music, videos and movies with a USB drive (in
+        # place of GoodSync). See services/usb_sync.py and
         # claude/2026-09-23-usb-sync-plan.md.
         body = section("USB sync", "usb")
 
@@ -68,10 +67,9 @@ class UsbSection:
             lambda on: self._save_update_pref(usb_sync.PREF_AUTO_CHECK, on)
         )
         usb_layout.addWidget(self.usb_auto_cb)
-        # 2026-09-24 - James: "do I have the option to sync Jukebox entries
-        # or to ignore?" -> "Add check boxes for all 4". Per PC; see
-        # services/library_state.py:sync_library_state's `include`.
-        # 2026-10-17: a grid, now there are too many for one row
+        # which library data rides along, per PC; see
+        # services/library_state.py:sync_library_state's `include`. A grid,
+        # as there are too many for one row.
         usb_layout.addWidget(dim_label("Also sync library data:"))
         data_row = QGridLayout()
         data_row.setHorizontalSpacing(18)
@@ -82,23 +80,18 @@ class UsbSection:
             (library_state.RATINGS, "Ratings"),
             (library_state.PLAYLISTS, "Playlists"),
             (library_state.JUKEBOX, "Jukebox"),
-            # 2026-09-30 - James: "I would like to have Charts be added"
             (library_state.CHARTS, "Charts"),
             (library_state.RADIO, "Radio"),
-            # 2026-10-17 - James: "I would like the Artist profiles to sync
-            # with the USB"
             (library_state.PROFILES, "Artist profiles"),
-            # 2026-10-17 - James: "Please also add the Last.fm top-tracks
-            # as a sync option"
+            # Last.fm top tracks
             (library_state.TOP_TRACKS, "Top songs"),
-            # 2026-10-17 - James: "Please proceed with 2., 3., and 4."
             (library_state.SIMILAR, "Similar artists"),
             (library_state.TUNER, "Radio dial"),
             (library_state.PREFS, "Playback & look"),
         ):
             cb = QCheckBox(text)
             if cat == library_state.PLAYLISTS:
-                # 2026-09-28: chosen playlist/folder images ride on this one
+                # chosen playlist/folder images ride on this one
                 cb.setToolTip("Manual and smart playlists, plus the images chosen for any "
                               "playlist or folder")
             if cat == library_state.RADIO:
@@ -131,11 +124,9 @@ class UsbSection:
             data_row.addWidget(cb, n // data_cols, n % data_cols)
         data_row.setColumnStretch(data_cols, 1)
         usb_layout.addLayout(data_row)
-        # 2026-10-06 - James: "when doing a USB scan, why do I need 2
-        # progress bars?" The group used to have its own bar as well as the
-        # page's pinned one, both showing the same thing. Only the pinned
-        # bar is left - it stays in view wherever the page is scrolled and
-        # with this group folded (see _usb_show).
+        # no progress bar of its own: the page's pinned bar stays in view
+        # wherever the page is scrolled and with this group folded (see
+        # _usb_show).
 
         usb_buttons = QHBoxLayout()
         self.usb_check_btn = TouchButton("Check USB now", primary=True)
@@ -223,9 +214,9 @@ class UsbSection:
             self.usb_status.setText("")
         self._refresh_usb_controls()
         # The first poll after launch only notes a drive that's already in:
-        # walking a terabyte at startup is exactly the slow start James
-        # doesn't want (2026-09-24). Plugging the drive in while MusicMgr
-        # runs still triggers the quiet check.
+        # walking a terabyte at startup would make for a slow start.
+        # Plugging the drive in while MusicMgr runs still triggers the
+        # quiet check.
         if first_poll:
             return
         if drive is not None and self.usb_auto_cb.isChecked() and not self._busy_with():
@@ -262,7 +253,7 @@ class UsbSection:
                     f" (last synced {pair.last_synced_at:%Y-%m-%d %H:%M})" if pair.last_synced_at else ""
                 )
                 if usb_sync.on_drive(pair.local_path, drive):
-                    # 2026-10-22: a PC folder on the USB itself syncs with itself
+                    # a PC folder on the USB itself would sync with itself
                     when = "  ⚠ on the USB drive itself - not synced; change it in Folder pairs…"
                 names.append(f"{pair.local_path} ↔ USB\\{pair.usb_rel_path}{when}")
         self.usb_pairs_label.setText(
@@ -306,17 +297,14 @@ class UsbSection:
         self._refresh_usb_controls()
 
     def _usb_show(self, text: str, value: Optional[int] = None) -> None:
-        """What a USB check or sync is doing right now (2026-10-01 - James:
-        "Is there a way I can tell what MusicMgr is doing during a USB
-        sync? I click the button and I get no visual of what its doing").
+        """What a USB check or sync is doing right now.
         Shown in the USB sync group and, so it's in view wherever the page
         is scrolled and even with that group folded, on the progress line
         pinned under the page. `value` (0-1000) for a copy's progress;
         None for a step with no count (a moving bar)."""
         self.usb_status.setText(text)
         self._usb_busy = True
-        # one bar: the page's pinned one (the group's own copy was dropped
-        # 2026-10-06 - two bars showing the same thing)
+        # one bar: the page's pinned one
         bar = self.progress
         if value is None:
             bar.setRange(0, 0)
@@ -365,7 +353,7 @@ class UsbSection:
         if not plan.all_items():
             # the files are done; the quiet sync below still exchanges
             # playlists, plays, ratings and the Jukebox, and replaces this
-            # line with what it did (2026-09-28)
+            # line with what it did
             self.usb_status.setText(
                 "Files: everything is in sync · checking playlists and library data…"
                 + (f" · {'; '.join(problems)}" if problems else "")
@@ -421,11 +409,10 @@ class UsbSection:
         self._refresh_usb_controls()
 
     def _confirm_usb_folder_removals(self, folders) -> bool:
-        """2026-09-30 (James: "fix the sync so it asks before removing a
-        whole folder of playlists"): a sync had just removed 78 Records and
-        Personal Favorites because the drive no longer listed them. Asked on
-        every sync, quiet ones too. Keep is the default; it sends the
-        folders back to the drive. True = remove them here."""
+        """Ask before a sync removes whole playlist folders the drive no
+        longer lists. Asked on every sync, quiet ones too. Keep is the
+        default; it sends the folders back to the drive. True = remove them
+        here."""
         names = "\n".join(f"  • {f.label()}" for f in folders)
         many = len(folders) != 1
         box = QMessageBox(self)
@@ -462,9 +449,8 @@ class UsbSection:
         notes = getattr(result, "library_notes", None) if result is not None else None
         data_changed = notes is not None and notes.received()
         if not error:
-            # 2026-09-28 (James: "update the 'Everything is in sync' to
-            # include the playlists so I don't get confused"): the files and
-            # the library data each get their own say, both directions
+            # "Everything is in sync" covers the playlists too: the files
+            # and the library data each get their own say, both directions
             files = "Files: " + ("everything is in sync" if quiet else result.summary())
             other = message
             if notes is not None and message:
@@ -486,7 +472,7 @@ class UsbSection:
             self.ctx.libraryChanged.emit()
             self.ctx.playlistsChanged.emit()
         if notes is not None and notes.prefs_in:
-            # 2026-10-17: playback & look arrived - show them, play by them
+            # playback & look arrived - show them, play by them
             self._load_playback_prefs()
             self.ctx.player.reload_prefs()
             saved_look = skins.load_choice()
@@ -513,7 +499,7 @@ class UsbSection:
         return QFileDialog.getExistingDirectory(self, "Choose the USB drive (its top folder)")
 
     def setup_usb_drive(self) -> None:
-        """Write the MusicMgr marker to a drive James picks, so it's found
+        """Write the MusicMgr marker to a drive the user picks, so it's found
         whatever letter it gets. Existing folders are left exactly as they
         are; watched folders get paired with same-named folders on it."""
         path = self._pick_usb_root()

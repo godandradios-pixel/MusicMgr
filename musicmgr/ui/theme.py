@@ -12,22 +12,8 @@ COLORS = {
     "border": "#2e333d",
     "text": "#f2f4f8",
     "text_dim": "#98a0ad",
-    # There used to be "accent"/"accent_dim"/"accent_soft" keys here - the
-    # app's original bright red-orange highlight color and its hover/press
-    # shades, used all over (primary buttons, the nav rail selection bar,
-    # focus rings, scrollbars, sliders, chip/star/toggle highlights...).
-    # 2026-09-07/08 saw a string of narrowly-scoped follow-ups retint a few
-    # specific widgets James pointed at to a walnut-brown family instead
-    # (see jukebox_key/_hi/_pressed below), each one deliberately leaving
-    # the shared `accent` tokens alone so as not to recolor anything he
-    # hadn't asked about (see the many "why this widget and not the
-    # generic rule" comments still scattered through stylesheet() below).
-    # A 2026-09-13 follow-up ("clean up the remaining red/orange lines and
-    # text in the app ... brown pallete") asked for the rest of it - every
-    # site that still read `accent`/`accent_dim`/`accent_soft` now reads
-    # jukebox_key/jukebox_key_hi/jukebox_key_pressed directly instead, so
-    # these three keys have no readers left and were removed rather than
-    # kept around unused.
+    # the accent colour comes from the skin (see the skins note below);
+    # jukebox_key/_hi/_pressed below are its Walnut values
     "good": "#4fb286",
     # scrollbar handles need more contrast than ordinary chrome: on a touch
     # panel the handle is also the visual cue for how far down a long list you
@@ -35,20 +21,11 @@ COLORS = {
     "scroll_handle": "#4a5364",
     "scroll_handle_hi": "#5d6880",
     "warn": "#e0a458",
-    # -- Jukebox (2026-09-06): an "authentic" cream-paper/chrome/key-color
-    # palette lives apart from the rest of the (dark, neutral) theme on
-    # purpose - it's meant to look like a physical object under glass, not
-    # like another app panel. The key color (jukebox_key/_hi/_pressed) was
-    # originally a bright red - James, 2026-09-07 sixth follow-up, looking
-    # at the board: it read as an alert color against the rest of the app's
-    # warm brown/gold branding (the MusicMgr logo). Retinted to a walnut-
-    # brown family instead - every consumer (ui/widgets/jukebox_strip.py's
-    # banner border/code-box/currently-playing fill) reads these three
-    # tokens rather than a hardcoded hex, so retheming here was the only
-    # change needed. (A fourth consumer, QFrame#JukeboxArtistLine, was
-    # removed in a 2026-09-20 follow-up - see that rule's own removal note
-    # further down - once the artist badge widened to fill the row it used
-    # to share with two of those divider lines.)
+    # -- Jukebox: a cream-paper/chrome/key-color palette kept apart from the
+    # rest of the (dark, neutral) theme on purpose - it should look like a
+    # physical object under glass. The key color (jukebox_key/_hi/_pressed)
+    # is a walnut brown matching the app's branding; ui/widgets/
+    # jukebox_strip.py reads these tokens rather than hardcoded hex.
     "jukebox_chrome_light": "#e7eaee",
     "jukebox_chrome_dark": "#8b909a",
     "jukebox_paper": "#f4e6bd",
@@ -61,59 +38,25 @@ COLORS = {
     "jukebox_key_pressed": "#4a2e14",
 }
 
-# 2026-10-13 - skins (James: "I would like the ability for the users to
-# change 'skins'. Right now it's the brown pallete"). The values above are
-# the Walnut skin; the skin and jukebox finish chosen in Settings ›
-# Appearance replace them here, once, when this module is first imported -
-# before any screen is built or any module works out a colour from COLORS -
-# so a new choice shows after a restart. See ui/skins.py. The accent is
-# `accent` / `accent_hi` / `accent_pressed`; the jukebox_key names it has
-# gone by since the brown retint stay as the same values, so nothing that
-# reads them needs to change.
+# Skins: the values above are the Walnut skin; the skin and jukebox finish
+# chosen in Settings › Appearance replace them here, once, when this module
+# is first imported - before any screen is built or any module works out a
+# colour from COLORS - so a new choice shows after a restart. See
+# ui/skins.py. The accent is `accent` / `accent_hi` / `accent_pressed`; the
+# older jukebox_key names hold the same values, so their readers need no
+# change.
 from . import skins as _skins  # noqa: E402
 
 COLORS.update(_skins.colors_for(_skins.ACTIVE))
 
-#: 2026-09-07, an eighth same-day follow-up - James, looking at the board
-#: after the genre chips shipped: "Let's also change the red color on the
-#: Now Playing, Add to Jukebox and the Play button at the bottom to the
-#: same MusicMgr color palett[e]." These three widgets are styled through
-#: `accent`/`accent_dim` (the app's one shared red-orange highlight color,
-#: also used for the nav-rail selection bar, focus rings, scrollbars,
-#: sliders, and every *other* page's "primary" button - Settings' "Add
-#: folder…", Playlists' "New playlist"/"Play", Charts' "Import chart CSV…"
-#: /"Play owned", the artist/track panels' "Play all"/"Play everything")
-#: - retinting `accent` itself would recolor all of those too, well beyond
-#: what James pointed at. Retinted just the three named widgets instead,
-#: reusing the same walnut-brown tokens the jukebox key badges already
-#: use (`jukebox_key`/`jukebox_key_hi`/`jukebox_key_pressed`) rather than
-#: inventing a fourth brown - see QLabel#JukeboxNowPlayingText,
-#: QPushButton#PrimaryWarm (ui/views/jukebox.py's "+ Add to jukebox"
-#: button, the one non-generic `Primary` id in the app), and
-#: QPushButton#TransportMain below. TransportMain is the one board-wide
-#: control here rather than jukebox-specific - it's both the main player
-#: bar's central Play/Pause and the fullscreen video overlay's (see
-#: ui/widgets/common.py's TouchButton), so retinting it recolors that too;
-#: there's no way to scope "the play button at the bottom" to the Jukebox
-#: page alone, since it's the same persistent widget on every page.
-#:
-#: 2026-09-07, a ninth same-day follow-up - James: "make the pills not red
-#: but the brown color" (the genre chips themselves, added the same day as
-#: the above). Same reasoning as the paragraph above: `QPushButton#Chip`'s
-#: checked state is shared by every chip row in the app (cover_grid.py's
-#: sort chips, Now Playing's "Up next"/"Lyrics", track_panel.py's/
-#: video_table.py's sort/group chips), so retinting `#Chip:checked`
-#: itself would have turned all of those brown too. See
-#: QPushButton#ChipWarm below - a duplicate of `#Chip`'s pill shape with
-#: only the checked-state color swapped, applied to just the Jukebox
-#: page's genre chips (ui/views/jukebox.py overrides each chip's object
-#: name from ChipButton's default "Chip" to "ChipWarm").
-#:
-#: Both paragraphs above describe *deliberately incomplete* retints - the
-#: whole point at the time was to leave the shared `accent` tokens (and
-#: every other widget reading them) alone. A 2026-09-13 follow-up asked
-#: for the rest of it; see the COLORS dict's own comment above for where
-#: `accent`/`accent_dim`/`accent_soft` ended up.
+#: Jukebox-specific rules: QPushButton#PrimaryWarm (the "+ Add to jukebox"
+#: button) and QPushButton#ChipWarm (the Jukebox genre chips - `#Chip`'s
+#: pill shape with only the checked colour swapped; ui/views/jukebox.py sets
+#: that object name) use the jukebox_key tokens, so they can be styled
+#: apart from the generic #Primary / #Chip rules shared across the app.
+#: QLabel#JukeboxNowPlayingText and QPushButton#TransportMain (the player
+#: bar's and video overlay's Play/Pause - one widget on every page) use
+#: them too.
 
 
 def stylesheet() -> str:

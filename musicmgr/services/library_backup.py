@@ -1,10 +1,8 @@
-"""Daily library backups and restore (2026-10-19).
+"""Daily library backups and restore.
 
-James: rotating library backups with a Restore option in Settings - "Local
-only", "Daily on close, keep last 7". Until now the only safety net was the
-three pre-update copies (updater.backup_database_if_version_changed), and
-library.db had been corrupted once (2026-09-23) and lost playlists in a
-sync merge once (2026-09-30).
+Rotating, local-only library backups (daily on close, keep the last 7) with
+a Restore option in Settings - in addition to the three pre-update copies
+(updater.backup_database_if_version_changed).
 
 - `make_daily_backup` runs when MusicMgr closes: at most one copy a day,
   `backups/library-daily-YYYY-MM-DD.db`, the newest KEEP_DAILY kept. It uses

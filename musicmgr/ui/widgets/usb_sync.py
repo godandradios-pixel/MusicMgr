@@ -1,4 +1,4 @@
-"""USB sync UI pieces (2026-09-23) - the threads and dialogs behind
+"""USB sync UI pieces - the threads and dialogs behind
 Settings → USB sync. All the real work is in services/usb_sync.py (headless,
 tested there); see its module docstring and
 claude/2026-09-23-usb-sync-plan.md for the design."""
@@ -81,7 +81,7 @@ class UsbSyncThread(QThread):
     left. `finished_with(result_or_None, library_message, error_or_None)`."""
 
     progress = Signal(int, int, str)
-    #: what it's doing between copies (2026-10-01): "Adding … to your library"
+    #: what it's doing between copies: "Adding … to your library"
     stage = Signal(str)
     finished_with = Signal(object, str, object)
     #: (folders, answer) - see `_confirm_removals`
@@ -90,9 +90,9 @@ class UsbSyncThread(QThread):
     def __init__(self, plan: us.ComparePlan, parent=None) -> None:
         super().__init__(parent)
         self.plan = plan
-        #: 2026-09-30 (James: "fix the sync so it asks before removing a
-        #: whole folder of playlists"): `confirm_removals(folders) -> bool`,
-        #: run on the GUI thread; True = remove them. None = don't ask.
+        #: asked before a sync removes a whole folder of playlists:
+        #: `confirm_removals(folders) -> bool`, run on the GUI thread;
+        #: True = remove them. None = don't ask.
         self.confirm_removals = None
         # this object lives on the GUI thread, so the slot runs there while
         # run() waits for the answer
@@ -133,7 +133,7 @@ class UsbSyncThread(QThread):
         self.finished_with.emit(result, message, None)
 
     def _sync_library_state(self, result, message: str) -> str:
-        """Step 3 (2026-09-24): plays, ratings, playlists and the Jukebox
+        """Step 3: plays, ratings, playlists and the Jukebox
         board, merged through the drive - see services/library_state.py.
         A failure here never undoes the file sync; it's just reported."""
         from ...services import library_state
@@ -261,8 +261,8 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
 
 class _ConflictPreview(QWidget):
-    """Both versions of a conflicting picture side by side (2026-09-24,
-    artwork sync) - for an image, "which one?" is best answered by looking.
+    """Both versions of a conflicting picture side by side (artwork
+    sync) - for an image, "which one?" is best answered by looking.
     Hidden for anything that isn't an image."""
 
     SIZE = 180
@@ -515,9 +515,7 @@ class UsbPairsDialog(QDialog):
     remove one, or add one for a folder MusicMgr doesn't watch (e.g.
     MusicMP3). Nothing is saved until OK.
 
-    2026-09-24 - James: "how do I edit a folder pair, or delete?" (the first
-    version could only switch pairs on/off and add new ones). An artwork
-    pair's folder on this PC can't be changed: it is always this library's
+    An artwork pair's folder on this PC can't be changed: it is always this library's
     own data\\artwork / data\\artists - to sync D:\\MusicMgr\\data, run the
     MusicMgr that uses D:\\MusicMgr\\data."""
 

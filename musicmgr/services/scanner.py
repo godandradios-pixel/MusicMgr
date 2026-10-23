@@ -57,17 +57,11 @@ def is_various_artists(album_artist: Optional[str], performers: Iterable[Optiona
     """Is this album a various-artists compilation - one that belongs to no
     single artist's page?
 
-    2026-10-14 - James: "After a scan on D:\\Music why doesn't it pick up the
-    added album Da Doo Ron Ron for the Crystals". Its files carry the
-    Compilation flag (TCMP=1): MusicBrainz types a single-artist "Very Best
-    of" as "Album, Compilation" and Picard writes the flag for it. MusicMgr
-    read the flag as "various artists", so the album was hidden from the
-    Crystals' page and its cover saved as "Various Artists - <title>" (where
-    unrelated "Greatest Hits" albums then shared one picture).
-
-    Now the flag only counts when the album artist isn't the one performing
-    the tracks. An album artist of "Various Artists" (or the like) is always
-    a compilation."""
+    An album artist of "Various Artists" (or the like) is always a
+    compilation. The Compilation flag (TCMP) only counts when the album
+    artist isn't the one performing the tracks: MusicBrainz types a
+    single-artist "Very Best of" as "Album, Compilation" and Picard writes
+    the flag for it, so the flag alone doesn't mean various artists."""
     key = normalize(album_artist)
     if key in COMPILATION_ARTIST_KEYS:
         return True
@@ -84,28 +78,27 @@ class ScanResult:
     updated: int = 0
     unchanged: int = 0
     missing: int = 0
-    #: tracks deleted outright by `purge_orphaned_tracks` - see its
-    #: docstring (2026-09-07 follow-up)
+    #: tracks deleted outright by `purge_orphaned_tracks` - see its docstring
     removed: int = 0
     #: files that had been folded into another artist's track and now have
-    #: their own (2026-10-01 - see import_file's track lookup)
+    #: their own (see import_file's track lookup)
     separated: int = 0
     #: the tracks those files left - their chart matches get looked at again
     separated_from: set[int] = field(default_factory=set)
     #: old track id -> new, for every re-read file that now belongs to a
-    #: different track (a retag changed its title or album) - 2026-10-06
+    #: different track (a retag changed its title or album)
     retracked: dict[int, int] = field(default_factory=dict)
     #: of those, songs whose history (rating, plays, playlists, jukebox,
     #: chart matches) moved over because no file was left on the old track
     history_moved: dict[int, int] = field(default_factory=dict)
     #: old-time radio files taken back out of the music library - they
-    #: belong to the Radio page (2026-10-13, see remove_radio_files)
+    #: belong to the Radio page (see remove_radio_files)
     radio_removed: int = 0
-    #: file rows inside a folder scans now skip (GoodSync's _gsdata_ and
-    #: the like) taken back out - 2026-10-18, see remove_skipped_folder_files
+    #: file rows inside a folder scans skip (GoodSync's _gsdata_ and the
+    #: like) taken back out - see remove_skipped_folder_files
     skipped_removed: int = 0
     #: rows for a file already in the library under another capitalization
-    #: (2026-10-19, see merge_case_duplicate_files)
+    #: (see merge_case_duplicate_files)
     case_duplicates_removed: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -134,7 +127,7 @@ class TrackTags:
     album_artist: str = ""
     album: str = ""
     track_no: Optional[int] = None
-    #: a record side written as the track number ("A", "B", "A1") - 2026-09-30
+    #: a record side written as the track number ("A", "B", "A1")
     side: Optional[str] = None
     track_total: Optional[int] = None
     disc_no: int = 1
@@ -161,7 +154,7 @@ class TrackTags:
     had_explicit_album_artist: bool = False
     #: True if the title came from the file's own title tag, not its
     #: filename - `_fallback_from_path` only strips a track-number prefix
-    #: from a filename title (2026-10-16, "6 Inch" filed as "Inch")
+    #: from a filename title
     had_title_tag: bool = False
     duration_ms: Optional[int] = None
     bitrate: Optional[int] = None
@@ -169,7 +162,7 @@ class TrackTags:
     channels: Optional[int] = None
     codec: str = ""
     cover: Optional[bytes] = None
-    #: ReplayGain tags, if the file has them (2026-10-01, services/replaygain.py)
+    #: ReplayGain tags, if the file has them (services/replaygain.py)
     gain: Optional["replaygain.GainInfo"] = None
 
 
@@ -196,7 +189,7 @@ def _first(mapping, *keys) -> str:
 
 def _all_values(mapping, *keys) -> str:
     """Every value of the first of `keys` the file has, joined with "; " -
-    for genre, which a file may hold as several values (2026-10-06)."""
+    for genre, which a file may hold as several values."""
     for key in keys:
         try:
             val = mapping.get(key)
@@ -248,17 +241,10 @@ _FF = "----:com.apple.iTunes:"
 def _first_id3_comment(raw) -> str:
     """Read a COMM (comment) frame straight off the raw ID3 tags.
 
-    `_first(src, "comment", "COMM::eng", ...)` above never finds a comment on
-    an MP3, no matter what is actually tagged. `src` is the *easy* wrapper
-    whenever one loads (true for virtually every MP3), and EasyID3 simply
-    has no "comment" key at all - and "COMM::eng" is a raw-ID3 HashKey, which
-    isn't a valid EasyID3 key either, so it can't be found through the easy
-    wrapper. FLAC/Vorbis and MP4 comments work fine (both expose "comment"
-    natively through their easy wrappers); only ID3/MP3 needed this.
-
-    Falls back to the raw (non-easy) tags object and matches any COMM frame
-    regardless of language or description, since real-world taggers are
-    inconsistent about both.
+    EasyID3 has no "comment" key, so `_first(src, "comment", ...)` never
+    finds an MP3's comment through the easy wrapper (FLAC/Vorbis and MP4
+    expose it natively). Matches any COMM frame regardless of language or
+    description, since real-world taggers are inconsistent about both.
     """
     id3_tags = getattr(raw, "tags", None)
     if id3_tags is None:
@@ -267,9 +253,8 @@ def _first_id3_comment(raw) -> str:
         keys = list(id3_tags.keys())
     except Exception:
         return ""
-    # 2026-10-06: a plain comment (no description) first; iTunes' own
-    # "iTunNORM"/"iTunSMPB" comments hold volume and gapless figures, not
-    # anything a person wrote, so they're never taken as the comment
+    # a plain comment (no description) first; iTunes' own "iTunNORM"/
+    # "iTunSMPB" comments hold volume and gapless figures, never the comment
     def desc(key) -> str:
         return str(getattr(id3_tags[key], "desc", "") or "")
 
@@ -299,12 +284,11 @@ _NO_CATALOG = {"none", "[none]", "n/a"}
 
 
 def _distinct_catalog_numbers(text: str) -> str:
-    """'986113-7, 986113-7, 986113-7' -> '986113-7' (2026-10-16). Some
-    taggers write one catalog number per label on a co-released album, so
-    the same number comes back several times - and a release is looked up
-    by its catalog number, so the repeated form no longer found the album
-    already in the library and a second copy of it was made (Ludacris's
-    Chicken-N-Beer). Different numbers are kept, in order."""
+    """'986113-7, 986113-7, 986113-7' -> '986113-7'. Some taggers write one
+    catalog number per label on a co-released album; since a release is
+    looked up by its catalog number, the repeated form would miss the album
+    already in the library and make a second copy. Different numbers are
+    kept, in order."""
     seen: list[str] = []
     for part in (p.strip() for p in (text or "").split(",")):
         if part and part.lower() not in _NO_CATALOG and part.lower() not in (s.lower() for s in seen):
@@ -382,10 +366,8 @@ def read_tags(path: Path) -> TrackTags:
         tags.title = path.stem
         return tags
 
-    # "Title", "Author" and the "WM/..." keys are Windows Media (.wma) -
-    # 2026-10-06: a .wma's tags were never read at all before (its keys
-    # are capitalised and namespaced, unlike every other format's), which
-    # mattered once the tag editor could write them
+    # "Title", "Author" and the "WM/..." keys are Windows Media (.wma),
+    # whose keys are capitalised and namespaced unlike every other format's
     tags.title = _first(src, "title", "TIT2", "\xa9nam", "Title")
     tags.had_title_tag = bool(tags.title)
     tags.title = tags.title or path.stem
@@ -413,7 +395,7 @@ def read_tags(path: Path) -> TrackTags:
     tags.genres = [g.strip() for g in re.split(r"[;/,]", genre) if g.strip()] if genre else []
     style = _first(src, "style", "STYLE")
     tags.styles = [s.strip() for s in re.split(r"[;/,]", style) if s.strip()] if style else []
-    # the _raw_first fallbacks (2026-10-06) are the tags the easy wrappers
+    # the _raw_first fallbacks are the tags the easy wrappers
     # don't map: an .m4a's freeform atoms, a .wav/.aiff's TXXX frames - all
     # written by the tag editor and MusicBrainz Picard
     tags.label = (_first(src, "organization", "label", "TPUB", "publisher", "LABEL", "WM/Publisher")
@@ -486,42 +468,20 @@ def _artist_title_from_stem(stem: str) -> Optional[tuple[str, str]]:
 def _fallback_from_path(path: Path, tags: TrackTags) -> TrackTags:
     """Fill obvious gaps from `Artist/Album/01 Title.ext` layouts.
 
-    2026-09-07 follow-up (James: a live-bootleg WAV with no title tag at
-    all showed up as "01 Midwest Midnight" instead of "Midwest Midnight").
-    `read_tags()` falls back to the raw filename stem for `title` when a
-    file carries no title tag, so an untagged "01 Midwest Midnight.wav"
-    kept its leading track-number prefix baked right into the title. The
-    same regex that already pulls `track_no` out of that prefix now also
-    strips it from the title - but only when `tags.title == path.stem`,
-    i.e. only when the title really did come from the raw filename and
-    isn't a genuine tag that merely happens to start with a number.
+    `read_tags()` has already turned a blank artist into "Unknown Artist",
+    so that string counts as "no artist" here and is replaced by the
+    grandparent folder's name.
 
-    2026-09-13 fix (found while writing this module's first tests, not
-    reported): the artist/album-artist half of this fallback never
-    actually fired. `read_tags()` always runs first at both real call
-    sites (`import_file`, `scan_folder`) and already upgrades a blank
-    artist to the literal string "Unknown Artist" before returning it -
-    so by the time this function saw it, `tags.artist` was never really
-    falsy, and `tags.artist or grand.name` silently kept "Unknown Artist"
-    instead of ever substituting the folder name. The guard above already
-    correctly treated "Unknown Artist" as "no real artist"; the
-    assignment below just never matched that guard. Every untagged file
-    has been filed under "Unknown Artist" instead of its parent folder's
-    name until now.
-
-    2026-10-16 (James: "6 Inch", "99 Red Balloons", "777-9311" and a dozen
-    more showed up as "Inch", "Red Balloons", "9311"): `tags.title ==
-    path.stem` isn't proof the title came from the filename - a file named
-    after its own song ("6 Inch.mp3", title tag "6 Inch") passes it too, so
-    the number that belongs to the song was cut off as a track number. Only
-    an untagged title is stripped now (`had_title_tag`), and never a number
-    run into another with a hyphen ("777-9311", "20-20", "5-10-15 Hours"),
-    which is part of the title, not a track number.
+    A leading track number ("01 Midwest Midnight") is taken as `track_no`
+    and stripped from the title only when the title came from the filename
+    (no title tag - `had_title_tag`). A file named after its own song
+    ("99 Red Balloons.mp3" titled "99 Red Balloons") keeps its number, and
+    so does a number run into another with a hyphen ("777-9311", "20-20",
+    "5-10-15 Hours"), which is part of the title.
     """
     if tags.artist in ("", "Unknown Artist") and not tags.had_title_tag:
-        # 2026-10-19: an untagged "Artist - Title.ext" (how music videos are
-        # usually named - 12 in D:\Videos were filed under "?" / Unknown
-        # Artist) - the filename says who it is
+        # an untagged "Artist - Title.ext" (how music videos are usually
+        # named) - the filename says who it is
         named = _artist_title_from_stem(path.stem)
         if named is not None:
             tags.artist, tags.title = named
@@ -550,8 +510,8 @@ def _fallback_from_path(path: Path, tags: TrackTags) -> TrackTags:
 
 def _save_cover(data: bytes, release: "Release") -> Optional[str]:
     """Save a tag-embedded cover under its name-based file
-    (`artwork\\<Album Artist> - <Title>.jpg` - see services/artwork_names.py,
-    2026-09-24). Never overwrites a picture that's already there: a
+    (`artwork\\<Album Artist> - <Title>.jpg` - see services/artwork_names.py).
+    Never overwrites a picture that's already there: a
     downloaded or hand-picked cover (or one that arrived by USB sync) must
     survive a rescan."""
     if not data:
@@ -568,8 +528,7 @@ def _save_cover(data: bytes, release: "Release") -> Optional[str]:
 
 def iter_audio_files(root: Path, skip: Sequence[str] = ()) -> Iterable[Path]:
     """Every audio file under `root`. `skip` - normalised folders from
-    services/radio_folder.roots - leaves the old-time radio folder out
-    (2026-10-13: James, "Keep the Radio folder out of the music scan")."""
+    services/radio_folder.roots - leaves the old-time radio folder out."""
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [
             d for d in dirnames
@@ -595,14 +554,10 @@ def _folder_album_artist(tags_by_path: dict[Path, TrackTags]) -> tuple[str, bool
 
     Failing that - no file in the folder has an album-artist tag at all -
     tracks that all share the same performer are an ordinary single-artist
-    album, same as the old per-file fallback. Tracks that don't are exactly
-    what an *untagged* various-artists compilation looks like: one folder,
-    one album title, a different performer named on every file and nothing
-    ever says "Various Artists" outright. Filing each track under its own
-    performer there used to fragment one physical album into one release
-    per performer (e.g. a 10-track "Best of Women of Christian Music" box
-    set showing up as 10 near-identical album tiles) - so that case is
-    treated as a compilation instead.
+    album. Tracks that don't are what an *untagged* various-artists
+    compilation looks like (one folder, one album title, a different
+    performer on every file), so that case is treated as a compilation
+    rather than split into one release per performer.
     """
     explicit = [
         t.album_artist for t in tags_by_path.values() if t.had_explicit_album_artist
@@ -648,11 +603,8 @@ def _needs_import(session: Session, path: Path, force: bool = False) -> bool:
     because it already went through this same folder logic the first time
     it was imported.
 
-    `force=True` (2026-09-17, chasing why a Comment-tag fix in `read_tags`
-    didn't do anything for James's real library - see `import_file`'s own
-    `force` docstring) always says yes, regardless of mtime/size: it's the
-    only way to make an existing, on-disk-unchanged file's tags ever get
-    re-read at all."""
+    `force=True` always says yes, regardless of mtime/size - the only way
+    to re-read an unchanged file's tags (see `import_file`'s `force`)."""
     if force:
         return True
     stat = path.stat()
@@ -679,9 +631,8 @@ def import_single(session: Session, path: Path | str) -> Optional[Track]:
     """Import one file the user picked by hand (Charts' Fix match "Browse
     for file..."), and return its own track. A file already in the library
     whose track also holds other files is re-read, so a version folded into
-    another artist's track before the 2026-10-01 fix comes out as its own
-    track instead of handing back the other artist's (James: "When I pick
-    Perry Como with the file picker it still shows Russ Morgan")."""
+    another artist's track comes out as its own track instead of handing
+    back the other artist's."""
     path = Path(path)
     result = ScanResult()
     if _shared_track_files(session, [path]):
@@ -745,30 +696,17 @@ def import_file(
 ) -> Optional[Track]:
     """Import or refresh a single audio file. Returns the Track.
 
-    `tags` lets a caller that already read the file (namely `scan_folder`,
-    which has to read every track in a folder up front to make the
-    folder-wide album-artist call below) pass it in rather than this
-    function reading the file a second time. `album_artist_override` /
-    `is_compilation_override` carry that folder-wide decision
-    (`_folder_album_artist`) in; without them this file decides alone from
-    its own tags, exactly as before - which is what a direct call (as the
-    tests and a single-file CLI import do) still gets.
+    `tags` lets a caller that already read the file (`scan_folder`, which
+    reads a whole folder up front for the folder-wide album-artist call)
+    pass it in. `album_artist_override` / `is_compilation_override` carry
+    that folder-wide decision (`_folder_album_artist`); without them the
+    file decides alone from its own tags.
 
-    `force=True` (2026-09-17, James: "still blank after a rescan") skips
-    the unchanged-file shortcut below even when the file's mtime/size on
-    disk haven't moved. Fixing a tag-reading bug in `read_tags` (like the
-    MP3 Comment-frame fix earlier this session) does nothing at all for a
-    library that's already been scanned - every file everywhere is
-    "unchanged" from the scanner's point of view, since nothing touched
-    the files themselves - so there was previously no way to make an
-    already-imported library pick up a tag-reading fix short of deleting
-    and reimporting the whole thing. `force` re-runs this whole function
-    for a file even when its `MediaFile` row already matches, re-deriving
-    every tag-sourced field (including `track.comment`) from a fresh
-    `read_tags()` call. Every write below this point (`get_or_create_*`,
-    `add_credit`) is already idempotent - the same "changed file" path
-    already re-runs them on every real edit - so forcing an unchanged file
-    through is safe, just slower than skipping it.
+    `force=True` skips the unchanged-file shortcut even when mtime/size
+    haven't moved, re-deriving every tag-sourced field from a fresh
+    `read_tags()` - the only way an already-scanned library picks up a
+    tag-reading fix. Every write below (`get_or_create_*`, `add_credit`) is
+    idempotent, so forcing an unchanged file through is safe, just slower.
     """
     stat = path.stat()
     existing = find_media_file(session, path)
@@ -798,7 +736,7 @@ def import_file(
         # so the album artist itself is the more reliable tell - a release
         # explicitly credited to "Various Artists" is a compilation whether or
         # not the flag made it into the file (and a flagged "Best of" by the
-        # artist performing it isn't one - 2026-10-14, is_various_artists)
+        # artist performing it isn't one - see is_various_artists)
         is_compilation = is_various_artists(album_artist, [tags.artist], flagged=tags.compilation)
     master = lib.get_or_create_master(session, tags.album, album_artist, tags.year)
     release = lib.get_or_create_release(
@@ -847,16 +785,10 @@ def import_file(
     release.album_artist_id = aa.id
 
     # track
-    # 2026-10-01 - the same title on the same album is only the same track
-    # when it's by the same artist. Before this, a track was (album, title,
-    # disc) alone, so a compilation folder holding several artists'
-    # versions of one song (James's "1949 Billboard Top Hits": Russ Morgan,
-    # Blue Barron and Jack Smith all doing "Cruising Down the River"; four
-    # "Forever and Ever"s, five "Again"s) folded them into one track with
-    # several files - the other versions vanished from the library, the
-    # charts and playlists (James: "why does the search only show the russ
-    # morgan when I clearly want Perry como"). Two files by the same artist
-    # (an MP3 and a FLAC of one recording) still share a track.
+    # the same title on the same album is only the same track when it's by
+    # the same artist - a compilation can hold several artists' versions of
+    # one song. Two files by the same artist (an MP3 and a FLAC of one
+    # recording) share a track.
     title_key = normalize(tags.title)
     artist_key = normalize(tags.artist or "")
     candidates = list(session.scalars(
@@ -871,15 +803,11 @@ def import_file(
         key = normalize(t.artist_display or "")
         return not key or not artist_key or key == artist_key
 
-    # 2026-10-18 - nor is it the same track when the two files sit at
-    # different track numbers on the album. The title key drops "(Live)",
-    # "(Remastered)", "(Mono)" and the like, so a live or mono bonus version
-    # was folded into the studio track and vanished from the album (James:
-    # "Why is 2. Lover missing from the Michael Stanley Band Heartland
-    # album" - 02 Lover and 12 Lover (Live) were one track; 442 such tracks
-    # on PC1). An MP3 and a FLAC of one recording still share a track: same
-    # number. 999 and 0 aren't positions (the Billboard folders' extra
-    # copies are tagged 999), so they never split a track.
+    # nor is it the same track when the two files sit at different track
+    # numbers: the title key drops "(Live)", "(Remastered)", "(Mono)" and
+    # the like, so a live or mono bonus version would otherwise fold into
+    # the studio track. 999 and 0 aren't positions (extra copies are often
+    # tagged 999), so they never split a track.
     this_no = _real_track_no(tags.track_no)
 
     def same_number(t: Track) -> bool:
@@ -902,9 +830,8 @@ def import_file(
         track = Track(release_id=release.id, title=tags.title, title_key=title_key)
         session.add(track)
         session.flush()
-    # the file's own spelling of the title (2026-10-06): a case-only or
-    # "(Remastered)" fix keeps the same title key, so it used to never
-    # reach the library
+    # the file's own spelling of the title: a case-only or "(Remastered)"
+    # fix keeps the same title key, so it has to be copied over here
     if tags.title and track.title != tags.title and existing is not None and existing.track is track:
         track.title = tags.title
     track.track_no = tags.track_no
@@ -915,7 +842,7 @@ def import_file(
         else (str(tags.track_no) if tags.track_no else None)
     )
     track.artist_display = tags.artist
-    # a 78 side whose file carries its own label keeps it (2026-10-17)
+    # a 78 side whose file carries its own label keeps it
     if tags.cover and release.cover_path and is_side(track.position):
         from . import artwork_names
 
@@ -934,8 +861,8 @@ def import_file(
         lib.add_credit(session, artist, role, track=track, position=idx)
         credited.add(artist.id)
     if names:
-        # drop performer credits left by other artists' files that used to
-        # be folded into this track (see the track lookup above)
+        # drop performer credits left by other artists' files once folded
+        # into this track (see the track lookup above)
         for credit in session.scalars(select(Credit).where(
             Credit.track_id == track.id,
             Credit.role.in_((Credit.ROLE_MAIN, Credit.ROLE_FEATURING)),
@@ -965,19 +892,14 @@ def import_file(
 
 
 # --------------------------------------------------------------------------
-# retagged files: keep each song's history with its file (2026-10-06)
+# retagged files: keep each song's history with its file
 # --------------------------------------------------------------------------
 #
 # A retag that changes a song's title or album files it under a different
-# track. Two things used to go wrong:
-#
-# - songs swapping titles (an album whose titles were off by one, fixed in
-#   the tag editor, Mp3tag or Picard) could land on each other's old
-#   tracks, since a track is found by its title - so ratings and plays
-#   went to the wrong song;
-# - the old track kept the rating, plays, playlist places, jukebox card
-#   and chart matches with no file behind it, and USB sync (keyed by file
-#   path) then saw the path's rating as deleted and passed that on.
+# track. Songs swapping titles could land on each other's old tracks (a
+# track is found by its title), and an old track left with no file would
+# keep the rating, plays, playlist places, jukebox card and chart matches -
+# which USB sync, keyed by file path, would then see as deleted.
 #
 # `hide_retitled` keeps the edited songs' old tracks out of the title
 # lookup while the files are read; `carry_history` moves everything from a
@@ -1127,17 +1049,11 @@ def scan_folder(
     return result
 
 
-# 2026-09-22 - James: "add a real cancel button that stops any process
-# running within Settings". `should_stop` above, when given, is checked
-# once per file, *before* that file's own import starts - deliberately a
-# `break`, never a raise, so this never takes the `session.rollback()` path
-# a few lines up (that path exists only for a genuinely bad file, and
-# throws away every row flushed-but-not-committed in the whole scan so
-# far - see its own comment). A clean break instead leaves whatever's
-# already been imported (flushed or not) to get picked up by the one
-# `session.flush()`/commit this whole scan still ends with normally, same
-# as if the folder's remaining files had simply not been reached yet -
-# they'll just get picked back up, cleanly, on the next scan.
+# `should_stop` (Settings' Cancel button), when given, is checked once per
+# file before its import starts - deliberately a `break`, never a raise, so
+# it never takes the `session.rollback()` path in `_import_files` (which
+# discards every uncommitted row of the scan). What's already imported is
+# committed normally; the remaining files are picked up on the next scan.
 
 
 def import_paths(
@@ -1148,9 +1064,8 @@ def import_paths(
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> ScanResult:
     """Import just these audio files - no folder walk, no WatchedFolder
-    bookkeeping. 2026-09-23 (USB sync, services/usb_sync.py): after a sync
-    copies 214 new tracks onto this PC, only those files need reading, not
-    a 100k-file rescan. Same per-folder album-artist decision as
+    bookkeeping. Used after a USB sync (services/usb_sync.py) copies new
+    tracks onto this PC, so only those files are read. Same per-folder album-artist decision as
     `scan_folder` (the copied files are grouped by their own folder), and
     the same unchanged-file shortcut, so passing an already-imported file
     is harmless. Non-audio paths are ignored."""
@@ -1181,16 +1096,13 @@ def _import_files(
     # Only a new or changed file needs its tags read at all. Group just
     # those by folder so a folder-wide album-artist decision can be made
     # before any of them turn into a Release - see _folder_album_artist.
-    # An unchanged file is left exactly alone: cheap on a big rescan, and it
-    # already went through this same folder logic the first time around.
-    # `force=True` (see import_file's docstring) makes every file "need"
-    # import regardless, which is the only way an existing library ever
-    # picks up a `read_tags()` bugfix - it has no other reason to re-read a
-    # file whose mtime/size on disk never changed.
+    # An unchanged file is left alone: cheap on a big rescan, and it already
+    # went through this folder logic the first time. `force=True` (see
+    # import_file) makes every file "need" import regardless.
     to_process = [p for p in files if force or _needs_import(session, p)]
     # unchanged files that share their track with another file get read once
-    # more, so recordings folded together before the 2026-10-01 track fix
-    # come apart (see import_file); they stay on the album they're on
+    # more, so recordings folded together come apart (see import_file); they
+    # stay on the album they're on
     process = set(to_process)
     regroup = [p for p in _shared_track_files(session, files) if p not in process]
     by_folder: dict[Path, list[Path]] = {}
@@ -1202,11 +1114,9 @@ def _import_files(
     for folder_files in by_folder.values():
         folder_tags = {p: _fallback_from_path(p, read_tags(p)) for p in folder_files}
         tags_cache.update(folder_tags)
-        # one decision per album in the folder, not per folder (2026-10-16):
-        # a folder of loose singles or 78s - James's "Old78Records" (179
-        # records) and "BPM" (44 singles) - holds many albums, each tagged
-        # with its own album artist, and the folder's most common one
-        # (Bing Crosby, John Summit & Hayla) was put on every one of them
+        # one decision per album in the folder, not per folder: a folder of
+        # loose singles or 78s holds many albums, each tagged with its own
+        # album artist
         by_album: dict[str, dict[Path, TrackTags]] = {}
         for p, t in folder_tags.items():
             by_album.setdefault(normalize(t.album), {})[p] = t
@@ -1250,26 +1160,15 @@ def _import_files(
         except Exception as exc:  # keep going on one bad file
             log.exception("failed to import %s", path)
             result.errors.append(f"{path.name}: {exc}")
-            # A failed flush leaves the Session unusable (SQLAlchemy refuses
-            # any further query or flush on it) until it's explicitly rolled
-            # back - without this, "keep going on one bad file" was a lie:
-            # every file after the first failure, every remaining watched
-            # folder, and mark_missing_files/purge_orphaned_tracks below all
-            # failed the same way, with the SAME generic "transaction has
-            # been rolled back" message masking whatever actually went wrong
-            # with THIS file (James, 2026-09-08 - a scan reported total
-            # failure over one bad track).
+            # A failed flush leaves the Session unusable until it's rolled
+            # back; without this every later file, folder and the
+            # mark_missing_files/purge_orphaned_tracks passes would fail with
+            # the same generic "transaction has been rolled back" error.
             #
-            # There's no per-file savepoint (see db/session.py - one
-            # session_scope, one commit, at the very end of the whole
-            # multi-folder scan), so this rollback discards every row
-            # flushed-but-not-committed so far in THIS scan, not just the
-            # bad file's - i.e. every earlier file already processed in this
-            # same run. That's still strictly better than before (the old
-            # behavior lost the entire scan, silently, with not even the
-            # watched-folder timestamps updated) - anything rolled back here
-            # just gets re-detected as needing import and picked back up
-            # cleanly on the next scan, same as if it had never run.
+            # There's no per-file savepoint (see db/session.py - one commit
+            # at the end of the whole scan), so this discards every
+            # uncommitted row of this scan, not just the bad file's. Those
+            # files are re-detected as needing import on the next scan.
             session.rollback()
             # the rollback undid this scan's hiding and moves too - hide
             # again for the files still to come, and forget moves that
@@ -1313,15 +1212,13 @@ def _move_locked_to_version(session: Session, entry: ChartEntry, artist_similari
 def _rematch_separated(session: Session, result: ScanResult,
                        progress: Optional[ProgressFn] = None) -> None:
     """Chart entries matched to a track that other artists' files have just
-    been separated from may belong to one of those versions now (#15
-    "Forever and Ever - Perry Como" was matched to Russ Morgan's track,
-    which held Perry Como's file too). Re-match those entries.
+    been separated from may belong to one of those versions now. Re-match
+    those entries.
 
     A match fixed by hand stays fixed, but may have been aimed at a version
-    that was hidden inside the track (James's "Mule Train - Frankie Laine",
-    fixed to the one Mule Train track there was, which showed as Vaughn
-    Monroe): it moves to a separated version on the same album only when
-    that version's artist is plainly the chart's artist."""
+    that was hidden inside the track: it moves to a separated version on the
+    same album only when that version's artist is plainly the chart's
+    artist."""
     from . import charts as chart_svc  # charts imports nothing from here
     from .matching import artist_similarity
 
@@ -1363,27 +1260,24 @@ def tidy_after_scan(session: Session) -> None:
     """Self-healing checks over every artist and album that only find work
     after a scan has changed the library - artist sort keys
     (library.fix_artist_sort_keys) and single-artist albums the
-    Compilation flag hid (library.fix_single_artist_compilations). They
-    ran on every start until 2026-10-21 (James: "I would like the ongoing
-    startup to be fast"), about 0.27 s of each launch on PC1; every scan
-    path calls this at its end instead. Both are idempotent."""
+    Compilation flag hid (library.fix_single_artist_compilations). Every
+    scan path calls this at its end rather than running it at startup, to
+    keep launch fast. Both are idempotent."""
     lib.fix_artist_sort_keys(session)
     lib.fix_single_artist_compilations(session)
 
 
-#: how often mark_missing_files below reports progress - each item here is
-#: just one os.path.exists() stat call (unlike the actual tag-reading work
-#: scan_folder's own `idx % 5` throttles), so this can afford to be much
-#: coarser - same reasoning and same value as metadata_health.py's own
-#: _LYRICS_PROGRESS_EVERY, which walks a comparable per-track stat call.
+#: how often mark_missing_files below reports progress - each item is just
+#: one os.path.exists() call, so much coarser than scan_folder's `idx % 5`
+#: (same value as metadata_health.py's _LYRICS_PROGRESS_EVERY)
 _MISSING_FILES_PROGRESS_EVERY = 250
 
 
 def remove_radio_files(session: Session) -> int:
     """Take files in the old-time radio folder back out of the music
-    library (2026-10-13). A scan no longer adds them, but a library
-    scanned before that - a watched folder with Radio inside it - still
-    has them. Only the file rows go here; purge_orphaned_tracks, which
+    library. A scan doesn't add them, but an older library (a watched
+    folder with Radio inside it) may still have them. Only the file rows
+    go here; purge_orphaned_tracks, which
     every scan runs next, then removes the tracks left with no file
     unless they have history (a playlist, plays, a chart, the jukebox)."""
     radio = radio_folder.roots(session)
@@ -1405,9 +1299,9 @@ def _in_skipped_folder(path: str) -> bool:
 
 
 def remove_skipped_folder_files(session: Session) -> int:
-    """Take files inside a folder scans now skip (config.SKIP_SCAN_DIRS -
+    """Take files inside a folder scans skip (config.SKIP_SCAN_DIRS -
     GoodSync's _gsdata_ above all) back out of the library, the same way
-    remove_radio_files does for the Radio folder (2026-10-18). Only the
+    remove_radio_files does for the Radio folder. Only the
     file rows go: a song whose real file is also in the library just
     loses the stray copy, and purge_orphaned_tracks, which every scan
     runs next, removes a track left with no file - or hands its history
@@ -1426,9 +1320,8 @@ def remove_skipped_folder_files(session: Session) -> int:
 
 def merge_case_duplicate_files(session: Session) -> int:
     """Drop library rows that are the same file as another row, differing
-    only in letter case (2026-10-19 - "03 Your Love Is Like A River.mp3"
-    and "...Like a River.mp3" were both in the library, one file on disk).
-    Only on a case-insensitive file system (config.CASE_INSENSITIVE_PATHS).
+    only in letter case ("...Like A River.mp3" and "...Like a River.mp3",
+    one file on disk). Only on a case-insensitive file system (config.CASE_INSENSITIVE_PATHS).
     The most recently added row - the spelling the last scan saw - stays;
     purge_orphaned_tracks, which every scan runs afterwards, tidies a
     track left without a file."""
@@ -1456,10 +1349,9 @@ def merge_case_duplicate_files(session: Session) -> int:
 
 def purge_stale_copies(session: Session) -> int:
     """Delete missing file rows whose track still has another file that's
-    present - an MP3 beside the FLAC, a copy elsewhere (2026-10-18).
-    purge_orphaned_tracks only ever removes whole tracks, so a stale extra
-    copy stayed "missing" forever and kept turning up in Settings' "Purge
-    missing files" count. Nothing else is lost: the track, its history and
+    present - an MP3 beside the FLAC, a copy elsewhere.
+    purge_orphaned_tracks only removes whole tracks, so without this a
+    stale extra copy would stay "missing" forever. Nothing else is lost: the track, its history and
     its present file all stay. Settings' Purge button runs this; a scan
     doesn't, so a copy on a drive that's only unplugged isn't forgotten."""
     playable_track_ids = select(MediaFile.track_id).where(MediaFile.is_missing.is_(False))
@@ -1484,18 +1376,10 @@ def mark_missing_files(
 ) -> int:
     """Flag rows whose file has disappeared instead of deleting metadata.
 
-    2026-09-22 - James: "does the progress bar also work on ... verify
-    files" (it didn't - "Verify files" ran this entirely on the UI thread
-    with no feedback, same problem class the "Missing metadata" dashboard
-    had before its own progress bar). `progress`, when given, is called
-    `(done, total, "")`.
-
-    2026-09-22 same-day follow-up (James: "add a real cancel button...") -
-    `should_stop`, checked once per row, `break`s rather than raising -
-    each row's `mf.is_missing` flip is an independent in-memory mutation
-    with no per-row commit, so a break just leaves the remaining rows
-    unchecked for this run, same as `import_artist_images`'s own
-    should_stop above."""
+    `progress`, when given, is called `(done, total, "")` (Settings'
+    "Verify files" progress bar). `should_stop`, checked once per row,
+    `break`s rather than raising: each `is_missing` flip is independent, so
+    a break just leaves the remaining rows unchecked for this run."""
     total = session.scalar(select(func.count(MediaFile.id))) or 0
     count = 0
     for i, mf in enumerate(session.scalars(select(MediaFile)), start=1):
@@ -1515,42 +1399,19 @@ def mark_missing_files(
 def purge_orphaned_tracks(session: Session) -> int:
     """Delete tracks left with no playable file after a scan.
 
-    2026-09-07 follow-up. Renaming a file on disk (even just to fix a
-    stray "01 " prefix that `_fallback_from_path` used to leave in an
-    untagged title - see its docstring) gives it a new path, and
-    `import_file` matches a `MediaFile` by exact path, so the renamed file
-    is imported as a brand-new track while the *original* track - now
-    pointing at a path that no longer exists, flagged missing by
-    `mark_missing_files` above - is left behind. Nothing about the file
-    system tells the scanner "this is the same song, just renamed", so
-    without this cleanup that original track sits in the library forever,
-    indistinguishable from a real duplicate in every search and browse
-    view.
+    A renamed or moved file gets a new path, and `import_file` matches a
+    `MediaFile` by exact path, so the file comes in as a new track and the
+    original track is left behind pointing at a missing path. This runs
+    automatically on every scan to clear those.
 
-    James chose to run this automatically on every scan rather than
-    behind a confirmation button. A track only qualifies for outright
-    deletion when it has no history to lose: no playlist placement, no
-    chart match, no play event, and no jukebox slot. All four of those
-    foreign keys cascade or null out at the database level if a
-    qualifying track were deleted without this check, which would
-    otherwise silently drop a song from a playlist, unmatch a chart entry
-    the user placed by hand, or empty a side of a jukebox title strip
-    without any warning - this function exists specifically to make sure
-    none of that happens automatically. A track with any of that history
-    keeps showing up exactly as it does today (missing-file, visible, "no
-    available file" if tapped) rather than being removed. In the ordinary
-    rename/retag case this covers everything, since a fresh orphan has had
-    no chance to accumulate any history yet.
-
-    2026-09-07 fix: the jukebox check (`JukeboxSlot.side_a_track_id`/
-    `side_b_track_id`) was missing entirely until James was about to move
-    his whole music library to a new PC - the exact scenario that makes
-    this matter, since every track's file goes "missing" under its old
-    path the moment a rescan sees the new one, and a track sitting only on
-    the jukebox board (no playlist/chart/play-event history of its own)
-    would otherwise have been silently deleted, quietly emptying that side
-    of its title strip (`JukeboxSlot`'s FK is `ondelete="SET NULL"`, so it
-    wouldn't even have raised an error - just gone missing).
+    A track is deleted only when it has no history to lose: no playlist
+    placement, chart match, play event or jukebox slot (see
+    `_history_reason`). Those foreign keys cascade or null out, so deleting
+    such a track would silently drop it from a playlist, unmatch a
+    hand-placed chart entry, or empty a jukebox side (`JukeboxSlot`'s FK is
+    `ondelete="SET NULL"`). A track with history stays, shown as missing.
+    A track whose song is found again on another track first hands its
+    history over (`_live_twin`, `carry_history`).
     """
     playable_track_ids = select(MediaFile.track_id).where(
         MediaFile.is_missing.is_(False)
@@ -1558,7 +1419,7 @@ def purge_orphaned_tracks(session: Session) -> int:
     candidates = session.scalars(
         select(Track).where(Track.id.not_in(playable_track_ids))
     ).all()
-    # 2026-10-16: a track whose file now lives on another track - the same
+    # a track whose file now lives on another track - the same
     # song by the same artist, found again under a new path or a new album
     # (a rescan of a moved, renamed or retagged file) - hands its history
     # over and goes, instead of staying behind with no file forever
@@ -1613,12 +1474,10 @@ def _history_reason(session: Session, track_id: int) -> Optional[str]:
 @dataclass
 class MissingSummary:
     """What "Purge missing files" would actually do, worked out without
-    changing anything (2026-10-18 - James: Verify said nothing was missing
-    but Purge offered "133 tracks"). The old dialog showed the count of
-    missing *file rows*, which is neither the number of tracks nor the
-    number a purge removes: a missing file on a track that still has
-    another, present file (an MP3 beside the FLAC) takes nothing with it,
-    and a track with history is kept by purge_orphaned_tracks anyway.
+    changing anything. The count of missing file rows is neither the number
+    of tracks nor the number a purge removes: a missing file on a track
+    that still has a present file takes nothing with it, and a track with
+    history is kept by purge_orphaned_tracks anyway.
 
     - `files`: MediaFile rows currently flagged missing
     - `stale_copies`: missing files whose track still has another file
@@ -1699,8 +1558,7 @@ def _live_twin(session: Session, track: Track, playable_track_ids) -> Optional[T
 
 
 def save_side_covers(session: Session) -> int:
-    """Give every 78 side its own label picture from its file (2026-10-17 -
-    James: "I need the 78s to show each label A and B"). The scanner does
+    """Give every 78 side its own label picture from its file. The scanner does
     this for new and changed files; this does it once for the files already
     in the library. Only songs with a side (A, B, A1...) are read. Returns
     how many side pictures were saved."""
@@ -1740,11 +1598,8 @@ def artist_key(name: str) -> str:
 
 def resplit_track_credits(session: Session) -> tuple[int, int]:
     """Recompute every track's performer credits from its artist text with
-    the current `split_artists` rules (2026-10-19 - James's library audit:
-    "Blood, Sweat & Tears" credited as "Blood, Sweat" + "Tears", "Glenn
-    Miller (Tex Beneke & chorus, vocal)" as "Glenn Miller (Tex Beneke" +
-    "chorus, vocal)", "Shawn Mendes, Camila Cabello" as one artist - about
-    2,100 such names on 4,800 songs). Works from Track.artist_display, which
+    the current `split_artists` rules (so "Blood, Sweat & Tears" stays one
+    artist and "Shawn Mendes, Camila Cabello" becomes two). Works from Track.artist_display, which
     is the file's artist tag as last read, so no file is opened. Only tracks
     whose credits come out different are touched. Artists those tracks
     leave with nothing else pointing at them are deleted. Returns (tracks
@@ -1819,15 +1674,11 @@ def resplit_track_credits(session: Session) -> tuple[int, int]:
 
 def repair_unknown_artist_merge(session: Session) -> int:
     """Re-read the files filed under a letterless artist name or "Unknown
-    Artist" (2026-10-19 - James: "help me clean up these Unknown question
-    marks"). Before matching.split_artists / library.get_or_create_artist
-    learned better, "? and the Mysterians" came apart into "?" + "the
-    Mysterians", "?" keyed as "unknown artist", and every untagged file's
-    "Unknown Artist" landed on that same "?" - on PC1, the band's 44 songs
-    and 12 untagged music videos ("Colbie Caillat - Realize (Official Music
-    Video).mp4") under one artist called "?".
+    Artist". Older split/keying rules turned "? and the Mysterians" into
+    "?" + "the Mysterians", keyed "?" as "unknown artist", and so filed
+    every untagged file under that same "?".
 
-    Re-reading those files with the fixed rules credits the band as itself
+    Re-reading those files with the current rules credits the band as itself
     and names each untagged "Artist - Title" file from its filename
     (`_artist_title_from_stem`); re-importing drops the old credits. Tracks
     the files leave are tidied by purge_orphaned_tracks / purge_empty_releases
@@ -1884,18 +1735,12 @@ def repair_unknown_artist_merge(session: Session) -> int:
 
 
 def repair_folder_album_artists(session: Session) -> int:
-    """Put right the albums the old folder-wide album-artist rule mis-filed
-    (2026-10-17 - James: "make sure each one of these MP3's has an song
-    image ... now there are many that are blank", D:\\Music\\Old78Records).
-
-    Before 2026-10-16 a scan gave every album in one folder the folder's most
-    common album artist. James's Old78Records folder holds 179 records, one
-    album each ("Bluebird - B-10887"), so every one of them was filed under
-    Bing Crosby - on Bing Crosby's page, missing from the real artists'
-    pages - and the covers were then looked for under
-    "Bing Crosby - <record>.jpg", which doesn't exist, so the records showed
-    blank. The scanner decides per album now (see `_scan_files`), but an
-    unchanged file is never re-read, so the existing rows stay wrong.
+    """Put right the albums an older folder-wide album-artist rule
+    mis-filed: every album in a multi-album folder (a folder of 78s, one
+    album per record) got the folder's most common album artist, and its
+    cover was then looked for under that artist's name and showed blank.
+    The scanner decides per album now (see `_import_files`), but an
+    unchanged file is never re-read, so existing rows need this.
 
     This looks only at folders holding more than one album, re-reads the
     tags of the files there, makes the same per-album decision the scanner
@@ -2050,11 +1895,10 @@ def _restore_cover(release: Release, tags: Sequence[TrackTags], artwork_names) -
 
 
 def purge_empty_releases(session: Session, release_ids: Optional[Iterable[int]] = None) -> int:
-    """Delete releases left with no tracks (2026-10-16). A rescan that files
-    an album's tracks under a different release - a retag changed its album
-    artist or catalog number - moved every track off the old one but left
-    it standing, so the artist page showed the album twice, once empty
-    (James's Chicken-N-Beer and Word of Mouf). Only the scanner makes
+    """Delete releases left with no tracks. A rescan that files an album's
+    tracks under a different release (a retag changed its album artist or
+    catalog number) moves every track off the old one, which would
+    otherwise show on the artist page as an empty copy. Only the scanner makes
     releases, and only for files, so an empty one is never wanted. A master
     left with no releases goes too; one that still has some points at one
     of those instead.

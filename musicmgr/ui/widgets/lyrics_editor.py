@@ -1,4 +1,4 @@
-"""Tap-to-sync lyric editor (2026-09-28) - opened from Now Playing's Lyrics
+"""Tap-to-sync lyric editor - opened from Now Playing's Lyrics
 pane for the track that's playing.
 
 How it works: the lyric lines sit in a list with the next line to time
@@ -12,7 +12,7 @@ backing up whatever was there before.
 The starting text is the track's existing .lrc (timestamps kept, so this
 doubles as a re-timing tool), or LRCLIB's lyrics via "Load from LRCLIB"
 (fetched on a thread - see `LyricsTextThread`), or YouTube Music's via
-"Load from YouTube Music" (2026-10-21, `services/ytmusic_lyrics.py`). "Edit text…" fixes words
+"Load from YouTube Music" (`services/ytmusic_lyrics.py`). "Edit text…" fixes words
 without losing the sync (`lyrics_editor.retext`).
 
 This dialog is modal, which hides the persistent PlayerBar's controls
@@ -89,7 +89,7 @@ class LyricsTextThread(QThread):
 
 class LyricsTextDialog(QDialog):
     """"Edit text…" - the lyric lines as one plain-text block, each led by
-    its [mm:ss.xx] time so times can be edited too (2026-09-30)."""
+    its [mm:ss.xx] time so times can be edited too."""
 
     def __init__(self, text: str, parent=None) -> None:
         super().__init__(parent)
@@ -456,7 +456,7 @@ class LyricsEditorDialog(QDialog):
         return None
 
     def _edit_text(self) -> None:
-        # times shown and editable as [mm:ss.xx] (2026-09-30)
+        # times shown and editable as [mm:ss.xx]
         dialog = LyricsTextDialog(le.to_timed_text(self.lines), self)
         if dialog.exec() != QDialog.Accepted:
             return
@@ -490,7 +490,7 @@ class LyricsEditorDialog(QDialog):
             self._changed()
 
     def _insert_break(self) -> None:
-        # goes *above* the selected line (James, 2026-09-28): the selected
+        # goes *above* the selected line: the selected
         # line is the next one to stamp, so the break lands just before it
         # and is selected itself - stamp it when the music break starts,
         # then carry on with the line that follows

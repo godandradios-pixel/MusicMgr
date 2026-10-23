@@ -1,23 +1,19 @@
-"""The radio tuner's set (2026-10-01): a painted antique multi-band radio.
+"""The radio tuner's set: a painted antique multi-band radio.
 
-James collects and restores antique radios. The tuner page is drawn as a
-walnut cabinet around a wide glass dial in the style of a 1950s European
-multi-band set: a dark glass face with gold and cream printing, one strip
-per band, each with its own scale and its stations printed along it, and a
-red pointer that runs down through every band. (A round cathedral face was
-built first, then dropped at James's request - "let's just do the slider.
-But I would like to incorporate a dial face with the various bands ... like
-the attached", a Grundig-style UKW/KW/MW/LW glass; "not exactly like the
-attached but the general idea".)
+The tuner page is drawn as a walnut cabinet around a wide glass dial in the
+style of a 1950s European multi-band set (loosely after a Grundig
+UKW/KW/MW/LW glass): a dark glass face with gold and cream printing, one
+strip per band, each with its own scale and its stations printed along it,
+and a red pointer that runs down through every band.
 
-Bands, top to bottom (James's layout, reorganised 2026-10-01):
+Bands, top to bottom:
     FM      internet stations
     AM      internet stations
     POLICE  On the Air, WWII news and sounds, American history
     SW1     drama and comedy
     SW2     crime and mystery
     LW      speeches, Paul Harvey, commercials
-    SXM     SiriusXM channels, played in the web browser (2026-10-21) - at
+    SXM     SiriusXM channels, played in the web browser - at
             the bottom and shorter than the others (BAND_HEIGHT), with a
             1-100 channel scale
 Only the selected band's strip is lit; the piano keys below choose it.
@@ -25,7 +21,7 @@ Only the selected band's strip is lit; the piano keys below choose it.
 Below the glass: a 6E5 "magic eye" that closes as a station comes in,
 bakelite VOLUME and TUNING knobs, the band keys and a pilot lamp.
 
-2026-10-03 (James): FM and AM stations with a frequency in their name sit
+FM and AM stations with a frequency in their name sit
 at that frequency on the scale ("102.5 WDVE" by the 102 mark, "KDKA 1020"
 just past 1000), internet-only ones fill the empty stretches
 (services/stations.py:dial_positions). The magic eye doubles as a signal
@@ -33,9 +29,7 @@ meter once a station is on: shadow closed on a good stream, flickering
 while it buffers, wide open and dim when the signal is lost. A station
 that's off the air has its name faded on the glass.
 
-2026-10-03 (James: "When you move the dial between stations, I would like
-it to be able to play static stations, coming in and out"): as the
-pointer leaves the station that's playing, it fades and flutters out
+As the pointer leaves the station that's playing, it fades and flutters out
 under the static (`receptionChanged`, which the Radio page hands to the
 player's volume). Rest the pointer on another station mid-drag for
 DWELL_MS and it's tuned in there and then, coming up through the static
@@ -43,12 +37,10 @@ as the pointer closes on it, rather than only once you let go.
 Interaction: tap a station name or anywhere on the lit band, drag the
 pointer, drag the TUNING knob or scroll; let go and it settles on the
 nearest station and tunes in. Between stations there's tuning static,
-as loud as a station halfway between two (can be switched off; louder
-and brighter since 2026-10-04). Everything is painted - no images shipped.
+as loud as a station halfway between two (can be switched off).
+Everything is painted - no images shipped.
 
-2026-10-06 (James: "For the stations that are near each other I would
-like them to be offset vertically one higher, one underneath"): stations
-too close to share one line without shrinking are staggered - one name
+Stations too close to share one line without shrinking are staggered - one name
 hung high under the scale with its marker above it, the next set low
 with its marker along the bottom of the strip, alternating through the
 crowd - instead of being squeezed into tiny elided text.
@@ -112,19 +104,18 @@ BANDS: tuple[Band, ...] = (
     Band("sw2", "SW2", "Mc", ("11", "12", "13", "15", "17", "19", "21", "22"),
          ("25m", "19m", "16m", "13m")),
     Band("lw", "LW", "kc", ("150", "175", "200", "225", "250", "275", "300", "350")),
-    # SiriusXM channels (2026-10-21): channel numbers 1-100; a channel with
+    # SiriusXM channels: channel numbers 1-100; a channel with
     # its number in its name ("56 - The Highway") sits at it
     # (services/stations.py:frequency)
     Band("sxm", "SXM", "ch", tuple(str(m) for m in station_svc.SXM_MARKS)),
 )
-#: a band's strip height against the others' (2026-10-21 - James: SXM "not
-#: as tall as the other bands"). 0.7 at first, then 0.8: at 0.7 two
-#: channels close together (7 and 8, 25 and 26) had too little height to be
-#: staggered one above the other and ran into each other.
+#: a band's strip height against the others'. SXM is shorter, but not below
+#: 0.8: less leaves too little height to stagger close channels (7 and 8)
+#: one above the other.
 BAND_HEIGHT = {"sxm": 0.8}
 #: how much of a strip the scale row takes (the rest is for station names).
 #: The shorter SXM strip gives its scale less, so the names keep room for
-#: two staggered rows (2026-10-21).
+#: two staggered rows.
 SCALE_SHARE = {"sxm": 0.28}
 BAND_KEYS = tuple(b.key for b in BANDS)
 BY_KEY = {b.key: b for b in BANDS}
@@ -135,7 +126,7 @@ POINTER = QColor("#d1281e")
 GLASS_DARK = QColor("#160e07")
 IVORY = QColor("#efe4c8")
 
-# 2026-10-13 - the cabinet, knobs, keys and trim come from the radio
+# the cabinet, knobs, keys and trim come from the radio
 # finish chosen in Settings › Appearance (ui/skins.py: walnut, blonde oak,
 # black or ivory bakelite). The dial glass, its gold scale and cream names,
 # the red pointer and the magic eye are the same in every finish.
@@ -192,10 +183,7 @@ STATIC_GAIN = 0.85
 def make_static_wav(path: Path, seconds: float = 3.0, rate: int = STATIC_RATE) -> Path:
     """A loop of AM-band tuning static, written once next to the library.
 
-    2026-10-04 (James: "can we put some radio static in there?"): the first
-    loop sat around -40 dBFS and was filtered down to a dull rumble, so
-    under a station it was all but inaudible. This one is a brighter hiss
-    (band-passed roughly 200 Hz to 5 kHz, the way an AM set sounds between
+    A bright hiss (band-passed roughly 200 Hz to 5 kHz, the way an AM set sounds between
     stations) with a slow breathing swell, crackles and a faint heterodyne
     whistle, levelled to about -16 dBFS RMS - as loud as a station - and
     stereo 16-bit at 44.1 kHz, which every sound device takes. It loops
@@ -256,13 +244,9 @@ def make_static_wav(path: Path, seconds: float = 3.0, rate: int = STATIC_RATE) -
 
 class StaticPlayer:
     """Plays the static loop through a QMediaPlayer, the same FFmpeg path
-    the stations use.
-
-    2026-10-04 (James, after the louder loop: "I can't hear the static
-    between stations"): QSoundEffect, used until then, can stay silent on
-    Windows without reporting anything, so the hiss never played. The media
-    player is proven on his PCs. It's paused rather than stopped when the
-    dial comes to rest, so it starts again without a delay.
+    the stations use (QSoundEffect can stay silent on Windows without
+    reporting anything). It's paused rather than stopped when the dial
+    comes to rest, so it starts again without a delay.
     """
 
     def __init__(self, path: Path, parent=None) -> None:
@@ -369,9 +353,8 @@ class RadioSet(QWidget):
         self._press_x: Optional[float] = None
         self._tap_pending = False
         #: the last tuneRequested came from tapping a station on the glass -
-        #: not a drag, the knob, the wheel or the keys (2026-10-21: the SXM
-        #: band opens a browser page per channel, so it only does that for
-        #: a deliberate tap, never while the pointer sweeps across)
+        #: not a drag, the knob, the wheel or the keys (the SXM band opens a
+        #: browser page per channel, so only on a deliberate tap)
         self.last_tune_was_tap = False
 
     # -- public ------------------------------------------------------------
@@ -485,7 +468,7 @@ class RadioSet(QWidget):
 
     def scan_to(self, index: int) -> None:
         """Sweep the pointer to station `index` of the lit band and tune it
-        in when it gets there - the Scan button's move (2026-10-04). The
+        in when it gets there - the Scan button's move. The
         sweep passes through the static like a hand on the knob would."""
         positions = self._positions[self._band]
         if 0 <= index < len(positions):
@@ -982,12 +965,10 @@ class RadioSet(QWidget):
             p.drawLine(QPointF(x, base), QPointF(x, base + (scale_h * 0.3 if major else scale_h * 0.16)))
         # station names, one or two rows, each over a little marker bar
         # as printed on the glass - an SXM channel without the number the
-        # scale already shows (2026-10-21)
+        # scale already shows
         labels = [station_svc.glass_label(band.key, t) for t in self._labels[band.key]]
-        # Station names (FM, AM, SXM) print as James typed them ("70s on 7",
+        # Station names (FM, AM, SXM) print as typed ("70s on 7",
         # "KDKA 1020"); the show bands keep the dial's printed capitals
-        # (2026-10-21 - James: "don't automatically capitalize the radio
-        # station names")
         if band.key not in station_svc.STATION_BAND_KEYS:
             labels = [t.upper() for t in labels]
         positions = self._positions[band.key]
@@ -1007,9 +988,8 @@ class RadioSet(QWidget):
         # doesn't shrink every name on the band
         typical = width * (0.84 / max(1, len(labels) - 1)) if len(labels) > 1 else width
         h = name_area.height()
-        # 2026-10-20 (James: names on POLICE/SW1/SW2/LW too big, "SHERLOCK
-        # HOLM..." cut off): cap lowered from 0.62 to 0.40 of the strip so
-        # sparse bands print at about the size FM/AM already do.
+        # capped at 0.40 of the strip so sparse bands (POLICE/SW1/SW2/LW)
+        # print at about the size FM/AM do, without cutting names off
         px = min(h * 0.40, max(8.0, typical * 0.95 / max(5, longest * 0.55)))
 
         def need_at(i: int, size: float) -> float:

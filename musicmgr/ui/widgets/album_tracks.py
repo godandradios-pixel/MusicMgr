@@ -42,9 +42,9 @@ ROLE_BLOCK = Qt.UserRole + 3
 KIND_ARTIST = "artist"
 KIND_ALBUM = "album"
 #: an artist's matching videos, woven into the document as a search result
-#: (2026-09-06) - see Block.videos and _paint_video_block. Never present in
-#: the default, unfiltered document, same rule the two grids and Title
-#: Details apply to their own video items.
+#: - see Block.videos and _paint_video_block. Never present in the default,
+#: unfiltered document, same rule the two grids and Title Details apply to
+#: their own video items.
 KIND_VIDEO = "video"
 
 # geometry
@@ -70,12 +70,12 @@ class TrackEntry:
     title: str
     duration_ms: int
     playable: bool
-    #: "A"/"B" for a 78's sides, else the number (2026-09-30)
+    #: "A"/"B" for a 78's sides, else the number
     label: str = ""
     #: lower-cased names of artists credited on this track who aren't the
     #: album's own artist - featured guests ("Yeah!" feat. Ludacris) and
     #: the performer of a compilation track - so the Tracks search finds a
-    #: song on someone else's album (2026-10-22)
+    #: song on someone else's album
     guests: str = ""
 
 
@@ -380,25 +380,21 @@ class AlbumTracksDelegate(QStyledItemDelegate):
 class AlbumTracksPanel(QWidget):
     """The scrolling album/track document.
 
-    Used to draw its own A-Z letter bar across the top; that's now the one
-    shared bar under the Library search box instead (see `library.py`'s
-    docstring and `cover_grid.py:JumpBar`) - LibraryView calls `jump_letters()`
-    and `scroll_to_letter()` here the same way it does for the two grids,
-    so all four presentations answer to the same two questions rather than
-    each carrying its own letter-bar widget.
+    The A-Z letter bar is the one shared bar under the Library search box
+    (see `library.py`'s docstring and `cover_grid.py:JumpBar`) -
+    LibraryView calls `jump_letters()` and `scroll_to_letter()` here the
+    same way it does for the two grids.
 
     `set_filter_text()` live-narrows the document the same way `CoverGrid.
-    set_filter_text()` narrows a grid - see that method's docstring for the
-    matching rules. `_raw_blocks` holds everything `load()` built; `_blocks`
-    (inherited from before filtering existed - used by hit-testing, scrolling
-    and the count line) is always whatever's currently on screen, i.e. the
-    filtered subset when a filter is active.
+    set_filter_text()` narrows a grid. `_raw_blocks` holds everything
+    `load()` built; `_blocks` (used by hit-testing, scrolling and the count
+    line) is whatever's currently on screen, i.e. the filtered subset when a
+    filter is active.
 
     `load()` also builds a KIND_VIDEO block per artist for their matching
-    videos (2026-09-06) - see that method and `_without_videos()`. They're
-    stripped back out for the default, unfiltered document the same way the
-    other three Library presentations hide their own video items until a
-    search actually matches one.
+    videos - see that method and `_without_videos()`. They're stripped out
+    of the default, unfiltered document, the same way the other Library
+    presentations hide their video items until a search matches one.
     """
 
     trackChosen = Signal(int, int)   # release_id, track_id
@@ -428,8 +424,8 @@ class AlbumTracksPanel(QWidget):
         self.count_label = QLabel("")
         self.count_label.setObjectName("Dim")
         head.addWidget(self.count_label)
-        # In its own widget (2026-10-03) so LibraryView can move count_label
-        # into its search row and hide this row, same as the Albums grid.
+        # In its own widget so LibraryView can move count_label into its
+        # search row and hide this row, same as the Albums grid.
         self.header_bar = QWidget()
         self.header_bar.setLayout(head)
         root.addWidget(self.header_bar)
@@ -478,12 +474,11 @@ class AlbumTracksPanel(QWidget):
         return {b.sort_letter for b in self._blocks if b.kind == KIND_ARTIST}
 
     def set_filter_text(self, text: str) -> None:
-        """Live-narrow the document to whatever matches an album title or a
-        track title (James, 2026-09-06: "when on tracks, it can search by
-        album or track") - an artist heading itself is no longer a search
-        target; typing an artist's name here now finds nothing unless it
-        also happens to be an album or track title. A case-insensitive
-        substring rule, same as everywhere else in Library.
+        """Live-narrow the document to whatever matches an album title, a
+        track title, or a track's guest artists. The album's own artist
+        heading is not a search target (typing "Usher" doesn't pull in
+        every Usher album). A case-insensitive substring rule, same as
+        everywhere else in Library.
 
         An album match keeps that whole block, tracks and all - typing an
         album name is asking for everything on it, not a hunt through its
@@ -493,12 +488,10 @@ class AlbumTracksPanel(QWidget):
         other track on it. Emptying the box restores the full document
         exactly as `load()` built it.
 
-        2026-10-22 - James: a featured artist couldn't be found here. A
-        track also matches on its `TrackEntry.guests`: artists credited on
+        A track also matches on its `TrackEntry.guests`: artists credited on
         the track who aren't the album's own artist (a featured guest, or
-        the performer of a compilation track). The album's own artist is
-        still not a target, so typing "Usher" doesn't pull in every Usher
-        album, but typing "Ludacris" finds Usher's "Yeah!".
+        the performer of a compilation track) - typing "Ludacris" finds
+        Usher's "Yeah!".
         """
         text = text.strip().lower()
         if text == self._filter_text:
@@ -516,11 +509,9 @@ class AlbumTracksPanel(QWidget):
         pending_artist: Optional[Block] = None
         for block in self._raw_blocks:
             if block.kind == KIND_ARTIST:
-                # the artist heading itself is no longer a search target
-                # (James, 2026-09-06) - it only makes it into `filtered`
-                # below once one of its albums/tracks/videos actually
-                # matches, same as before, it just can no longer be pulled
-                # in by a match on its own name.
+                # the artist heading isn't a search target - it only makes it
+                # into `filtered` below once one of its albums/tracks/videos
+                # matches.
                 pending_artist = block
                 continue
 
@@ -721,7 +712,7 @@ class AlbumTracksPanel(QWidget):
                     )
                 )
 
-            # artists credited on each track (2026-10-22) - kept apart from
+            # artists credited on each track - kept apart from
             # the album's own artist below, so only guests become searchable
             credit_rows = session.execute(
                 select(Credit.track_id, Artist.name, Credit.anv)

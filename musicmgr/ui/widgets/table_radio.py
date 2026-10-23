@@ -1,10 +1,7 @@
 """A tabletop radio for Now Playing while a station or an old-time radio
-show plays (2026-10-19).
-
-James: "when I'm listening to a radio station, it doesn't make sense that a
-record spins. It's a station not an album." So instead of the turntable,
-Now Playing shows a small set in the same finish as the Radio page's
-(Settings › Appearance - walnut, oak, bakelite):
+show plays - a station isn't a record, so the turntable doesn't spin.
+Instead Now Playing shows a small set in the same finish as the Radio
+page's (Settings › Appearance - walnut, oak, bakelite):
 
 - the station's logo (or the show's artwork) on an ivory badge in the
   speaker grille;

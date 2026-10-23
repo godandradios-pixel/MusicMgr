@@ -1,45 +1,25 @@
 """Download a short artist biography from Wikipedia's public REST summary
-API and save it to `Artist.profile` - the same free-text column
-`ui/widgets/bio_panel.py` already knew how to display but that, until this
-2026-09-16 follow-up, had no importer wired up to ever fill it in.
+API and save it to `Artist.profile`, shown by `ui/widgets/bio_panel.py`.
 
-2026-09-16 follow-up - James, looking at a mocked-up "artist profile" style
-page (photo + a short writeup + a top-tracks list): "Add a new menu option
-called artist profile. Display the artist image, collect a brief writeup
-of the artist and include a list of their top tracks in order of
-popularity." Asked where the writeup itself should come from (there's
-nothing resembling one anywhere in this local-files-only app), and where
-it should be reachable from, James chose: a Settings bulk action ("like
-lyrics" - see services/lyrics_downloader.py, the app's one other network
-exception) for the whole library at once, plus a per-artist "fetch from
-web" button right on the artist page itself for just that one artist - see
-`ui/widgets/bio_panel.py`'s own follow-up note and `BioDownloadThread` in
-`ui/widgets/common.py`, both shared by the two.
+Reached from a Settings bulk action for the whole library and a per-artist
+"fetch from web" button on the artist page (`BioDownloadThread` in
+`ui/widgets/common.py` serves both).
 
-This is the same deliberate, requested exception to the rest of the app's
-"read from local files, no network calls" stance that lyrics_downloader.py
-already carved out, for the same reason: there is simply no local source
-for a band biography, the way there is for tags/audio metadata. Unlike a
-downloaded lyric (a standalone .lrc sidecar file, no database involved),
-a fetched bio *is* a database write - `Artist.profile` - so every function
-below takes (or opens) a real db session rather than staying DB-free the
-way lyrics_downloader.py could.
+Like services/lyrics_downloader.py, this is a deliberate exception to the
+app's "local files, no network calls" stance: there is no local source for
+a band biography. Unlike a lyric (a .lrc sidecar), a bio is a database
+write, so every function here takes (or opens) a db session.
 
 Source and attribution: Wikipedia's REST `page/summary` endpoint returns a
-short, plain-text lead-paragraph extract for a page (exactly the kind of
-"brief writeup" the mockup showed) under Wikipedia's CC BY-SA license,
-which requires attribution - so a successful fetch also appends that
-page's canonical URL to `Artist.urls` (already a schema field, "newline
-separated" - see db/models.py) as a source citation, alongside the text
-itself.
+short plain-text lead-paragraph extract under CC BY-SA, which requires
+attribution - so a successful fetch also appends the page's canonical URL
+to `Artist.urls` (newline separated - see db/models.py) as a citation.
 
-Artist names are frequently ambiguous on Wikipedia (a band's plain name is
-often a disambiguation page - "Rush", "Queen", "Kiss" all are), so
-`_find_summary` below tries a short list of likely disambiguated titles
-before falling back to Wikipedia's own search API and checking the top
-result - ported down to the essentials from the same kind of
-exact-then-fuzzy chain lyrics_downloader.py's `_find_lyrics` already uses
-for the same reason (LRCLIB's catalogue is just as ambiguous by title).
+Artist names are often ambiguous on Wikipedia ("Rush", "Queen", "Kiss" are
+disambiguation pages; "Boston" is a city), so `_find_summary` tries
+music-specific titles first, then the plain name and a search, taking an
+article only when it is about a musical act - the same exact-then-fuzzy
+shape as lyrics_downloader.py's `_find_lyrics`.
 """
 
 from __future__ import annotations
@@ -63,11 +43,9 @@ WIKI_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
 WIKI_SEARCH_URL = "https://en.wikipedia.org/w/api.php"
 
 #: seconds between Wikipedia requests - polite pacing for a free public API.
-#: 2026-10-13 (James: "can you speed that up, no reason it should take that
-#: long hitting wikipedia"): was 0.5 s after every *artist*, on top of up to
-#: a dozen one-title requests each. The bulk run now asks about many
-#: artists per request (see _prefetch_summaries), one request at a time as
-#: Wikipedia's API etiquette asks, so only a short gap is kept.
+#: The bulk run asks about many artists per request (see
+#: _prefetch_summaries), one request at a time as Wikipedia's API etiquette
+#: asks, so only a short gap is needed.
 DEFAULT_RATE_LIMIT_S = 0.1
 
 #: artists looked up per batched request: 8 artists x 6 candidate titles
@@ -86,14 +64,10 @@ _HEADERS = {
 #: real search - covers the common "the plain name is a disambiguation
 #: page" case without a network round trip for every candidate.
 #:
-#: 2026-10-13 - James: "please include (band) to get a better match. For
-#: example, the profile return on Boston was the city and not the band.
-#: Similarly the search on the band .38 Special returned, the pistol." The
-#: plain name used to be tried first, and "Boston" and ".38 Special" are
-#: real articles (a city, a cartridge), not disambiguation pages - so they
-#: were taken. Now the music-specific titles come first, and the plain
-#: name (and any search hit) is only taken when the article is about a
-#: musical act - see _is_music.
+#: The music-specific titles come first because a plain name can be a real,
+#: non-music article ("Boston" the city, ".38 Special" the cartridge); the
+#: plain name and any search hit are only taken when the article is about
+#: a musical act - see _is_music.
 _MUSIC_SUFFIXES = [" (band)", " (musician)", " (singer)", " (rapper)", " (group)"]
 
 #: words a music article's short description or opening uses ("American
@@ -147,7 +121,7 @@ def _failed(session: requests.Session) -> None:
     """A request that gave up (retries exhausted, refused) - as opposed to
     a 404, which really means "no such page". Marked on the session so
     download_bio_for_artist doesn't record the artist as looked up when
-    the "nothing found" was really a network failure (2026-10-17, see
+    the "nothing found" was really a network failure (see
     Artist.profile_checked_at)."""
     session._wiki_failed = True  # type: ignore[attr-defined]
     return None
@@ -236,7 +210,7 @@ def _find_summary(session: requests.Session, artist_name: str) -> Optional[dict]
     """"Boston (band)", "Prince (musician)" and the like first - a page
     with one of those titles is about a musical act by its name alone.
     Then the plain name, and then a search, both only if the article is
-    about music (2026-10-13 - see _MUSIC_SUFFIXES)."""
+    about music (see _MUSIC_SUFFIXES)."""
     for suffix in _MUSIC_SUFFIXES:
         summary = _fetch_summary(session, artist_name + suffix)
         if _is_usable(summary):
@@ -254,7 +228,7 @@ def _find_summary(session: requests.Session, artist_name: str) -> Optional[dict]
     return None
 
 
-# -- batched lookups for the bulk run (2026-10-13) ----------------------------
+# -- batched lookups for the bulk run -----------------------------------------
 #
 # The one-artist path above makes up to a dozen requests per artist (each
 # "(band)"/"(musician)"/... guess, the plain name, a search, each hit) -
@@ -521,14 +495,10 @@ def download_bio_for_artist(
 def set_bio(artist_id: int, text: str) -> ArtistBioOutcome:
     """Save `text` as this artist's biography directly - the manual
     counterpart to download_bio_for_artist, for when a fetch matches the
-    wrong band (Wikipedia name collisions - see the module docstring -
-    mean a plain "Rush"/"Queen"/"Kiss" search can and does land on the
-    wrong page) or when James would rather write one by hand than accept
-    whatever Wikipedia has. An empty/whitespace-only `text` clears the
-    saved biography (stored as NULL, same as an artist that's never had
-    one) rather than saving an empty string. Unlike a fetch, this never
-    touches Artist.urls - a hand-written or corrected bio has no
-    Wikipedia page to cite as its source."""
+    wrong page (see the module docstring) or the user would rather write
+    one. An empty/whitespace-only `text` clears the biography (NULL, not
+    an empty string). Never touches Artist.urls - a hand-written bio has
+    no Wikipedia page to cite."""
     cleaned = text.strip()
     with session_scope() as db:
         artist = db.get(Artist, artist_id)
@@ -548,22 +518,16 @@ def download_bios_for_artists(
     should_stop: Optional[Callable[[], bool]] = None,
     http: Optional[requests.Session] = None,
 ) -> BioDownloadResult:
-    """Download biographies for a list of artist ids, one Wikipedia lookup
-    per artist - used both by Settings' bulk "Download artist profiles…"
-    button and, as a batch of one, the artist page's own per-artist "Fetch
-    bio" button (see BioDownloadThread in ui/widgets/common.py).
+    """Download biographies for a list of artist ids - used by Settings'
+    bulk "Download artist profiles…" button and, as a batch of one, the
+    artist page's "Fetch bio" button (BioDownloadThread in
+    ui/widgets/common.py). Artists are looked up in batches of
+    BATCH_ARTISTS (see _prefetch_summaries).
 
-    Opens its own db session (unlike lyrics_downloader, which never touches
-    the database at all) and commits after each artist rather than only
-    once at the end, so a long bulk run over hundreds of artists isn't
-    all-or-nothing if it's interrupted partway through.
-
-    2026-09-22 - James: "add a real cancel button that stops any process
-    running within Settings". `should_stop`, when given, is checked once
-    per artist, before that artist's own lookup starts - every artist
-    already looked up this run has already been individually committed
-    (see the `db.commit()` right below), so stopping here just means "don't
-    start the next one", never a rollback of work already saved.
+    Opens its own db session and commits after each artist, so an
+    interrupted bulk run keeps what it finished. `should_stop`, when given,
+    is checked before each artist's lookup; stopping never rolls back work
+    already saved.
     """
     result = BioDownloadResult()
     if http is None:
@@ -588,7 +552,7 @@ def download_bios_for_artists(
                     stopped = True
                     break
                 if prefetched is None:
-                    # 2026-10-13: one batched lookup for the whole chunk (see
+                    # one batched lookup for the whole chunk (see
                     # _prefetch_summaries); anything it couldn't settle is
                     # looked up the one-artist way
                     prefetched = {}
@@ -626,14 +590,12 @@ def download_bios_for_artists(
     return result
 
 
-# -- the Radio folder (2026-10-13) ------------------------------------------
+# -- the Radio folder -------------------------------------------------------
 #
-# James: "I don't want it checking profiles for files that are part of the
-# \Radio directory". Old-time radio shows (D:\Radio on PC1 - the Radio
-# page's folder, services/otr.py) aren't music acts: where that folder ends
-# up inside a watched music folder, its shows and announcers turn into
-# "artists" that Wikipedia either doesn't have or matches to the wrong
-# thing. An artist whose files all sit in a Radio folder is left out -
+# Old-time radio shows (the Radio page's folder, services/otr.py) aren't
+# music acts: where that folder sits inside a watched music folder, its
+# shows and announcers turn into "artists" that Wikipedia either doesn't
+# have or matches to the wrong thing. An artist whose files all sit in a Radio folder is left out -
 # the same rule the music scan uses (services/radio_folder.py).
 
 def radio_only_artists(db) -> set[int]:
@@ -665,22 +627,18 @@ def radio_only_artists(db) -> set[int]:
 
 def artists_missing_bio(limit: Optional[int] = None, *, new_only: bool = False) -> list[int]:
     """Every artist id with no biography saved yet - what Settings' bulk
-    "Download artist profiles…" button targets by default (overwrite=False
-    would just skip these same rows one network round trip at a time
-    otherwise, so filtering up front here saves the wasted lookups).
+    "Download artist profiles…" button targets by default (filtering here
+    saves a wasted lookup per artist that already has one).
 
-    2026-10-13: plus every artist whose fetched biography isn't about
-    music (`is_doubtful` - the city for Boston), so one run puts those
-    right; and never an artist whose files are all in the Radio folder
+    Plus every artist whose fetched biography isn't about music
+    (`is_doubtful` - the city for Boston), so one run puts those right;
+    never an artist whose files are all in the Radio folder
     (`radio_only_artists`).
 
-    2026-10-17 - `new_only` (James: "Is there a way I can decide to
-    completely skip an artist profile if one exists vs. always checking.
-    This option takes way too long"): only artists with no biography that
-    have never been looked up (`Artist.profile_checked_at` is NULL). Every
-    artist Wikipedia had nothing for used to be looked up again on every
-    run, and so did every doubtful one, which is most of the time a big
-    library's run takes."""
+    `new_only`: only artists with no biography that have never been looked
+    up (`Artist.profile_checked_at` is NULL), skipping repeat lookups of
+    artists Wikipedia had nothing for and of doubtful ones - most of a big
+    library's run time."""
     with session_scope() as db:
         stmt = select(Artist.id).where(
             (Artist.profile.is_(None)) | (Artist.profile == "")
@@ -694,7 +652,7 @@ def artists_missing_bio(limit: Optional[int] = None, *, new_only: bool = False) 
                 Artist.urls.like("%wikipedia.org/wiki/%"),
             ))
             ids.extend(a.id for a in doubtful if is_doubtful(a))
-        # 2026-10-13: not the Radio folder's shows (radio_only_artists)
+        # not the Radio folder's shows (radio_only_artists)
         radio = radio_only_artists(db)
         if radio:
             ids = [i for i in ids if i not in radio]

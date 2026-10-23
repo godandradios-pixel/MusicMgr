@@ -1,27 +1,22 @@
-"""Internet radio stations (2026-10-01) - the tuner's FM and AM bands.
+"""Internet radio stations - the tuner's FM, AM and SXM bands.
 
 Stations come from the free Radio Browser directory (radio-browser.info: a
 community list of 30,000+ stations, no account or API key) - searched from
 the tuner's "Find stations..." dialog and added to the dial - or a stream
-URL James pastes in himself. Nothing is fetched at startup (James: "I
-should never be checking for updates or anything that relies on an
-internet connection at startup"); the network is only touched when he
-searches, adds a station's logo, or tunes in.
+URL James pastes in himself. Nothing that needs the internet runs at
+startup; the network is only touched when he searches, adds a station's
+logo, or tunes in.
 
 Radio Browser asks clients to send a descriptive User-Agent and to spread
 load over its mirrors; `_get` tries them in turn.
 
-2026-10-21 - the SXM band (James: "Could I have a SXM band on the radio
-with stations. Then when I click on a station it plays through the
-browser?"). A SiriusXM channel is a RadioStation on band "sxm" whose
+The SXM band: a SiriusXM channel is a RadioStation on band "sxm" whose
 stream_url is the channel's page in SiriusXM's own web player
 (".../player/channel-linear/entity/<id>"), copied by right-clicking the
-channel's tile and choosing Copy link. (Not the address bar: while a
-channel plays, that still shows the list it was started from - seen on
-PC1, "All channels" with The Highway playing.) Tuning one opens that page in the browser
-(services/tuner.py) instead of playing anything here - no SiriusXM
-library, no sign-in, nothing unofficial, so nothing for SiriusXM to break
-but the link itself.
+channel's tile and choosing Copy link (not the address bar, which while a
+channel plays still shows the list it was started from). Tuning one opens
+that page in the browser (services/tuner.py) instead of playing anything
+here - no SiriusXM library, no sign-in, nothing unofficial.
 """
 
 from __future__ import annotations
@@ -64,8 +59,7 @@ CATEGORIES: list[tuple[str, dict]] = [
 #: (ui/widgets/radio_dial.py draws them; stations are placed against them)
 FM_MARKS = (88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 108)
 AM_MARKS = (540, 600, 700, 800, 900, 1000, 1200, 1400, 1600)
-#: SiriusXM channel numbers along the SXM band (2026-10-21): 1-150 like a
-#: car's satellite radio at first, then 1-100 (James) - marked every ten
+#: SiriusXM channel numbers along the SXM band (1-100), marked every ten
 #: like the FM scale
 SXM_MARKS = (1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
 SXM_TOP_CHANNEL = 100
@@ -98,8 +92,8 @@ STARTER_COUNT = 6
 
 def frequency(name: str, band: str) -> Optional[float]:
     """The frequency in a station's name, if it has one for this band:
-    "102.5 WDVE" -> 102.5 on FM, "KDKA 1020" -> 1020 on AM (2026-10-03,
-    James: put stations "at their real frequencies"). Internet-only names
+    "102.5 WDVE" -> 102.5 on FM, "KDKA 1020" -> 1020 on AM, so stations sit
+    at their real frequencies. Internet-only names
     ("20s Gold", "WQED Pittsburgh") and an FM number on the AM band have
     none. On the SXM band it's the channel number: "56 - The Highway" -> 56."""
     name = name or ""
@@ -114,9 +108,8 @@ def frequency(name: str, band: str) -> Optional[float]:
             if 530 <= f <= 1710:
                 return f
     elif band == "sxm":
-        # the channel number, placed along the 1-100 scale (2026-10-21,
-        # James: first "150 channels equivalent to whats in a car", then
-        # "1 - 100"); a channel past 100 goes at the top end
+        # the channel number, placed along the 1-100 scale; a channel
+        # past 100 goes at the top end
         m = _SXM_RE.match(name)
         if m and 1 <= int(m.group(1)) <= 999:
             return float(min(int(m.group(1)), SXM_TOP_CHANNEL))
@@ -127,7 +120,7 @@ def glass_label(band: str, name: str) -> str:
     """A station's name as printed on the dial glass. On the SXM band the
     channel number is left off ("56 - The Highway" -> "The Highway"): the
     channel already sits at that number on the scale, and clustered
-    channels (56, 59, 63...) need the room (2026-10-21). Everywhere else
+    channels (56, 59, 63...) need the room. Everywhere else
     the name is printed as it is."""
     if band != "sxm":
         return name
@@ -455,9 +448,8 @@ def set_band(session: Session, station_id: int, band: str) -> None:
 
 
 def rename(session: Session, station_id: int, name: str) -> Optional[RadioStation]:
-    """The name printed on the dial (James, 2026-10-01: "I would like to be
-    able to rename the radio station text. For example the 100.7 WMMS -
-    CLEVELAND, OHIO is way too long"). Blank names are ignored."""
+    """The name printed on the dial (e.g. to shorten "100.7 WMMS -
+    CLEVELAND, OHIO"). Blank names are ignored."""
     st = session.get(RadioStation, station_id)
     name = (name or "").strip()
     if st is not None and name:
@@ -481,7 +473,7 @@ def move(session: Session, station_id: int, delta: int,
          among: Optional[Sequence[int]] = None) -> None:
     """Shift a station left/right along the dial. `among` limits the move
     to those stations (the Radio page passes the band's internet-only ones,
-    which are the only ones whose place depends on the order - 2026-10-03):
+    which are the only ones whose place depends on the order):
     the station swaps places with the next of them along."""
     stations = dial(session)
     idx = next((i for i, s in enumerate(stations) if s.id == station_id), None)
@@ -504,7 +496,7 @@ def move(session: Session, station_id: int, delta: int,
 
 
 # --------------------------------------------------------------------------
-# off the air (2026-10-03)
+# off the air
 # --------------------------------------------------------------------------
 
 

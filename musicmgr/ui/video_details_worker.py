@@ -1,5 +1,4 @@
-"""Fills in video thumbnails and years in the background (2026-10-22) -
-see services/video_details.py for where each comes from.
+"""Fills in video thumbnails and years in the background - see services/video_details.py for where each comes from.
 
 `start(ctx)` runs `VideoDetailsThread` unless one is already running. The
 main window calls it a couple of minutes after launch (only when a cheap

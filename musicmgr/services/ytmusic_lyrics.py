@@ -1,10 +1,10 @@
-"""Look up a track's lyrics on YouTube Music (2026-10-21).
+"""Look up a track's lyrics on YouTube Music.
 
-A second lyrics source alongside LRCLIB (`lyrics_downloader.py`). James
-has a YouTube Music subscription but asked that this keep working if he
-cancels it, so everything here runs **without signing in**: ytmusicapi's
-search, watch-playlist and lyrics calls all work for an anonymous visitor,
-and there is no account, cookie or OAuth file anywhere in the app.
+A second lyrics source alongside LRCLIB (`lyrics_downloader.py`). It must
+keep working without a YouTube Music subscription, so everything here runs
+**without signing in**: ytmusicapi's search, watch-playlist and lyrics
+calls all work for an anonymous visitor, and there is no account, cookie
+or OAuth file anywhere in the app.
 
 ytmusicapi is an unofficial library - it talks to the same endpoints the
 music.youtube.com web player uses. If Google changes those, lookups here

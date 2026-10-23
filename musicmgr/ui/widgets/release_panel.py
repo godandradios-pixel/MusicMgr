@@ -66,18 +66,15 @@ class ReleaseDetailPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        # replaces a lone "‹ Back" pill - every ancestor is a tappable link,
-        # not just the immediate one, so a release opened from an artist page
-        # can jump straight to the artist grid or to that one artist (see
-        # LibraryView._open_release). Stays hidden (no ancestors set) for the
-        # embedded three-pane-browser instance, which isn't a "page" you
-        # navigate back out of.
+        # every ancestor is a tappable link, so a release opened from an
+        # artist page can jump straight to the artist grid or to that one
+        # artist (see LibraryView._open_release). Stays hidden (no ancestors
+        # set) for the embedded three-pane-browser instance, which isn't a
+        # "page" you navigate back out of.
         self.breadcrumb = Breadcrumb()
-        # ‹ › previous/next album right after the trail (2026-10-17, James:
-        # "should we do the same on the Album < and >", after the artist
-        # page got its own pair). LibraryView decides what the neighbors
-        # are - the Albums grid's order, or the artist's releases when this
-        # page was opened from an artist page - and hides the pair entirely
+        # ‹ › previous/next album follow the trail. LibraryView decides
+        # what the neighbors are - the Albums grid's order, or the artist's
+        # releases when opened from an artist page - and hides the pair
         # when there's no list to step through (opened from Now Playing or
         # the Missing metadata dashboard).
         crumb_row = QHBoxLayout()
@@ -134,14 +131,10 @@ class ReleaseDetailPanel(QWidget):
         dl.addLayout(info, 1)
         layout.addWidget(detail)
 
-        # No standalone "Play" pill here (removed 2026-09-05, see
-        # architecture.md "Redundant Play button removed from the release
-        # page" - James: "why do we have 2 play buttons? ... I only want the
-        # play from the bar at the bottom"). Tapping any track row already
+        # No standalone "Play" pill (see architecture.md "Redundant Play
+        # button removed from the release page"): tapping any track row
         # starts playback from there (_on_track_tapped -> self.play(idx)),
-        # so tapping the first track does exactly what the removed button
-        # did (self.play(0)) - nothing is lost, just one fewer orange play
-        # glyph competing with the persistent PlayerBar's.
+        # and the PlayerBar's play button covers the rest.
         actions = QHBoxLayout()
         actions.setSpacing(8)
         shuffle = TouchButton("Shuffle")
@@ -150,33 +143,26 @@ class ReleaseDetailPanel(QWidget):
         queue.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
         self.lyrics_btn = TouchButton("Download lyrics")
         self.lyrics_btn.clicked.connect(self.download_lyrics)
-        # 2026-09-20 - James: "is there anyway we can force LRCLIB to get
-        # only Synced lyrics" - per-download checkbox rather than a
-        # Settings-page global, matching LyricsPanel's own copy of this for
-        # the per-track button. Defaults on. Read at click time in
-        # download_lyrics() and threaded through as LyricsDownloadThread's
-        # save_plain (inverted - checked means save_plain=False).
+        # per-download "only synced lyrics from LRCLIB" checkbox rather than
+        # a Settings-page global, matching LyricsPanel's own copy for the
+        # per-track button. Defaults on. Read at click time in
+        # download_lyrics() and passed to LyricsDownloadThread as save_plain
+        # (inverted - checked means save_plain=False).
         self.lyrics_synced_only = QCheckBox("Synced only")
         self.lyrics_synced_only.setChecked(True)
-        # 2026-09-18 - James: "Ability to search for album artwork" - see
-        # search_artwork below and services/artwork_downloader.py's module
-        # docstring for why this is a search-then-pick flow rather than an
-        # auto-apply, unlike the bulk Settings action for the same feature.
+        # see search_artwork below and services/artwork_downloader.py's
+        # module docstring for why this is a search-then-pick flow rather
+        # than an auto-apply, unlike the bulk Settings action.
         self.artwork_btn = TouchButton("Search artwork")
         self.artwork_btn.clicked.connect(self.search_artwork)
-        # 2026-09-19 - James: "I need the ability to select an album art
-        # from a file location ... if it can't find album art I have no
-        # way of getting one added" - the manual counterpart to Search
-        # artwork above, for a release Discogs comes up empty on (or one
-        # James would rather point at his own scan/photo for). See
+        # the manual counterpart to Search artwork, for a release Discogs
+        # comes up empty on (or a scan/photo of your own). See
         # choose_artwork_file below and artwork_downloader.
         # apply_local_image_to_release.
         self.artwork_file_btn = TouchButton("Choose from file…")
         self.artwork_file_btn.clicked.connect(self.choose_artwork_file)
-        # 2026-10-06 - James: "Tag editor with MusicBrainz lookup. Fix tags
-        # in the files themselves, plus a 'look up this album' button" -
-        # the whole album in the editor (ui/widgets/tag_editor.py), whose
-        # "Look up on MusicBrainz…" is that button
+        # the whole album in the tag editor (ui/widgets/tag_editor.py),
+        # whose "Look up on MusicBrainz…" is the album lookup
         self.edit_tags_btn = TouchButton("Edit tags…")
         self.edit_tags_btn.setToolTip("Fix this album's tags in the music files, or look it "
                                       "up on MusicBrainz")
@@ -311,11 +297,8 @@ class ReleaseDetailPanel(QWidget):
         self.track_list.set_rows(rows)
         self._refresh_breadcrumb()
         # lets the persistent PlayerBar's play button start this release
-        # from track 1 even before any row's been tapped - see "Redundant
-        # Play button removed from the release page" follow-up in
-        # architecture.md for why this exists (removing the page's own
-        # "Play" pill left the bottom bar with nothing to act on until a
-        # track was tapped or something was already queued).
+        # from track 1 even before any row's been tapped (see "Redundant
+        # Play button removed from the release page" in architecture.md).
         self.ctx.set_viewing(self._tracks, source=f"release:{release_id}")
 
     # -- actions ---------------------------------------------------------------
@@ -345,12 +328,7 @@ class ReleaseDetailPanel(QWidget):
         widget's docstring for why lyrics downloading owns its own network
         call instead of going through the DB-write-reporting convention).
         Checks every track's own .lrc sidecar individually rather than
-        skipping the whole album if one track already has lyrics - James
-        was asked directly (AskUserQuestion, 2026-09-07) and chose
-        per-track checking over the uploaded script's whole-folder
-        shortcut; `LyricsDownloadThread`/`download_lyrics_for_album` never
-        implement that shortcut at all, so there's nothing to opt out of
-        here."""
+        skipping the whole album if one track already has lyrics."""
         if self._lyrics_thread is not None or not self._tracks:
             return
 
@@ -402,14 +380,12 @@ class ReleaseDetailPanel(QWidget):
         QMessageBox.information(self, "Download lyrics", result.summary())
 
     def search_artwork(self) -> None:
-        """Search Discogs for this release's cover and let James pick one
+        """Search Discogs for this release's cover and let the user pick one
         before anything is saved - see artwork_downloader.py's module
         docstring for why this is a search-then-pick flow rather than the
         bulk Settings action's auto-apply. Mirrors download_lyrics's shape
         (guard against a run already in flight, disable the button while
-        it works) but ends in a picker dialog instead of a progress bar,
-        since a single-release search finishes in one round trip rather
-        than a whole album's worth of per-track lookups."""
+        it works) but ends in a picker dialog instead of a progress bar."""
         if self._release_id is None or self._artwork_thread is not None:
             return
         if not artwork_dl.has_api_token():
@@ -425,7 +401,7 @@ class ReleaseDetailPanel(QWidget):
         self._artwork_thread.start()
 
     def _on_artwork_ready(self, outcome: artwork_dl.ArtworkSearchOutcome) -> None:
-        # James may have navigated to a different release while this was in
+        # the user may have navigated to a different release while this was in
         # flight - set_release already reset _artwork_thread and the button
         # for whatever's showing now, so there's nothing to reconcile.
         if self._artwork_thread is None or self.sender() is not self._artwork_thread:
@@ -454,14 +430,14 @@ class ReleaseDetailPanel(QWidget):
             self.ctx.notify(f"Couldn't save that cover: {apply_outcome.detail or apply_outcome.status}")
             return
 
-        # only worth reloading the cover if James hasn't already navigated
+        # only worth reloading the cover if the user hasn't already navigated
         # away from this release while the picker was open
         if self._release_id == release_id:
             self.set_release(release_id)
         self.ctx.libraryChanged.emit()
 
     def edit_tags(self) -> None:
-        """Open the tag editor on this album's songs (2026-10-06)."""
+        """Open the tag editor on this album's songs."""
         if self._release_id is None or not self._tracks:
             return
         release_id = self._release_id
@@ -494,10 +470,9 @@ class ReleaseDetailPanel(QWidget):
 
     def choose_artwork_file(self) -> None:
         """Pick an image straight from disk and set it as this release's
-        cover - no search, no picker, just James's own file. Synchronous
-        (no QThread the way search_artwork needs one): a local file read
-        plus a digest/write under config.ART_DIR is fast enough not to
-        need off-UI-thread handling, unlike a network round trip."""
+        cover - no search, no picker. Synchronous (no QThread, unlike
+        search_artwork): a local file read plus a digest/write under
+        config.ART_DIR is fast enough for the UI thread."""
         if self._release_id is None:
             return
         release_id = self._release_id
@@ -513,7 +488,7 @@ class ReleaseDetailPanel(QWidget):
             self.ctx.notify(f"Couldn't use that image: {outcome.detail or outcome.status}")
             return
 
-        # James may have navigated to a different release while the native
+        # the user may have navigated to a different release while the native
         # file dialog was open (it's modal, but belt-and-braces to match
         # the same guard _on_artwork_ready uses)
         if self._release_id == release_id:

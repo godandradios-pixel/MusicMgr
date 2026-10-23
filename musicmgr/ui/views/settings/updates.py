@@ -1,4 +1,4 @@
-"""Settings › Updates (split out of settings.py, 2026-10-22)."""
+"""Settings › Updates."""
 
 from __future__ import annotations
 
@@ -32,13 +32,10 @@ class UpdatesSection:
     methods share the view's state."""
 
     def _build_updates(self, section) -> None:
-        """Build the Updates group (moved out of __init__, 2026-10-22)."""
-        # ---- updates (2026-09-23) ----
-        # See the "in-app updates" classes above and services/updater.py.
-        # Replaces the old right-aligned "MusicMgr <commit>" footer that
-        # used to sit here - the version now leads this card instead, since
-        # "which version am I on" and "is there a newer one" are the same
-        # question.
+        """Build the Updates group."""
+        # See the "in-app updates" classes in parts.py and services/updater.py.
+        # The version leads this card, since "which version am I on" and "is
+        # there a newer one" are the same question.
         body = section("Updates", "updates")
 
         updates_card = QFrame()
@@ -54,11 +51,8 @@ class UpdatesSection:
         self.update_status.setWordWrap(True)
         updates_layout.addWidget(self.update_status)
 
-        # 2026-09-24 - James: "I should never be checking for updates or
-        # anything that relies on an internet connection at startup". The
-        # once-a-day startup check (and its "Check for updates when
-        # MusicMgr starts" checkbox) is gone; "Check now" is the only way a
-        # check ever happens.
+        # nothing touches the network at startup: "Check now" is the only
+        # way a check ever happens
         self.update_prerelease_cb = QCheckBox("Include pre-release versions")
         self.update_prerelease_cb.toggled.connect(
             lambda on: self._save_update_pref(updater.PREF_INCLUDE_PRERELEASE, on)
@@ -101,7 +95,7 @@ class UpdatesSection:
         self._load_update_prefs()
         self._refresh_update_controls()
 
-    # -- updates (2026-09-23) --------------------------------------------------
+    # -- updates ---------------------------------------------------------------
     # Overridable seams for tests (and nothing else): the running exe, and
     # where "Restart now" hands off to.
     def _current_exe(self) -> Optional[Path]:
@@ -149,7 +143,7 @@ class UpdatesSection:
     def check_for_updates(self, manual: bool = True) -> None:
         """"Check now". (`manual=False` - a quiet check that only speaks up
         when there's something to offer - is kept for callers, but nothing
-        runs one at startup any more: 2026-09-24, no network at startup.)"""
+        runs one at startup - no network at startup.)"""
         if self._update_check_thread is not None and self._update_check_thread.isRunning():
             return
         if manual:
@@ -184,7 +178,7 @@ class UpdatesSection:
             self.offer_update(self._available_update)
 
     def offer_update(self, info: "updater.UpdateInfo") -> None:
-        """Ask first - always (James's choice). Install / Skip / Later."""
+        """Ask first - always (the owner's choice). Install / Skip / Later."""
         exe = self._current_exe()
         can_install = updater.self_update_blocker(exe) is None
         dialog = UpdateAvailableDialog(info, RELEASE_VERSION, can_install, parent=self)

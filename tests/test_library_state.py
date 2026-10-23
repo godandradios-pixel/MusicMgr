@@ -1062,6 +1062,52 @@ class TestArtistProfiles:
         with db_session.session_scope() as s:
             assert self._artist(s).profile
 
+    def test_profile_lookups_travel(self, two_pcs):
+        """2026-10-22: which artists were already looked up travels too, so
+        "New artists only" on one PC skips artists another PC tried - even
+        ones where no biography was found."""
+        import datetime as dt
+
+        pc1, pc2, _drive = two_pcs
+        when = dt.datetime(2026, 10, 20, 12, 0)
+        pc1.use()
+        with db_session.session_scope() as s:
+            self._artist(s).profile_checked_at = when          # tried, nothing found
+            s.add(Artist(name="Boston", name_key="boston", profile_checked_at=when))
+        pc1.sync()
+        notes = pc2.sync()
+        assert notes.profiles_checked_set == 1                  # Rush; no Boston on PC2
+        with db_session.session_scope() as s:
+            assert self._artist(s).profile_checked_at == when
+            later = dt.datetime(2026, 10, 22, 9, 0)
+            self._artist(s).profile_checked_at = later           # PC2 looks again
+            s.add(Artist(name="Boston", name_key="boston"))
+        pc2.sync()
+        with db_session.session_scope() as s:
+            assert s.scalar(select(Artist).where(Artist.name_key == "boston")).profile_checked_at == when
+        pc1.sync()
+        with db_session.session_scope() as s:
+            assert self._artist(s).profile_checked_at == later  # the later lookup wins
+        # an older lookup never overwrites a newer one
+        assert pc1.sync().profiles_checked_set == 0
+
+    def test_switched_off_profiles_leave_lookups_alone(self, two_pcs):
+        import datetime as dt
+
+        pc1, pc2, _drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            self._artist(s).profile_checked_at = dt.datetime(2026, 10, 20)
+        pc1.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            ls.set_category_enabled(s, ls.PROFILES, False)
+        assert pc2.sync().profiles_checked_set == 0
+        with db_session.session_scope() as s:
+            assert self._artist(s).profile_checked_at is None
+            ls.set_category_enabled(s, ls.PROFILES, True)
+        assert pc2.sync().profiles_checked_set == 1
+
 
 class TestTopSongs:
     """James: "Please also add the Last.fm top-tracks as a sync option"

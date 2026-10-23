@@ -1,12 +1,10 @@
 """Lyric editor model: build and save a synced .lrc sidecar by hand.
 
-2026-09-28 - James: "I would like a lyric editor in MusicMgr. One where it
-can determine the timestamps and place in the LRC file." Settled with him
-up front (AskUserQuestion): timestamps come from **tap-to-sync** (the song
-plays and he taps "Stamp" as each line starts - no speech-recognition
-model, no new dependency), the editor opens from **Now Playing's Lyrics
-pane**, and the starting text comes from either the track's **existing
-.lrc** or **LRCLIB's lyrics** (see `lyrics_downloader.fetch_lyrics_text`).
+Timestamps come from **tap-to-sync** (the song plays and the user taps
+"Stamp" as each line starts - no speech recognition, no new dependency).
+The editor opens from **Now Playing's Lyrics pane**, and the starting text
+comes from the track's **existing .lrc** or **LRCLIB's lyrics** (see
+`lyrics_downloader.fetch_lyrics_text`).
 
 This module is the Qt-free half: the line list the editor works on, the
 tap/nudge/shift operations, and turning that back into a file at the exact
@@ -109,9 +107,8 @@ def retext(lines: Sequence[EditLine], new_text: str) -> list[EditLine]:
 def to_timed_text(lines: Sequence[EditLine]) -> str:
     """The "Edit text…" box's contents: one row per line, each stamped line
     led by its `[mm:ss.xx]` so the times can be edited as text too
-    (2026-09-30 - James: "if you edit lyrics with timestamps it removes the
-    timestamps when you save, I would like the edit lyrics to allow edit
-    of timestamps"). A timed empty row is a music break and is kept."""
+    and survive a text edit. A timed empty row is a music break and is
+    kept."""
     rows = []
     for line in lines:
         if line.time_ms is None:
@@ -210,7 +207,7 @@ def shift_all(lines: Iterable[EditLine], delta_ms: int, duration_ms: int = 0) ->
 def out_of_order(lines: Sequence[EditLine]) -> list[int]:
     """Indices of stamped lines timed *earlier* than a stamped line above
     them - almost always a mis-tap. The editor flags these rather than
-    silently re-sorting, since the text order is what James wrote."""
+    silently re-sorting, since the text order is what the user wrote."""
     bad = []
     latest: Optional[int] = None
     for i, line in enumerate(lines):

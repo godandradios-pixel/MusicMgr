@@ -1,147 +1,59 @@
 """Title Details: a flat, sortable table of every track in the library.
 
-Replaces the old three-pane Genre browser (genre -> releases -> tracks),
-which filed tracks under a release-level tag nobody actually browses music
-by. One row per track instead, with the columns James asked for: Genre,
-Album Artist, Album, Track #, Title, Time, Year, and a tap-to-set Rating
-out of 5 stars (2026-09-05; Album added 2026-09-06). A Jukebox column
-lived here too from 2026-09-07 until 2026-09-13, when it was removed
-again - see "The Jukebox column" below for that whole arc.
+One row per track: Genre, Album Artist, Album, Track #, Title, Time, Year,
+a tap-to-set Rating out of 5 stars, and Comment.
 
 Built on `QAbstractTableModel`/`QTableView` rather than the `QTreeWidget`
 "own the sort" pattern `VideoTable`/`ChartTable` use (see video_table.py's
-docstring) - that pattern allocates a real `QTreeWidgetItem` per row, fine at
-the hundreds-to-low-thousands scale a video or chart library runs at, but
-this table is every track in the whole library - tens of thousands of rows
-on a real collection. A model only ever asks for data the view is actually
-about to paint, so building or re-sorting the table stays fast regardless of
-how large the library gets. Sorting is still manual in spirit - `sort()`
-just re-orders the Python list backing the model rather than trying to make
-per-item text comparison do something it was never built for (the same
-numeric-vs-string problem `VideoTable`'s docstring describes for Year/Time).
-Row *height* needs the same rigor at this scale and, until a 2026-09-06
-follow-up (James: a real ~98,000-track library going "Not Responding"),
-didn't have it - `QTableView` word-wraps by default, so a long Genre/Album/
-Title value wrapping to two lines made Qt compute every row's height from
-its content instead of a single fixed number. `setWordWrap(False)` plus
-pinning the vertical header to `Fixed` (not just a default row height that
-content can still grow past) makes row height an O(1) lookup again
-regardless of library size; Qt still elides an overlong value with "..." on
-its own, so nothing becomes unreadable.
+docstring): that pattern allocates a `QTreeWidgetItem` per row, which is fine
+for hundreds to low thousands of rows, but this table holds every track in
+the library (tens of thousands). A model only supplies data the view is
+about to paint, so building or re-sorting stays fast at any size. `sort()`
+re-orders the Python list backing the model, avoiding the numeric-vs-string
+comparison problem `VideoTable`'s docstring describes for Year/Time.
+Row height is fixed for the same reason: `setWordWrap(False)` plus a `Fixed`
+vertical header keeps row height an O(1) lookup (word-wrapped cells make Qt
+measure every row, which hangs a ~100k-track library); Qt elides overlong
+values with "...".
 
-This table joins the shared A-Z jump bar `LibraryView` shows under the search
-box, the same as Albums/Artists/Tracks (2026-09-06 - it briefly opted out,
-closer to Charts' admin-table treatment, until James asked for it back for
-consistency with the rest of Library). `jump_letters()`/`scroll_to_letter()`
-only make sense while the table is sorted by one of its four text columns -
-Genre, Album Artist, Album, or Title (`ALPHA_SORT_COLS`) - since Track #/
-Time/Year/Rating have no alphabetical order to jump within; `LibraryView`
-hides the shared bar automatically whenever the active sort isn't one of
-those four, the same way it already hides the bar for a grid sorted by
-something non-alphabetical (Albums by Year, say). Column headers remain the
-primary browsing tool here regardless; the search box searches every column
-shown here, not just the four text ones (James, 2026-09-06 - see
-`_row_matches`), unlike Artists/Albums/Tracks, which each search only their
-own kind of thing now.
+The table joins the shared A-Z jump bar `LibraryView` shows under the search
+box. `jump_letters()`/`scroll_to_letter()` only apply while sorted by one of
+the four text columns (`ALPHA_SORT_COLS`); `LibraryView` hides the bar for
+any other sort, as it does for a grid sorted non-alphabetically. The search
+box searches every column shown (see `_row_matches`).
 
-The Rating column is interactive: `RatingDelegate` paints five stars per row
-and a tap sets the rating to however many stars sit at or left of it -
-tapping the star that already matches the current rating clears it back to
-unrated, so there's always a way to remove a rating without a separate
-control. The stars themselves shrank on a 2026-09-13 follow-up (see below)
-- same interaction, smaller footprint.
+The Rating column is interactive: `RatingDelegate` paints five stars and a
+tap sets the rating to the tapped star; tapping the star matching the
+current rating clears it, so no separate "no rating" control is needed.
 
-The Jukebox column's whole arc: added 2026-09-07 (James: "I don't like
-using my 5 stars to get a track on the Jukebox cards. Can we create
-another column to denote what track is included as a card... to select,
-maybe to the right of the 5 star ratings we can add a little Jukebox
-label or picture that can be clicked to get on the jukebox cards.") as a
-second, independent interactive column - `JukeboxDelegate` painted one
-glyph, a filled circle when the track was loaded onto the jukebox board
-and an outline when it wasn't, flipped by a tap anywhere in the cell.
-Before that, a track's star rating and its jukebox membership were the
-same thing (5 stars auto-loaded it, dropping below 5 auto-removed it);
-this column split them into fully independent controls side by side.
-Unlike `RatingDelegate`, which computes the new rating from tap position
-alone and applies it immediately, the Jukebox toggle couldn't be
-optimistic the same way - flipping a track *onto* the board can fail (no
-resolvable album artist to file a slot under), and, since a 2026-09-13
-follow-up earlier the same day this column was removed, turning it on
-opened `ui/views/jukebox.py`'s `JukeboxPickerDialog` for a genre choice
-rather than landing immediately either - so the delegate's tap only asked
-the model to emit `jukeboxToggleRequested`, with `on_jukebox` updated only
-once `LibraryView` called back with the confirmed result.
+`TrackDetailRow.on_jukebox` has no column, but `_row_matches` lets a search
+for "jukebox" find those tracks. Adding a track to the jukebox board is done
+from Now Playing's toggle or the Jukebox page's "+ Add to jukebox" picker.
 
-Removed the same day, a follow-up later still - James: "remove the
-jukebox option on the Title details table to give me more space for the
-title of the song." `COL_JUKEBOX`, `JukeboxDelegate`,
-`jukeboxToggleRequested`, `request_jukebox_toggle`, `set_on_jukebox`, and
-`ROLE_ON_JUKEBOX` are all gone from this file, along with
-`LibraryView`'s handler side of the same feature
-(`_on_jukebox_toggle_requested`/`_open_jukebox_picker_for`/that view's own
-`_search_addable_tracks`, all now-unreachable without a column to tap).
-`TrackDetailRow.on_jukebox` itself stays - `services.library.
-list_track_details` still computes it, and `_row_matches` still lets a
-search for the word "jukebox" find those tracks - only the dedicated
-column and its tap-to-toggle affordance are gone. Adding a track to the
-jukebox board is still possible from Now Playing's own toggle or the
-Jukebox page's own "+ Add to jukebox" picker; Title Details just isn't a
-third entry point for it any more.
+A search match can also be a video (see `LibraryView._load_details` and the
+module docstring in `views/library.py`), woven in as an ordinary
+`TrackDetailRow` with `is_video=True`, genre "Video", and no rating.
+`RatingDelegate` refuses to paint or edit stars for one, and tapping the row
+plays it (`_on_clicked`, `videoActivated`). Video rows only appear as search
+matches (or with "Videos only" checked), never in the default table.
 
-A search match can also be a video (2026-09-06, see `LibraryView.
-_load_details` and the module docstring in `views/library.py`) - woven in as
-an ordinary `TrackDetailRow` with `is_video=True`, genre "Video", and no
-rating, rather than a separate row type or panel. `RatingDelegate` refuses to
-paint or edit stars for one (a video has no rating field to set), and
-tapping anywhere else on the row plays it instead (`_on_clicked`,
-`videoActivated`). Video rows only ever appear as a search match, never in
-the default unfiltered table - the same rule the other three Library
-presentations apply to their own video items.
+A "Group by" chip bar (None / Genre / Artist / Album) mirrors `VideoTable`'s.
+Genre adds one level of `GroupHeaderRow` dividers, alphabetical, with header
+clicks still re-sorting within each group. Artist / Album is two levels deep
+and uses a fixed natural order at every level - artist alphabetical, album
+by year-then-title (as `artist_panel.py`'s release query sorts), track by
+track number - with header sorting disabled, because a column sort reaching
+into one album's track order would scramble it. See
+`TrackDetailsModel._rebuild_display()` for the row-list mechanics
+(`GroupHeaderRow`, `QTableView.setSpan()`).
 
-2026-09-16 follow-up (James: "add the group by to the track details. And
-add a Genre, and Artist/album group by option" - referencing `VideoTable`'s
-own "Group by: None / Artist" chip bar, see that widget's module
-docstring): a matching chip bar sits above this table too now, with three
-options - None (today's flat, fully-sortable table, unchanged), Genre, and
-Artist / Album. Genre works exactly like `VideoTable`'s Artist grouping -
-one level of `GroupHeaderRow` dividers, alphabetical by genre, with header
-clicks still re-sorting *within* each genre group by whatever column was
-clicked (same "own the grouping, header clicks still matter" contract
-`VideoTable`'s docstring lays out). Artist / Album is two levels deep -
-an artist divider, then an album divider under it, then that album's
-tracks - which needed a real decision `VideoTable` never had to make:
-what governs the leaf order inside a two-level group. Letting the active
-column sort reach all the way into "order tracks within one album" would
-mean a stray "sort by Time" click scrambles every album's own track
-order, which nothing in this app's other grouped/ordered views does (the
-artist page's own release row, `GatefoldCoverflow`, always orders by
-year-then-title regardless of anything else on screen). So Artist / Album
-has its own fixed, natural order at every level instead - artist
-alphabetical, album by year-then-title (the same tuple `artist_panel.py`'s
-own release query already sorts by), track by track number - and
-`self.view.setSortingEnabled(False)` while it's active, so a header click
-does nothing rather than silently failing to do what it looks like it
-should. `TrackDetailsModel._rebuild_display()` is where all of this
-actually lives; see its own docstring for the row-list mechanics
-(`GroupHeaderRow`, `QTableView.setSpan()`) that make two-level grouping
-possible without abandoning the flat `QAbstractTableModel` this file's
-own module docstring already explains the reasoning for keeping (a real
-per-`QTreeWidgetItem` grouped table, `VideoTable`'s own approach, isn't
-viable at this table's tens-of-thousands-of-rows scale - see above).
-
-Rows are selectable and a double click on a real (non-video) row plays it
-(2026-09-06 follow-up, James: "I want to be able to select or click on a
-title. A double click should automatically start playing that track") -
-`trackActivated` fires the track_id, and `LibraryView._play_from_details`
-does the actual queueing: the whole currently visible/sorted table, in its
-current order, starting at that row - the same "queue what's on screen"
-rule `ui/widgets/track_panel.py`'s own flat all-library list already uses
-for the Tracks presentation, since this table is exactly that same kind of
-thing (every track in the library, one row each). `TrackDetailRow.
-to_queue_item()`/`.playable` need `artist`/`path`/`cover_path` on the row,
-so `services.library.list_track_details` now selects those too (a
-`MediaFile` join, same "lowest-id present file" rule `track_panel.py`'s own
-query already uses) - see that function's docstring.
+Rows are selectable and a double click on a real (non-video) row plays it:
+`trackActivated` fires the track_id and `LibraryView._play_from_details`
+queues the whole visible table in its current order starting at that row,
+the same "queue what's on screen" rule as `ui/widgets/track_panel.py`.
+`TrackDetailRow.to_queue_item()`/`.playable` need `artist`/`path`/
+`cover_path`, which `services.library.list_track_details` selects (see that
+function's docstring).
 """
 
 from __future__ import annotations
@@ -194,24 +106,16 @@ HEADERS = (
 ALPHA_SORT_COLS = (COL_GENRE, COL_ALBUM_ARTIST, COL_ALBUM, COL_TITLE)
 
 #: STAR_COUNT/STAR_FULL/STAR_EMPTY live in widgets/common.py, shared with Now
-#: Playing's standalone StarRating widget (2026-09-06) - re-exported here
-#: (via the import above) so any other existing callers of
-#: `track_details_table.STAR_COUNT` etc. keep working unchanged.
-#:
-#: JUKEBOX_ON/JUKEBOX_OFF used to be re-exported the same way for
-#: `JukeboxDelegate`'s glyphs - removed along with that whole column and
-#: delegate on 2026-09-13 (see the module docstring's "Removed the same
-#: day" paragraph); common.py's own JukeboxToggle widget (Now Playing)
-#: still imports them directly from there, unaffected.
+#: Playing's StarRating widget - re-exported here (via the import above) for
+#: callers of `track_details_table.STAR_COUNT` etc.
 
 #: index().data() role RatingDelegate reads to know how many stars to fill -
 #: DisplayRole is left returning None for this column since the delegate,
 #: not QStyledItemDelegate's default text painting, owns how it looks
 ROLE_RATING = Qt.UserRole + 1
 
-#: the three "Group by" chip options (2026-09-16 follow-up - see module
-#: docstring). GROUP_NONE is today's flat, fully-sortable table; the other
-#: two insert `GroupHeaderRow` dividers into the model's row list (see
+#: the three "Group by" chip options (see module docstring). GROUP_NONE is
+#: the flat, fully-sortable table; the other two insert `GroupHeaderRow` dividers into the model's row list (see
 #: `TrackDetailsModel._rebuild_display`).
 GROUP_NONE = "none"
 GROUP_GENRE = "genre"
@@ -246,45 +150,30 @@ class TrackDetailRow:
     #: lower-cased sort key - the same convention `Track.title_key` already
     #: gives every other title sort in this app
     sort_key: str
-    #: playback fields (2026-09-06 follow-up, James: "double click should
-    #: automatically start playing that track") - let `to_queue_item()`
-    #: build a real `QueueItem` straight from the row already in memory
-    #: rather than a second per-track query. A video row (see `is_video`
-    #: below) never sets these; it plays through `videoActivated` instead.
+    #: playback fields - let `to_queue_item()` build a `QueueItem` from the
+    #: row already in memory rather than a second per-track query. A video
+    #: row (see `is_video`) never sets these; it plays via `videoActivated`.
     artist: str = ""
-    #: raw tag comment (2026-09-17 follow-up, James: "add the comment field
-    #: to the title details grid" - added while chasing why a Comment-based
-    #: smart playlist rule was matching nothing; see services/scanner.py's
-    #: `_first_id3_comment` fix). Blank for a video row, same as the other
-    #: track-only fields below. Placed here, after every field with no
-    #: default (`sort_key` above included) - a dataclass field with a
-    #: default can't come before one that has none (2026-09-17, James: "non-
-    #: default argument 'sort_key' follows default argument 'comment'" on a
-    #: real run - Python only caught this at class-definition time, which
-    #: this sandbox's own Qt-less `py_compile`/`ast.parse` checks never
-    #: exercise, since neither actually calls the `@dataclass` decorator).
+    #: raw tag comment (see services/scanner.py's `_first_id3_comment`).
+    #: Blank for a video row. Must stay after every field without a default
+    #: (`sort_key` included) - a dataclass raises at class-definition time
+    #: otherwise, which `py_compile`/`ast.parse` checks don't catch.
     comment: str = ""
     path: Optional[str] = None
     cover_path: Optional[str] = None
     #: what the Track # column shows - a 78's side ("A"/"B") when it has
-    #: one, else the number (2026-09-30, services/tracknum.py)
+    #: one, else the number (services/tracknum.py)
     track_label: str = ""
-    #: True for a video woven in as a search match (2026-09-06, see
-    #: `LibraryView._load_details`) rather than a real track row - `genre` is
-    #: always "Video" for these, there's no rating (RatingDelegate skips
-    #: painting and editing for them), and a tap plays the video instead of
-    #: doing nothing. `video_id` is the video's own primary key; `track_id`
-    #: is set to the safe sentinel 0 (never a real Track id) rather than left
-    #: to collide with one.
+    #: True for a video woven in as a search match (see
+    #: `LibraryView._load_details`) - `genre` is "Video", there's no rating
+    #: (RatingDelegate skips these), and a tap plays the video. `video_id` is
+    #: the video's primary key; `track_id` is the sentinel 0 (never a real
+    #: Track id).
     is_video: bool = False
     video_id: Optional[int] = None
-    #: True if this track is currently loaded onto the jukebox board -
-    #: independent of `rating` since the 2026-09-07 follow-up (see the
-    #: module docstring). No column shows this any more (see the module
-    #: docstring's 2026-09-13 "Removed the same day" paragraph) but the
-    #: field itself stays: `_row_matches` still lets a search for the word
-    #: "jukebox" find these tracks. Always False for a video row, same as
-    #: `rating` - there's nothing to toggle on one.
+    #: True if this track is loaded onto the jukebox board (independent of
+    #: `rating`). No column shows it; `_row_matches` lets a search for
+    #: "jukebox" find these tracks. Always False for a video row.
     on_jukebox: bool = False
 
     @property
@@ -310,20 +199,16 @@ class TrackDetailRow:
 @dataclass
 class GroupHeaderRow:
     """One divider row inserted into `TrackDetailsModel`'s display list by
-    `_rebuild_display()` when grouping is on (2026-09-16 follow-up - see
-    module docstring). Not a real track - `TrackDetailsModel.row_at()`
-    returns None for one of these, same contract a video search-match row
-    already relied on (see `TrackDetailRow.is_video`), so the click/
-    rating/jukebox handling that already tolerates "nothing here" needed
-    no further changes.
+    `_rebuild_display()` when grouping is on. Not a real track -
+    `TrackDetailsModel.row_at()` returns None for one, so click/rating
+    handlers treat it as "nothing here".
 
     `level` is 0 for a top-level divider (a genre, or an artist in Artist /
     Album mode) and 1 for the album sub-divider nested under an artist in
     Artist / Album mode - `TrackDetailsTable._apply_spans()` spans every
     level the same way (the whole row, all columns), but only level 0
     dividers are jump-bar targets (`letter_source` is None on a level-1
-    one, so `TrackDetailsModel.top_level_headers()` skips it - MusicBee's
-    own grouped view doesn't jump by album name either, just artist)."""
+    one, so `TrackDetailsModel.top_level_headers()` skips it)."""
 
     text: str
     level: int = 0
@@ -355,22 +240,15 @@ class TrackDetailsModel(QAbstractTableModel):
     row set; `sort()` is Qt's own hook, called automatically by
     `QTableView.setSortingEnabled(True)` whenever a header is tapped.
 
-    2026-09-16 follow-up (James: "add the group by to the track details.
-    And add a Genre, and Artist/album group by option" - see the class-
-    level `TrackDetailsTable`'s own docstring for the full rationale):
-    `self._rows` is still the flat, filtered leaf list `set_rows()` is
-    handed - the source of truth, untouched by grouping. What the view
-    actually reads (`rowCount`/`data`/etc.) is `self._display_rows`, a
-    separate list `_rebuild_display()` rebuilds from `self._rows` whenever
-    the row set, the sort, or `self._group` changes - plain `TrackDetailRow`
-    leaves when ungrouped, leaves interleaved with `GroupHeaderRow` dividers
-    otherwise. Kept as two lists rather than mutating `self._rows` in place
-    (the old `_apply_sort` did) because a header divider isn't a row this
-    table's search/filter/rating logic should ever see - keeping it out of
-    `self._rows` entirely means none of that logic needed to learn about
-    dividers at all; only the handful of places that render or navigate the
-    table (`data`, `flags`, `row_at`, `header_at`, `rows`,
-    `top_level_headers`) needed to."""
+    `self._rows` is the flat, filtered leaf list `set_rows()` is handed -
+    the source of truth, untouched by grouping. The view reads
+    `self._display_rows`, which `_rebuild_display()` rebuilds from
+    `self._rows` whenever the row set, sort, or `self._group` changes:
+    plain leaves when ungrouped, leaves interleaved with `GroupHeaderRow`
+    dividers otherwise. Two lists keep dividers out of the search/filter/
+    rating logic; only the methods that render or navigate the table
+    (`data`, `flags`, `row_at`, `header_at`, `rows`, `top_level_headers`)
+    know about them."""
 
     ratingChanged = Signal(int, int)  # track_id, new rating (0 = cleared)
 
@@ -400,11 +278,8 @@ class TrackDetailsModel(QAbstractTableModel):
             return Qt.NoItemFlags
         item = self._display_rows[index.row()]
         if isinstance(item, GroupHeaderRow):
-            # a divider, not a selectable/checkable row - matches
-            # VideoTable's own group headers (Qt.ItemIsEnabled only, no
-            # ItemIsSelectable), so a click on one just falls through
-            # row_at()/header_at() returning the "nothing to act on" shape
-            # every existing handler already tolerates (see class docstring)
+            # a divider, not a selectable row - matches VideoTable's group
+            # headers; clicks on it fall through as "nothing to act on"
             return Qt.ItemIsEnabled
         return Qt.ItemIsEnabled | Qt.ItemIsSelectable
 
@@ -466,11 +341,8 @@ class TrackDetailsModel(QAbstractTableModel):
         self.endResetModel()
 
     def row_at(self, row: int) -> Optional[TrackDetailRow]:
-        """The real track at this display row, or None for a group header -
-        the same "nothing here" contract a video search-match row's caller
-        already had to handle (`TrackDetailRow.is_video`), extended to
-        cover a header divider too, so `_on_clicked`/`_on_double_clicked`/
-        `RatingDelegate` needed no new special-casing for grouping."""
+        """The real track at this display row, or None for a group header
+        (or an out-of-range row)."""
         if not (0 <= row < len(self._display_rows)):
             return None
         item = self._display_rows[row]
@@ -492,18 +364,14 @@ class TrackDetailsModel(QAbstractTableModel):
         self.ratingChanged.emit(detail.track_id, rating)
 
     def count(self) -> int:
-        """How many real tracks are currently loaded - deliberately
-        `len(self._rows)`, not the display list, so a group header divider
-        never inflates this (matches what `set_rows()` was actually handed,
-        regardless of how it's currently grouped)."""
+        """How many real tracks are loaded - `len(self._rows)`, not the
+        display list, so group headers never inflate it."""
         return len(self._rows)
 
     def rows(self) -> list[TrackDetailRow]:
         """The current (filtered, sorted, and - if grouped - flattened)
         leaf rows, in on-screen display order, with any group headers
-        stripped out - what `jump_letters()`/`scroll_to_letter()` walk to
-        answer "what letters are on screen right now" without duplicating
-        the model's own state."""
+        stripped out - what `jump_letters()`/`scroll_to_letter()` walk."""
         return [r for r in self._display_rows if isinstance(r, TrackDetailRow)]
 
     def top_level_headers(self) -> list[tuple[int, str]]:
@@ -511,10 +379,8 @@ class TrackDetailsModel(QAbstractTableModel):
         `GroupHeaderRow` currently shown - a genre name, or an artist name
         in Artist / Album mode - what the shared A-Z jump bar indexes while
         grouped (see `TrackDetailsTable.jump_letters`/`scroll_to_letter`).
-        Empty while `group == GROUP_NONE`, since there are no dividers at
-        all then; also skips the album sub-dividers Artist / Album mode
-        adds (`level == 1`) - MusicBee's own grouped view doesn't jump by
-        album name either, just artist."""
+        Empty while `group == GROUP_NONE`; skips the album sub-dividers
+        (`level == 1`)."""
         return [
             (i, item.letter_source)
             for i, item in enumerate(self._display_rows)
@@ -568,7 +434,7 @@ class TrackDetailsModel(QAbstractTableModel):
             return (row.comment.lower(), row.sort_key)
         return row.sort_key  # Title, and the fallback
 
-    # -- grouping (2026-09-16 follow-up - see class docstring) -----------------
+    # -- grouping (see class docstring) -----------------------------------------
 
     def _rebuild_display(self) -> None:
         if self._group == GROUP_GENRE:
@@ -582,10 +448,8 @@ class TrackDetailsModel(QAbstractTableModel):
 
     def _grouped_by_genre(self) -> list:
         """One divider per genre, alphabetical, tracks within each genre
-        ordered by whatever column is currently sorted - the same "own the
-        grouping, header clicks still matter" contract `VideoTable`'s own
-        Artist grouping already established (see that widget's module
-        docstring)."""
+        ordered by whatever column is currently sorted - the same contract
+        as `VideoTable`'s Artist grouping (see that widget's docstring)."""
         groups: dict[str, list[TrackDetailRow]] = {}
         for row in self._rows:
             groups.setdefault(row.genre or _NO_GENRE, []).append(row)
@@ -605,15 +469,11 @@ class TrackDetailsModel(QAbstractTableModel):
 
     def _grouped_by_artist_album(self) -> list:
         """Two dividers deep - an artist, then each of their albums under
-        it - with a fixed, natural order at every level rather than
-        following whatever column is currently sorted (see
-        `TrackDetailsTable`'s own docstring for why: letting an arbitrary
-        column reach into "track order within one album" would scramble
-        it, which nothing else in this app's grouped/ordered views does).
-        Artist alphabetical; album by year-then-title (the same tuple
-        `artist_panel.py`'s own release query already sorts by); track by
-        track number, falling back to the same title `sort_key` every
-        other "no track number" case in this app already falls back to."""
+        it - with a fixed, natural order at every level rather than the
+        sorted column (which would scramble an album's track order; see
+        the module docstring). Artist alphabetical; album by year-then-title
+        (as `artist_panel.py`'s release query sorts); track by track number,
+        falling back to the title `sort_key`."""
         by_artist: dict[str, list[TrackDetailRow]] = {}
         for row in self._rows:
             by_artist.setdefault(row.album_artist or "Unknown artist", []).append(row)
@@ -665,18 +525,10 @@ class RatingDelegate(QStyledItemDelegate):
     """Paints and edits the Rating column only; every other column falls
     through to the default text rendering.
 
-    2026-09-13 follow-up (James: "see if you can make the 5 star rating
-    take up less column space," the same message that asked for the
-    Jukebox column's removal - see the module docstring) - `star_size`/
-    `gap` shrank from 22px/6px to 16px/4px, and `column_width()` below
-    (read by the view when it sets `COL_RATING`'s fixed width, rather than
-    a hand-copied number that could quietly drift out of sync with these
-    two) shrank to match: was a hardcoded `6 * 22 + 40 = 172`, now
-    computed from the actual star geometry plus the same 20px of padding
-    the old number implied. `editorEvent`'s hit-testing already forgives
-    an imprecise tap - full row height, and each star's tap "band" already
-    pads a few pixels past its own glyph - so the smaller glyphs stay
-    perfectly tappable; they just draw and lay out smaller."""
+    Stars are kept small (16px, 4px gap) to save column width; the view
+    sizes `COL_RATING` from `column_width()`. `editorEvent`'s hit-testing
+    uses the full row height and pads each star's band past its glyph, so
+    the small glyphs stay easy to tap."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -684,10 +536,8 @@ class RatingDelegate(QStyledItemDelegate):
         self.gap = 4
 
     def column_width(self) -> int:
-        """The fixed `COL_RATING` width this delegate actually needs -
-        read by the view instead of a hardcoded number, so a future change
-        to `star_size`/`gap` can't silently leave the column too narrow (or
-        wider than necessary) again."""
+        """The fixed `COL_RATING` width this delegate needs, computed from
+        `star_size`/`gap` so the column tracks any change to them."""
         return STAR_COUNT * self.star_size + (STAR_COUNT - 1) * self.gap + 20
 
     def _star_rects(self, rect: QRect) -> list[QRect]:
@@ -704,12 +554,9 @@ class RatingDelegate(QStyledItemDelegate):
             super().paint(painter, option, index)
             return
         row = index.model().row_at(index.row())
-        # row_at() is also None for a group header divider (2026-09-16
-        # follow-up - see TrackDetailsModel's docstring); in practice
-        # QTableView.setSpan() already merges a header's whole row into
-        # column 0's index so COL_RATING's delegate is never even asked to
-        # paint one, but bailing here too costs nothing and doesn't rely on
-        # spans having been (re)applied yet.
+        # row_at() is also None for a group header; setSpan() normally keeps
+        # this delegate from painting one, but don't rely on spans being
+        # (re)applied yet.
         if row is None or row.is_video:
             # a video has no rating field at all - leave the cell blank
             # rather than paint stars for something that can't be rated
@@ -724,9 +571,8 @@ class RatingDelegate(QStyledItemDelegate):
         painter.setFont(font)
         for position, rect in enumerate(self._star_rects(option.rect), start=1):
             filled = position <= rating
-            # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for
-            # this whole cleanup) - filled stars, walnut brown now instead
-            # of red-orange (matches ui/widgets/common.py's StarRating).
+            # filled stars in walnut brown, matching ui/widgets/common.py's
+            # StarRating (see ui/theme.py's #Primary comment)
             painter.setPen(QColor(COLORS["jukebox_key_hi"] if filled else COLORS["text_dim"]))
             painter.drawText(rect, Qt.AlignCenter, STAR_FULL if filled else STAR_EMPTY)
         painter.restore()
@@ -764,10 +610,7 @@ class RatingDelegate(QStyledItemDelegate):
 
 class TrackDetailsTable(QWidget):
     """The Title Details table: a `QTableView` over `TrackDetailsModel` with
-    a star-rating delegate on its Rating column. It carried a second toggle
-    delegate on a Jukebox column from 2026-09-07 to 2026-09-13 - see the
-    module docstring's "Removed the same day" paragraph for that whole arc;
-    `JukeboxDelegate` no longer exists in this file.
+    a star-rating delegate on its Rating column.
 
     `set_rows()` loads the full (unfiltered) row set; `set_filter_text()`
     narrows it live by title, genre, album artist or album - the same
@@ -778,60 +621,33 @@ class TrackDetailsTable(QWidget):
     the active sort column changes, either of which can change what letters
     make sense to show right now, so `LibraryView` knows to re-ask.
 
-    Rows are selectable (2026-09-06 follow-up, James: "I want to be able to
-    select or click on a title") and a double click on a real track row
-    plays it (`trackActivated`) - `LibraryView` does the actual queueing
-    (see `_play_from_details`), the same "the table only emits, the view
-    acts" split `ratingChanged`/`videoActivated` already use. A video row
-    keeps its existing single-tap-to-play behaviour (`_on_clicked`) rather
-    than also reacting to a double click.
+    Rows are selectable and a double click on a real track row plays it
+    (`trackActivated`); `LibraryView` does the queueing (see
+    `_play_from_details`) - the table only emits, the view acts, as with
+    `ratingChanged`/`videoActivated`. A video row plays on a single tap
+    (`_on_clicked`) instead.
 
-    2026-09-13 follow-up (James: "on the track details, I want a checkbox
-    where it filters only on videos") - a "Videos only" `QCheckBox`
-    (`self.videos_only_checkbox`), backed by purely local state
-    (`self._videos_only` - no `LibraryView` involvement needed since
-    nothing here writes to the database). Every video row was already
-    loaded into `self._all_rows` alongside every track (see the module
-    docstring and `TrackDetailRow.is_video`) but, with the checkbox off,
-    stayed hidden unless the search box happened to match one -
-    `_apply_filter` now ANDs the checkbox with whatever's typed in the
-    search box rather than replacing it: checked with no search text
-    shows every video; checked with search text narrows to videos
-    matching it; unchecked is exactly the pre-existing behavior in both
-    cases.
-
-    Same-day fix: the checkbox's native indicator rendered as a bare
-    caret with no visible box in either state on James's machine -
-    nothing that read as "checkbox" at a glance. Given an explicit
-    stylesheet instead: an always-visible bordered square that fills
-    solid with the app's accent color when checked, rather than relying
-    on the platform to draw a checkmark glyph inside it.
-
-    Same day, second and third follow-ups (James: "move the Videos only
-    checkbox up on the Search this View..., to the right of the Space and
-    backspace buttons" - "don't take up an entire row for just that
-    Videos only" - then "move checkbox and Videos only completely to the
-    right, justified right"): this class still builds and owns the
-    checkbox (construction, its stylesheet, wiring `toggled` into
-    `_on_videos_only_toggled`/`_apply_filter`), but no longer places it in
-    `root`'s own layout - `LibraryView._build_details()` reparents the
-    one widget into its shared search header instead, flush against that
-    header's right edge, and shows/hides it there depending on which
-    presentation is active. See that method's own docstring for the
-    header-side half of this.
+    A "Videos only" `QCheckBox` (`self.videos_only_checkbox`) is backed by
+    local state (`self._videos_only`). `_apply_filter` ANDs it with the
+    search text: checked with no text shows every video; checked with text
+    narrows to matching videos; unchecked hides videos unless searched for.
+    It has an explicit stylesheet (a bordered square that fills with the
+    accent color when checked) because the native indicator was unreadable.
+    This class builds and wires the checkbox but does not place it:
+    `LibraryView._build_details()` reparents it into the shared search
+    header, right-aligned, and shows/hides it per presentation (see that
+    method's docstring).
     """
 
     ratingChanged = Signal(int, int)  # track_id, new rating
-    #: a video row tapped as a search match (2026-09-06) - see
+    #: a video row tapped as a search match - see
     #: TrackDetailRow.is_video and _on_clicked
     videoActivated = Signal(int)  # video_id
-    #: a real (non-video) track row double-clicked (2026-09-06 follow-up) -
-    #: see the class docstring and _on_double_clicked
+    #: a real (non-video) track row double-clicked - see the class
+    #: docstring and _on_double_clicked
     trackActivated = Signal(int)  # track_id
-    #: "Edit tags…" on the selected songs (2026-10-06 - James: "Tag editor
-    #: with MusicBrainz lookup. Fix tags in the files themselves") - from
-    #: the button beside Group by or a right-click. LibraryView opens the
-    #: editor (ui/widgets/tag_editor.py).
+    #: "Edit tags…" on the selected songs, from the button beside Group by
+    #: or a right-click. LibraryView opens the editor (ui/widgets/tag_editor.py).
     editTagsRequested = Signal(list)  # track ids
     updated = Signal()
 
@@ -839,43 +655,25 @@ class TrackDetailsTable(QWidget):
         super().__init__(parent)
         self._all_rows: list[TrackDetailRow] = []
         self._filter_text = ""
-        #: 2026-09-13 follow-up - see the class docstring's newest entry.
+        #: "Videos only" checkbox state - see the class docstring.
         self._videos_only = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
 
-        # 2026-09-13, second and third follow-ups (James: "move the Videos
-        # only checkbox up on the Search this View..., to the right of the
-        # Space and backspace buttons" - "don't take up an entire row for
-        # just that Videos only" - then "move checkbox and Videos only
-        # completely to the right, justified right") - constructed here
-        # (this class still owns the checkbox itself: its styling and the
-        # toggle wiring into `_apply_filter` below), but *not* added to
-        # `root` any more. `LibraryView._build_details()` reparents this
-        # one widget into its own shared search header instead, flush
-        # against that header's right edge, and shows/hides it alongside
-        # the rest of the header depending on whether Title Details is the
-        # active presentation.
+        # owned here (styling, toggle wiring) but not added to `root` -
+        # `LibraryView._build_details()` reparents it into its shared
+        # search header (see class docstring)
         self.videos_only_checkbox = QCheckBox("Videos only")
         self.videos_only_checkbox.setToolTip(
             "Show only music videos, hiding every audio track - the same "
             "video rows normally surfaced here only as a search match"
         )
-        # 2026-09-13 fix: James reported the plain, unstyled QCheckBox's
-        # native indicator was barely readable as a checkbox at all - on
-        # his machine, checked looked like a bare "˅" caret floating next
-        # to the label with no visible box around it either way, nothing
-        # like the bordered square this app's other real checkboxes get
-        # for free from the platform elsewhere. Drawn explicitly instead
-        # of trusting native rendering: an always-visible bordered square
-        # (`surface_alt`, matching this table's own alternating-row tint)
-        # that fills solid with the app's jukebox_key_hi accent - already
-        # used for every other toggle-ish affordance in this file, e.g.
-        # the star rating / jukebox delegates just above - when checked.
-        # No reliance on the platform drawing a checkmark glyph inside it
-        # at all; the fill *is* the checked state.
+        # drawn explicitly because the native indicator can render as a
+        # bare caret with no box: an always-visible bordered square that
+        # fills with the jukebox_key_hi accent when checked - the fill *is*
+        # the checked state
         self.videos_only_checkbox.setStyleSheet(
             f"""
             QCheckBox {{ color: {COLORS['text']}; spacing: 8px; }}
@@ -897,16 +695,9 @@ class TrackDetailsTable(QWidget):
         )
         self.videos_only_checkbox.toggled.connect(self._on_videos_only_toggled)
 
-        # "Group by: None / Genre / Artist / Album" (2026-09-16 follow-up -
-        # see the class docstring's newest entry) - same chip-bar shape as
-        # VideoTable's own "Group by" row (dim_label + a QButtonGroup of
-        # ChipButtons), built and placed in this table's own layout rather
-        # than reparented into LibraryView's shared header the way the
-        # Videos-only checkbox above is: unlike that checkbox (Title
-        # Details-only, so it only makes sense in the header LibraryView
-        # already swaps per presentation), Group by is entirely local to
-        # this table's own row list, the same reasoning VideoTable's
-        # module docstring gives for keeping its own bar in its own layout.
+        # "Group by: None / Genre / Artist / Album" - same chip-bar shape as
+        # VideoTable's. Kept in this table's own layout (unlike the
+        # checkbox above) since it only affects this table's row list.
         group_bar = QHBoxLayout()
         group_bar.setSpacing(8)
         group_bar.addWidget(dim_label("Group by"))
@@ -926,9 +717,8 @@ class TrackDetailsTable(QWidget):
             lambda b: self._set_group(b.property("group"))
         )
         group_bar.addStretch(1)
-        # 2026-10-06 - the tag editor. Ctrl/Shift-click picks several
-        # songs (a whole album sorted by Album, say); a right-click on a
-        # row offers the same thing.
+        # the tag editor: Ctrl/Shift-click picks several songs; a
+        # right-click on a row offers the same thing
         self.edit_tags_btn = TouchButton("Edit tags…")
         self.edit_tags_btn.setToolTip(
             "Fix the selected songs' tags in the music files (Ctrl- or Shift-click to "
@@ -941,26 +731,17 @@ class TrackDetailsTable(QWidget):
         self.model = TrackDetailsModel(self)
         self.model.ratingChanged.connect(self.ratingChanged)
         self.model.modelReset.connect(self.updated)
-        # a header divider only ever exists after grouping is on, and a
-        # fresh row set or a header re-sort both rebuild the display list
-        # from scratch - modelReset (set_rows/set_group) and layoutChanged
-        # (sort) are the two ways that happens, so both need every header
-        # row re-spanned across the whole width, or a stale span from
-        # before the rebuild would merge the wrong cells
+        # modelReset (set_rows/set_group) and layoutChanged (sort) both
+        # rebuild the display list, so header rows must be re-spanned after
+        # either, or a stale span would merge the wrong cells
         self.model.modelReset.connect(self._apply_spans)
         self.model.layoutChanged.connect(self._apply_spans)
 
         self.view = QTableView()
         self.view.setObjectName("TitleDetails")
         self.view.setModel(self.model)
-        # 2026-09-06 follow-up: rows used to be unselectable (nothing here
-        # needed it while a tap only mattered for the Rating column or a
-        # video row) - James asked to be able to select a title, and a
-        # double click needs *something* to distinguish it from a plain
-        # click on the same row anyway
-        # several rows at once since 2026-10-06 (Ctrl/Shift-click), for
-        # editing a set of songs' tags together - a double click still
-        # plays the one row
+        # several rows at once (Ctrl/Shift-click) for editing a set of
+        # songs' tags together - a double click still plays the one row
         self.view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.view.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.view.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -968,21 +749,10 @@ class TrackDetailsTable(QWidget):
         self.view.setShowGrid(False)
         self.view.setAlternatingRowColors(False)
         self.view.setMouseTracking(True)
-        # 2026-09-06 follow-up (James: "Not Responding" on a real ~98,000-
-        # track library): QTableView word-wraps a cell's text by default, so
-        # a long Genre/Album/Title value ("2010s / Alternative / Country /
-        # Dance & ...") was wrapping to two lines and forcing Qt to compute
-        # each row's height from its content instead of using one fixed
-        # number - fine at a few thousand rows, ruinous at this table's real
-        # scale (tens of thousands), and exactly the kind of per-row cost
-        # this widget's own module docstring already chose QTableView over
-        # QTreeWidget to avoid for column layout - row height fell through
-        # the same gap. Turning word wrap off and pinning every row to the
-        # same fixed height (`Fixed`, not just a default that content can
-        # still grow past) makes row height an O(1) lookup regardless of
-        # library size; Qt still elides an overlong value with "..." on its
-        # own, so nothing is unreadable, just single-line like every other
-        # column here already was.
+        # no word wrap + a `Fixed` vertical header (not just a default size
+        # content can grow past): wrapped cells make Qt measure every row's
+        # height, which hangs a library of tens of thousands of tracks. Qt
+        # still elides overlong values with "...".
         self.view.setWordWrap(False)
         self.view.verticalHeader().setVisible(False)
         self.view.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
@@ -997,10 +767,8 @@ class TrackDetailsTable(QWidget):
         self.view.setColumnWidth(COL_TIME, 90)
         self.view.setColumnWidth(COL_YEAR, 90)
         self.rating_delegate = RatingDelegate(self.view)
-        # narrower than the old hardcoded 172px (2026-09-13 follow-up - see
-        # RatingDelegate's own docstring) - freed width flows into the four
-        # Stretch columns above, Title included, same as the Jukebox
-        # column's removal just below does
+        # sized from the star geometry (see RatingDelegate's docstring);
+        # remaining width flows into the Stretch columns above
         self.view.setColumnWidth(COL_RATING, self.rating_delegate.column_width())
         self.view.setItemDelegateForColumn(COL_RATING, self.rating_delegate)
         QScroller.grabGesture(self.view.viewport(), QScroller.LeftMouseButtonGesture)
@@ -1012,13 +780,9 @@ class TrackDetailsTable(QWidget):
         # filtered/reloaded row set
         header.sortIndicatorChanged.connect(lambda *_: self.updated.emit())
 
-        # a video row (search match only, see is_video) plays on tap - every
-        # other column already does nothing on click, so this is a new
-        # capability rather than replacing existing row-click behaviour
+        # a video row (search match only, see is_video) plays on tap
         self.view.clicked.connect(self._on_clicked)
-        # a real track row plays on double click (2026-09-06 follow-up) -
-        # a single click just selects it, matching ordinary desktop table
-        # behaviour now that rows are selectable
+        # a real track row plays on double click; a single click selects it
         self.view.doubleClicked.connect(self._on_double_clicked)
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._on_context_menu)
@@ -1044,7 +808,7 @@ class TrackDetailsTable(QWidget):
             return
         self.trackActivated.emit(row.track_id)
 
-    # -- tag editing (2026-10-06) -------------------------------------------
+    # -- tag editing --------------------------------------------------------
 
     def selected_track_ids(self) -> list[int]:
         """The real (non-video) songs selected, top to bottom."""
@@ -1078,7 +842,7 @@ class TrackDetailsTable(QWidget):
         menu.addAction(label).triggered.connect(lambda: self.editTagsRequested.emit(ids))
         menu.exec(self.view.viewport().mapToGlobal(pos))
 
-    # -- grouping (2026-09-16 follow-up - see class docstring) -----------------
+    # -- grouping (see class docstring) -----------------------------------------
 
     @property
     def group_by(self) -> str:
@@ -1088,16 +852,10 @@ class TrackDetailsTable(QWidget):
         if group == self.model.group:
             return
         self.model.set_group(group)
-        # Artist / Album has its own fixed, natural order at every level
-        # (artist alphabetical, album by year-then-title, track by track
-        # number) rather than following whatever column is clicked - see
-        # TrackDetailsModel._grouped_by_artist_album's own docstring for
-        # why a column-driven re-sort doesn't make sense two levels deep.
-        # Disabling native sorting here means a header click does nothing
-        # at all while this mode is active, rather than looking like it
-        # should reorder something and quietly not doing it. Genre (one
-        # level, same contract VideoTable's Artist grouping already uses)
-        # and None both keep header-click sorting live.
+        # Artist / Album has a fixed natural order (see
+        # TrackDetailsModel._grouped_by_artist_album), so header clicks are
+        # disabled there rather than appearing to do nothing. Genre and
+        # None keep header-click sorting.
         self.view.setSortingEnabled(group != GROUP_ARTIST_ALBUM)
         self.updated.emit()
 
@@ -1105,12 +863,9 @@ class TrackDetailsTable(QWidget):
         """Every `GroupHeaderRow` currently in the model's display list
         gets its one cell (column 0) spanned across every column - the
         `QTableView` equivalent of `QTreeWidgetItem.setFirstColumnSpanned`,
-        which is what actually makes a header read as one full-width bar
-        instead of a row with text in its first cell and four empty ones
-        trailing it. Called after every rebuild (`modelReset`/
-        `layoutChanged` - see `__init__`'s connections) since a stale span
-        from before the rebuild would otherwise merge whatever now happens
-        to sit at that row/column into the wrong shape."""
+        so a header reads as one full-width bar. Called after every rebuild
+        (`modelReset`/`layoutChanged`) since a stale span would merge the
+        wrong cells."""
         self.view.clearSpans()
         for row in range(self.model.rowCount()):
             if self.model.header_at(row) is not None:
@@ -1124,8 +879,7 @@ class TrackDetailsTable(QWidget):
 
     def set_filter_text(self, text: str) -> None:
         """Live-narrow the table to rows matching `text` in *any* of its
-        columns (James, 2026-09-06: "the search can be by all the columns
-        available for a title") - see `_row_matches`. A case-insensitive
+        columns - see `_row_matches`. A case-insensitive
         substring rule, same as everywhere else in Library. An empty string
         restores every row."""
         text = text.strip().lower()
@@ -1136,18 +890,12 @@ class TrackDetailsTable(QWidget):
 
     @staticmethod
     def _row_matches(row: TrackDetailRow, needle: str) -> bool:
-        """Every column the table shows is searchable, not just the four
-        text ones (Title/Genre/Album Artist/Album) this used to check -
-        Track #, Time and Year match against the same plain text the
-        column itself displays ("3:45" finds a track of that length,
-        "1978" finds that year, "4" finds Track 4), and Rating matches its
-        bare star count ("5" finds a 5-star track). A track on the jukebox
-        board matches the word "jukebox" (2026-09-07 follow-up), same idea
-        as Rating's bare number - there's no glyph to type, so the column's
-        name doubles as its search term. A video row has no track #/time/
-        year/rating/jukebox state of its own (`TrackDetailRow.is_video`),
-        so those simply never match one - it still surfaces through Title
-        or its "Video" genre, both already covered below."""
+        """Every column the table shows is searchable. Track #, Time and
+        Year match the text the column displays ("3:45", "1978", "4"), and
+        Rating matches its bare star count ("5"). A track on the jukebox
+        board matches the word "jukebox". A video row has no track #/time/
+        year/rating/jukebox state, so it surfaces only through Title or its
+        "Video" genre."""
         from ...services.library import format_duration
 
         return (
@@ -1171,9 +919,8 @@ class TrackDetailsTable(QWidget):
         needle = self._filter_text
         candidates = self._all_rows
         if self._videos_only:
-            # 2026-09-13 follow-up (see class docstring) - narrows the pool
-            # before the text filter below runs, so a search term with the
-            # checkbox on matches only within videos, not the whole library
+            # narrow the pool before the text filter, so a search with the
+            # checkbox on matches only within videos
             candidates = [r for r in candidates if r.is_video]
         if not needle:
             if self._videos_only:
@@ -1197,13 +944,10 @@ class TrackDetailsTable(QWidget):
         currently sorted by (Track #/Time/Year/Rating are numeric - see
         `ALPHA_SORT_COLS`) or there's too little on screen to be worth it -
         the same `MIN_TILES_FOR_SORTING` threshold `CoverGrid.jump_letters()`
-        already applies for the Albums/Artists grids.
+        applies for the Albums/Artists grids.
 
-        2026-09-16 follow-up (see class docstring) - grouped by Genre or
-        Artist / Album, letters index the top-level group headers instead
-        of a column: the dividers are what a jump-bar tap should actually
-        land on while grouped, the same rule `VideoTable`'s own Group by
-        Artist already established (see that widget's `jump_letters`)."""
+        While grouped, letters index the top-level group headers instead
+        of a column, as in `VideoTable.jump_letters`."""
         if self.model.group != GROUP_NONE:
             headers = self.model.top_level_headers()
             if len(headers) <= MIN_TILES_FOR_SORTING:

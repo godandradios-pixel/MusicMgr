@@ -1,9 +1,8 @@
 """Playlist browser: manual lists, smart rules, and frozen chart snapshots,
 organised into folders.
 
-2026-09-26: shown as a drill-down tile grid (folders and playlists as
-tappable artwork tiles, a breadcrumb to walk back out) rather than the
-MusicBee-style folder tree it started as - see PlaylistsView's docstring.
+Shown as a drill-down tile grid (folders and playlists as tappable artwork
+tiles, a breadcrumb to walk back out) - see PlaylistsView's docstring.
 """
 
 from __future__ import annotations
@@ -158,16 +157,11 @@ _ORDER_BY_LABELS = [
     ("play_count_desc", "Play count (most first)"),
     ("last_played_desc", "Last played (most recent first)"),
     ("rating_desc", "Rating (highest first)"),
-    #: James: "I need an option where it can be manual so that I can sort
-    #: them by ranking of the chart" - not a *manual*, drag-to-reorder
-    #: order (a smart playlist has no stored position for anything, it
-    #: always resolves fresh from these rules - only a KIND_MANUAL
-    #: playlist's PlaylistItem.position has that), but the effect he's
-    #: after: a chart-tagged playlist (built via "Comment contains
-    #: [Billboard]"-style rules) reading in the same countdown order the
-    #: chart itself lists it in. See resolve_smart's own "chart_rank"
-    #: comment in services/playlists.py for how ties/unmatched tracks
-    #: are handled.
+    #: chart order: a smart playlist has no stored positions (only a
+    #: KIND_MANUAL playlist's PlaylistItem.position does), so this sorts a
+    #: chart-tagged playlist (e.g. "Comment contains [Billboard]") in the
+    #: chart's own countdown order. See resolve_smart's "chart_rank"
+    #: comment in services/playlists.py for ties/unmatched tracks.
     ("chart_rank", "Chart ranking"),
     ("random", "Random"),
 ]
@@ -330,17 +324,13 @@ class _RuleRow(QWidget):
 class SmartPlaylistDialog(QDialog):
     """Smart playlist rule builder - a row of field/op/value dropdowns per
     rule, with "+"/"-" to grow or shrink the rule list, modeled on
-    MusicBee's own Auto-Playlist editor (James: "that scripting window is
-    confusing", pointing at the raw-JSON box this replaces). Reads and
-    writes the exact same JSON spec services/playlists.py has always
-    stored and resolved (see that module's own docstring) - only how it's
-    edited changed, so the three built-in smart playlists (and anything
-    saved through the old JSON box) still load and edit here unchanged.
+    MusicBee's Auto-Playlist editor. Reads and writes the JSON spec
+    services/playlists.py stores and resolves (see that module's
+    docstring), so the built-in smart playlists load and edit here.
 
-    Unlike the JSON box, this can never produce an invalid spec - every
-    field/op/value combination the form offers is one `_rule_clause`
-    already implements (see the schema tables above) - so there's nothing
-    left for services/playlists.py's own validation to actually reject.
+    The form can never produce an invalid spec - every field/op/value
+    combination it offers is one `_rule_clause` implements (see the schema
+    tables above).
     """
 
     def __init__(self, parent=None, name: str = "", rules: Optional[str] = None) -> None:
@@ -466,10 +456,8 @@ _TOUCH_MENU_STYLE = "QMenu::item { padding: 14px 32px; font-size: 16px; }"
 
 
 class PlaylistsView(BaseView):
-    """Playlists as a drill-down tile grid - 2026-09-26 (James: "I would
-    like playlist to have larger touch areas like Artist, Album or
-    Jukebox... any ideas of how we can have a better touch screen interface
-    for Playlists"). Replaces the MusicBee-style folder tree + side panel.
+    """Playlists as a drill-down tile grid with large touch areas, like
+    Artist, Album or Jukebox.
 
     Two pages in `self.stack`:
       * browse - one folder level as tiles (`PlaylistGrid`): subfolders
@@ -480,8 +468,7 @@ class PlaylistsView(BaseView):
         page: artwork, name, big Play / Shuffle / Queue, then the tracks.
 
     Rename / Move / Choose image / Delete live on each tile's menu (long
-    press or right-click) and on the playlist page's "More…" button,
-    instead of the old fixed button row under the tree. New playlists and
+    press or right-click) and on the playlist page's "More…" button. New playlists and
     folders are created inside whichever folder is showing.
 
     See ui/widgets/playlist_grid.py for how tile artwork is chosen (a
@@ -583,10 +570,8 @@ class PlaylistsView(BaseView):
         self.queue_btn.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
         self.edit_btn = TouchButton("Edit rules")
         self.edit_btn.clicked.connect(self.edit_smart)
-        # 2026-09-27 - James: "how can I edit a playlist by replacing a
-        # song with a search for another song" / "please build both". Both
-        # open the Jukebox's artist + title picker (JukeboxPickerDialog,
-        # genre box hidden) over pl_svc.search_tracks.
+        # Add / Replace both open the Jukebox's artist + title picker
+        # (JukeboxPickerDialog, genre box hidden) over pl_svc.search_tracks.
         self.add_btn = TouchButton("Add songs…")
         self.add_btn.clicked.connect(self._add_songs)
         self.replace_btn = TouchButton("Replace song…")
@@ -805,8 +790,8 @@ class PlaylistsView(BaseView):
                     if is_playback
                     else format_duration(track.duration_ms)
                 )
-                # album and side on every row (2026-09-30 - James's 78s:
-                # "the granularity of Album and then Track #")
+                # album and side on every row (78s need album and side to
+                # tell records apart)
                 detail = [track.artist_display or ""]
                 if track.release is not None and track.release.title:
                     detail.append(track.release.title)
@@ -891,7 +876,7 @@ class PlaylistsView(BaseView):
             menu.addAction("Use automatic image", lambda: self._clear_image(node_type, node_id))
         if node_type == KIND_PLAYLIST and kind == Playlist.KIND_SMART and not on_page:
             menu.addAction("Edit rules…", lambda: self._edit_smart_id(node_id))
-        # 2026-09-30 - one record after another, A side before B side
+        # one record after another, A side before B side
         if node_type == KIND_FOLDER:
             menu.addAction("Sort playlists by album && track",
                            lambda: self._sort_album_track(node_type, node_id))
@@ -1112,11 +1097,10 @@ class PlaylistsView(BaseView):
         self.ctx.player.set_shuffle(True)
         self.ctx.play_tracks(self._tracks, start=0, source=f"playlist:{self._playlist_id}")
 
-    # -- importing a song list (2026-10-20) ----------------------------------------
-    # James: a KLOVE Eras list (Rank, Artist, Title in an .xlsx) had to go in
-    # as a chart, be saved as a playlist and the chart deleted - losing the
-    # songs it couldn't match on the way. This goes straight to a playlist in
-    # the folder showing and lists what wasn't found.
+    # -- importing a song list ----------------------------------------------------
+    # A song list (e.g. Rank, Artist, Title in .csv/.xlsx) goes straight to a
+    # playlist in the folder showing, listing what wasn't found - rather
+    # than via a chart, which would lose the unmatched songs.
 
     def _ask_import_file(self) -> Optional[str]:
         path, _ = QFileDialog.getOpenFileName(

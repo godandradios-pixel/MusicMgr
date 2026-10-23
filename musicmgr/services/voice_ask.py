@@ -1,17 +1,13 @@
-"""Ask MusicMgr - play music from a spoken request on the phone (2026-10-15).
+"""Ask MusicMgr - play music from a spoken request on the phone.
 
-James: "Can we add some AI intelligence where we can talk into the phone and
-have it play songs based on natural language queries against the artists,
-profiles, albums, top songs, charts etc."
+A natural-language request ("play some 1972 number ones") is answered from
+the library's artists, profiles, albums, top songs, charts and playlists.
 
-Decisions (James, 2026-10-15):
-
-* Claude (the Anthropic API) understands the request, with an offline
-  fallback for plain phrasings when there's no key or no internet.
-  Same day: Google Gemini added as a choice (James: "is there a free AI
-  model I can use ... that doesn't need a subscription") - its free tier
-  needs only a Google AI Studio key, no card. Settings › Phone remote picks
-  the model; each provider keeps its own key.
+* An AI model understands the request - Claude (the Anthropic API) or
+  Google Gemini, whose free tier needs only a Google AI Studio key - with
+  an offline fallback for plain phrasings when there's no key or no
+  internet. Settings › Phone remote picks the model; each provider keeps
+  its own key.
 * Voice comes from the iPhone keyboard's own dictation mic in the phone
   remote's Ask box - it works on the remote's plain http:// address, where
   Safari won't allow a web page to use the microphone itself.
@@ -223,8 +219,8 @@ def _song(t: Track, **extra) -> dict:
 def _dedupe(tracks: Sequence[Track]) -> list[Track]:
     """One copy of each song by each artist. The same recording often sits on
     the album and again in a chart or hits folder; keep the album's
-    (non-compilation) copy, then the most played - James wants playlists to
-    point at album songs rather than the chart-folder copies."""
+    (non-compilation) copy, then the most played - playlists should point
+    at album songs rather than the chart-folder copies."""
     best: dict[tuple[str, str], Track] = {}
     order: list[tuple[str, str]] = []
 
@@ -325,7 +321,7 @@ def _artist_genres(session, artist: Artist, limit: int = 6) -> list[str]:
 
 
 def _top_song_titles(session, artist: Artist) -> list[str]:
-    """James's own top-song picks if he set them, else Last.fm's chart folded
+    """The user's own top-song picks if set, else Last.fm's chart folded
     to one row per song (the artist page's Top songs)."""
     picks = list(session.scalars(
         select(ArtistTopPick.title).where(ArtistTopPick.artist_id == artist.id)

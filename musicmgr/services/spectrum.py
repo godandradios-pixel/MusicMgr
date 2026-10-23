@@ -1,78 +1,33 @@
 """Spectrum data for the PlayerBar's audio-reactive pulse visualizer.
 
-James asked for a "pulse visualizer" while music plays (2026-09-05) - see
-architecture.md's "Audio-reactive spectrum bars on the PlayerBar" for the
-original scope decisions (real audio-reactive rather than purely
-decorative). That first version was removed the same day (its small
-5-bar widget didn't read as reacting at its original size/place) in favor
-of a purely-decorative fake wave - but James later asked for the fake wave
-itself to go, wanting the visualizer to "actually use the beat of the
-actual sound" again (2026-09-06 follow-up), so this module's real analysis
-is back in use, now feeding the bigger full-width bar row across the
-PlayerBar's top edge (`ui/widgets/visualizer.py:PulseVisualizer`) instead
-of the original small dedicated widget. Qt6 removed QAudioProbe, the old
-way to tap a *live* playback stream, so this instead pre-analyzes the
-whole file once per track and indexes into the result by playback
+Feeds the full-width bar row across the PlayerBar's top edge
+(`ui/widgets/visualizer.py:PulseVisualizer`) - see architecture.md's
+"Audio-reactive spectrum bars on the PlayerBar". Qt6 removed QAudioProbe,
+the old way to tap a live playback stream, so for a track this
+pre-analyzes the whole file once and indexes into the result by playback
 position - the same "compute once, look up by position" shape
-services/lyrics.py already uses for .lrc timing, just computed here instead
-of read from a sidecar file.
+services/lyrics.py uses for .lrc timing. Live radio is analysed as it
+plays instead (`LiveSpectrum`).
 
-No new dependency: rather than pull in numpy/scipy for an FFT, each
-bucket's band magnitudes are estimated with the Goertzel algorithm - a
-single-frequency DFT-bin magnitude in O(n) time, no allocation, cheap
-enough in pure Python to analyze a whole track (a few hundred thousand
-samples) in well under a second - confirmed in the sandbox against a
-synthetic 4-minute track (~0.7s for 5 bands).
+No numpy/scipy: each bucket's band magnitudes are estimated with the
+Goertzel algorithm - a single-frequency DFT-bin magnitude in O(n) time, no
+allocation, cheap enough in pure Python to analyze a 4-minute track in
+under a second at 22050 Hz.
 
-`detect_beats()` (2026-09-06 follow-up) runs a simple, dependency-free
-onset detector over the already-computed bass band - a beat is a bucket
-where bass spikes well above its own recent rolling average - so the
-visualizer can layer a sharper flash on top of its continuous band-
-following motion, on top of the real analysis rather than as a second,
-separate feature.
+`detect_beats()` runs a simple onset detector over the bass band - a beat
+is a bucket where bass spikes well above its own recent rolling average -
+so the visualizer can layer a sharper flash on top of its band-following
+motion.
 
-**2026-09-07 follow-up: MP3s showed no movement at all.** James: "the
-pulse visualizer works better with FLAC files compared to MP3. It just
-doesn't seem like there is any movement when playing MP3s." `compute_
-spectrum` used to hand `QAudioDecoder` a fixed target `QAudioFormat`
-(mono, Int16, `DECODE_SAMPLE_RATE`) so the bucketing math below never had
-to branch on a file's own sample rate/channel layout/codec. That's a real
-bug in Qt6's FFmpeg-backed `QAudioDecoder`, confirmed directly in this
-sandbox against a battery of real MP3s at several bit rates and channel
-counts: asking it to decode an MP3 *and* resample the result to a
-different sample rate than the file's own native rate makes it hang
-forever - no `bufferReady` after the first (near-empty) one, no `error`,
-no `finished` - until `DECODE_TIMEOUT_MS` gives up and this returns `[]`.
-FLAC hits the exact same resample request without any trouble, and an
-MP3 already at the target rate decodes fine too - it's specifically
-"MP3 decode + resample" that Qt's pipeline chokes on. Since the previous
-code always requested a fixed 22050Hz target and the overwhelming
-majority of real MP3s are natively 44100Hz, this fired on nearly every
-MP3 a real library would have, every time, while FLACs (also usually
-44100Hz, but immune to the bug) kept working - exactly the "FLAC works,
-MP3 doesn't" split James was seeing.
-
-The fix: stop requesting a specific `QAudioFormat` at all, and decode
-each file at whatever sample rate/channel count/sample format it
-natively is - sidestepping the buggy resampler entirely rather than
-working around it. `_buffer_to_mono` reads a decoded buffer in its own
-native sample format (`UInt8`/`Int16`/`Int32`/`Float` - whatever `Qt
-AudioFormat.SampleFormat` reports) and, for a multi-channel file, just
-keeps the first channel of each frame rather than averaging every
-channel together - cheap slicing instead of a per-frame Python loop, and
-a real stereo mix's bass/mid/treble balance barely differs channel to
-channel anyway, so the visual result is indistinguishable for what's a
-decorative feature to begin with. The bucket size and each `_goertzel_
-mag` call now use whatever sample rate the first buffer actually reports
-(`native_rate`, discovered once per track) instead of the fixed
-`DECODE_SAMPLE_RATE` constant, which now only exists as the harmless
-fallback if a buffer somehow reports no rate at all. One consequence
-worth knowing: decoding at a file's own native rate instead of always
-resampling down to 22050 means a very high native rate (96/192kHz,
-uncommon but real for some FLACs) analyzes proportionally slower than
-before - still comfortably bounded by `DECODE_TIMEOUT_MS`, just no longer
-always the sub-second case the original benchmark below described for
-every file regardless of its own rate.
+Files are decoded at their own native sample rate/channel count/sample
+format; no output `QAudioFormat` is requested. Qt6's FFmpeg-backed
+`QAudioDecoder` hangs (no `bufferReady`, `error` or `finished`) when asked
+to decode an MP3 *and* resample it to a rate other than its own, which
+hit nearly every 44.1 kHz MP3. `_buffer_to_mono` reads each buffer in its
+native format and keeps only the first channel; bucket size and Goertzel
+math use the rate the first buffer reports. A very high native rate
+(96/192 kHz) analyzes proportionally slower, still well within
+`DECODE_TIMEOUT_MS`.
 """
 
 from __future__ import annotations
@@ -94,22 +49,15 @@ BAND_FREQS: Sequence[int] = (60, 250, 1000, 3500, 9000)
 #: one bar-height reading per this many milliseconds of audio
 BUCKET_MS = 60
 
-#: 2026-09-07 follow-up: no longer the sample rate every file gets
-#: resampled to (see the module docstring's "MP3s showed no movement at
-#: all" note - asking Qt's FFmpeg-backed QAudioDecoder to resample an MP3
-#: to any other rate than its own hangs indefinitely). `compute_spectrum`
-#: now decodes each file at its own native rate and only falls back to
-#: this constant in the never-normally-happens case where a decoded buffer
-#: reports no sample rate at all.
+#: fallback sample rate, only used if a decoded buffer reports no rate at
+#: all - files are decoded at their native rate (see the module docstring
+#: for why no resample is requested).
 DECODE_SAMPLE_RATE = 22050
 
-#: safety ceiling on one track's decode, in the (real, sandbox-confirmed)
-#: case where QAudioDecoder's `error` signal fires but its connected
-#: `loop.quit()` doesn't actually stop a QEventLoop running on a
-#: background QThread the way it reliably does on the GUI thread - decoding
-#: a whole track normally finishes in well under a second (see the module
-#: docstring), so this only ever matters as a backstop against a decoder
-#: that's gone stuck, not as a normal exit path.
+#: safety ceiling on one track's decode: on a background QThread, the
+#: decoder's `error` signal can fire without its connected `loop.quit()`
+#: actually stopping the QEventLoop. A normal decode finishes in well under
+#: a second, so this is only a backstop against a stuck decoder.
 DECODE_TIMEOUT_MS = 20_000
 
 
@@ -147,20 +95,13 @@ _SAMPLE_STRUCT_CODE = {
 
 def _buffer_to_mono(buf) -> List[float]:
     """A decoded `QAudioBuffer`'s interleaved samples, reduced to a flat
-    mono list in whatever the file's own native sample format is (2026-09-07
-    follow-up - see the module docstring's "MP3s showed no movement at all"
-    note for why this is no longer always Int16 mono). For a multi-channel
-    buffer, keeps only the first channel of each frame rather than
-    averaging every channel together: cheap slicing instead of a per-frame
-    Python loop, and a real mix's bass/mid/treble balance barely differs
-    channel to channel anyway - not worth the cost for what's a decorative
-    feature. Values are left in their native scale (an Int16 sample isn't
-    normalized to +-1 the way a Float one already is) since `compute_
-    spectrum` only ever compares magnitudes *within* one track and
-    normalizes by that track's own peak at the end - the absolute scale
-    never matters. Returns [] for a buffer whose sample format isn't one of
-    the four `QAudioFormat.SampleFormat` values Qt6 has (shouldn't happen
-    in practice) or that reports zero samples."""
+    mono list in the file's native sample format (see the module
+    docstring). For a multi-channel buffer, keeps only the first channel of
+    each frame: cheap slicing instead of a per-frame Python loop, and a real
+    mix's band balance barely differs channel to channel - not worth the
+    cost for a decorative feature. Values stay in their native scale since
+    `compute_spectrum` normalizes by the track's own peak at the end.
+    Returns [] for an unknown sample format or a buffer with no samples."""
     fmt = buf.format()
     code = _SAMPLE_STRUCT_CODE.get(fmt.sampleFormat())
     count = buf.sampleCount()
@@ -186,12 +127,9 @@ def compute_spectrum(
     QEventLoop, which only works because the decoder is created (and so
     lives) on whatever thread calls this function.
 
-    Deliberately doesn't ask QAudioDecoder for a specific output
-    QAudioFormat any more (2026-09-07 follow-up - see the module
-    docstring): decodes at whatever sample rate/channel count/sample
-    format the file itself natively is, discovered from the first decoded
-    buffer, rather than requesting a fixed resample that hangs Qt6's
-    FFmpeg-backed decoder on most real MP3s.
+    Doesn't ask QAudioDecoder for a specific output QAudioFormat: decodes
+    at the file's native format, discovered from the first decoded buffer
+    (see the module docstring for the MP3 resample hang this avoids).
 
     Returns [] for anything that fails to decode (a missing/corrupt file,
     an unsupported container) - the visualizer is purely decorative, never
@@ -347,9 +285,7 @@ def detect_beats(
 class SpectrumThread(QThread):
     """Computes one track's spectrum off the GUI thread. See PlayerBar's
     `_start_spectrum`/`_on_spectrum_ready` for how the result is consumed -
-    the bars simply stay at their idle baseline until this finishes, which
-    the sandbox timing above puts comfortably under a second even for a
-    full-length track."""
+    the bars stay at their idle baseline until this finishes."""
 
     spectrumReady = Signal(str, list)  # path, list[list[float]]
     failed = Signal(str)  # path
@@ -377,7 +313,7 @@ class SpectrumThread(QThread):
 
 
 # --------------------------------------------------------------------------
-# live: internet radio (2026-10-03)
+# live: internet radio
 # --------------------------------------------------------------------------
 
 #: the rolling peak a live stream's bands are scaled against falls by this
@@ -389,10 +325,9 @@ LIVE_PEAK_FLOOR = 40.0
 
 
 class LiveSpectrum(QObject):
-    """James, 2026-10-03: "Any way the visualizer at the bottom can pulse
-    with radio broadcasts". A station can't be decoded up front the way a
-    track is (`compute_spectrum`) - it never ends - so this analyses the
-    audio as it plays instead: PlayerController hands it each decoded
+    """Spectrum for a live radio stream. A station can't be decoded up
+    front the way a track is (`compute_spectrum`) - it never ends - so this
+    analyses the audio as it plays: PlayerController hands it each decoded
     buffer from a QAudioBufferOutput tapped onto the deck playing the
     stream, and it emits one reading per `bucket_ms`, the same five
     bands as a track's buckets plus whether the bass just spiked

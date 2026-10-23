@@ -1,4 +1,4 @@
-"""Library-state sync through the USB drive (2026-09-24, USB sync step 3).
+"""Library-state sync through the USB drive (USB sync step 3).
 
 Plan: claude/2026-09-23-usb-sync-plan.md §3. Steps 1-2 carry the *files*
 (music, videos, movies, artwork). This carries what only lives in
@@ -7,33 +7,29 @@ library.db - never the database file itself:
 - **plays** (play_events, plus play_count / skip_count / last_played_at)
 - **ratings** (tracks.rating)
 - **playlists** (manual, smart and chart ones, with their folder path) and
-  the **playlist folders** themselves (2026-09-28 - see below)
+  the **playlist folders** themselves
 - **the Jukebox board** (cards, genre chips)
-- **playlist and folder images** chosen with "Choose image…" (2026-09-28;
-  rides on the Playlists checkbox). The picture files themselves travel
-  with the artwork folder; this carries which playlist/folder uses which
-  file, for every kind of playlist - chart and playback ones too
-- **radio stations** (2026-10-01 - James: "With the new Radio feature, I
-  would like to add the preset radio stations buttons to the USB Sync
-  option"): the internet stations on the Radio page's FM and AM bands,
-  keyed by stream address, with their name, band and place on the dial.
-  Each PC downloads a station's logo itself the next time the Radio page
-  opens. Rides with it, old-time radio progress: each show's band, which
-  episodes were heard and where one was stopped (services/otr_sync.py);
-  the show files themselves are each PC's own radio folder
-- **artist profiles** (2026-10-17 - James: "In the Settings Sync - I would
-  like the Artist profiles to sync with the USB"): the biography text on
-  each artist's page (Artist.profile) and its source links (Artist.urls),
-  keyed by the artist's name_key. Artist photos already travel as files
-  with the artists folder
-- **top songs** (2026-10-17 - James: "Please also add the Last.fm
-  top-tracks as a sync option"): each artist's Last.fm chart
-  (ArtistTopTrack) and the songs chosen by hand to show instead
-  (ArtistTopPick), keyed by name_key, as one value per artist
-- **similar artists** (2026-10-17): Last.fm's similar-artists list that
-  "radio from this song" uses (ArtistSimilar) and when it was fetched, so
-  a second PC needn't fetch it again
-- **playback & look** and **the tuner** (2026-10-17) - see prefs_sync.py
+- **playlist and folder images** chosen with "Choose image…" (rides on the
+  Playlists checkbox). The picture files travel with the artwork folder;
+  this carries which playlist/folder uses which file
+- **radio stations**: the internet stations on the Radio page's FM and AM
+  bands, keyed by stream address, with their name, band and place on the
+  dial. Each PC downloads a station's logo itself. Riding with it,
+  old-time radio progress: each show's band, which episodes were heard and
+  where one was stopped (services/otr_sync.py); the show files themselves
+  are each PC's own radio folder
+- **artist profiles**: the biography on each artist's page (Artist.profile)
+  and its source links (Artist.urls), keyed by name_key. Artist photos
+  travel as files with the artists folder. Riding with them, when each
+  artist was last looked up (Artist.profile_checked_at, PROFILES_CHECKED) -
+  merged as "the later date wins", never removed
+- **top songs**: each artist's Last.fm chart (ArtistTopTrack) and the songs
+  chosen by hand to show instead (ArtistTopPick), keyed by name_key, as one
+  value per artist
+- **similar artists**: Last.fm's similar-artists list that "radio from this
+  song" uses (ArtistSimilar) and when it was fetched, so a second PC
+  needn't fetch it again
+- **playback & look** and **the tuner** - see prefs_sync.py
 
 Everything is keyed by names and paths, never by database ids (ids differ
 on every PC). A track's key is its path inside a synced folder, as the
@@ -52,25 +48,17 @@ How the merge works - the same three-way idea as the file sync:
   and the losing board is kept as a JSON file under `sync\\_deleted\\`.
   Something deleted on one side and untouched on the other is deleted.
 - Plays are simply combined (a play is identified by track + start time).
+- Chart playlists sync with their track lists, like manual ones (the
+  built-in "Most Played" playback playlists don't: each PC rebuilds them
+  from its plays, which do sync).
+- A playlist's key is its folder path plus its name
+  (`Billboard Hot Country/1980-89/1984`), since chart playlists can share a
+  name across folders. A top-level playlist's key is just its name. Older
+  states (no `playlist_keys` marker) are re-keyed when loaded.
+- Folders are their own three-way set: created where missing, and removed
+  once the other PC deleted one and it's empty here.
 
 The merged state is written back to the USB and applied here.
-
-2026-09-28 (James: "my Playlists and all the folders are [not] getting
-updated on PC2 ... it didn't update Billboard Hot Country folder and
-playlists"): chart playlists weren't synced at all, and a folder only
-reached another PC as a side effect of a synced playlist inside it - so a
-folder of chart playlists never arrived. Now:
-
-- chart playlists sync with their track lists, like manual ones (the
-  built-in "Most Played" playback playlists still don't: each PC rebuilds
-  them from its plays, which do sync);
-- a playlist's key is its folder path plus its name
-  (`Billboard Hot Country/1980-89/1984`), since "Save all as playlists"
-  made hundreds of year-named playlists that only differ by folder. A
-  top-level playlist's key is just its name, as before. States written
-  before this (no `playlist_keys` marker) are re-keyed when loaded;
-- folders are their own three-way set: created where missing, and removed
-  once the other PC deleted one and it's empty here.
 """
 
 from __future__ import annotations
@@ -121,20 +109,24 @@ _NEXT_SLOT_KEY = "jukebox_next_slot_number"
 
 #: the things this step can sync, each switchable per PC
 PLAYS, RATINGS, PLAYLISTS, JUKEBOX = "plays", "ratings", "playlists", "jukebox"
-#: charts (2026-09-30) - their own files on the drive, see chart_sync.py
+#: charts - their own files on the drive, see chart_sync.py
 CHARTS = "charts"
-#: the Radio page's internet stations (2026-10-01) - and, riding with them,
-#: old-time radio progress (otr_sync.py)
+#: the Radio page's internet stations - and, riding with them, old-time
+#: radio progress (otr_sync.py)
 RADIO = "radio"
 OTR = "otr"
-#: artist biographies and their source links (2026-10-17)
+#: artist biographies and their source links
 PROFILES = "profiles"
-#: Last.fm top tracks and hand-picked top songs (2026-10-17)
+#: riding with PROFILES: when each artist's profile was last looked up, by
+#: name_key - so "New artists only" on one PC skips artists another PC
+#: already tried, even ones with no biography found
+PROFILES_CHECKED = "profiles_checked"
+#: Last.fm top tracks and hand-picked top songs
 TOP_TRACKS = "top_tracks"
-#: Last.fm similar artists (2026-10-17)
+#: Last.fm similar artists
 SIMILAR = "similar"
-#: playback preferences and the skin, and the Radio page's tuner
-#: (2026-10-17) - see prefs_sync.py
+#: playback preferences and the skin, and the Radio page's tuner - see
+#: prefs_sync.py
 PREFS = "prefs"
 TUNER = "tuner"
 CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS, RADIO, PROFILES, TOP_TRACKS,
@@ -160,17 +152,17 @@ SYNCED_PLAYLIST_KINDS = (Playlist.KIND_MANUAL, Playlist.KIND_SMART, Playlist.KIN
 #: kinds whose track list is stored (a smart playlist's comes from its rules)
 ITEM_KINDS = (Playlist.KIND_MANUAL, Playlist.KIND_CHART)
 
-#: playlist folders (2026-09-28) - like images, rides on the Playlists
-#: checkbox: `{folder path: True}`, merged three-way
+#: playlist folders - like images, rides on the Playlists checkbox:
+#: `{folder path: True}`, merged three-way
 FOLDERS = "folders"
-#: states from before 2026-09-28 keyed playlists by name alone
+#: older states (without this marker) keyed playlists by name alone
 PLAYLIST_KEYS = 2
 #: set on a loaded state that a pre-1.7.1 MusicMgr wrote (its pc id); never saved
 OLD_BUILD = "old_build_pc"
 _DUP_SUFFIX = re.compile(r" #\d+$")
 
-#: playlist/folder tile images (2026-09-28) - not a checkbox of its own:
-#: synced whenever Playlists is
+#: playlist/folder tile images - not a checkbox of its own: synced
+#: whenever Playlists is
 IMAGES = "images"
 _IMAGE_PREFIX_PL = "playlist:"
 _IMAGE_PREFIX_FOLDER = "folder:"
@@ -297,13 +289,12 @@ def _folders_by_path(db: Session) -> dict[str, PlaylistFolder]:
 
 
 def _rekey_playlists(old: dict) -> dict:
-    """A pre-2026-09-28 state's playlists (keyed by name, " #2" for
-    duplicates) keyed the current way.
+    """An older state's playlists (keyed by name, " #2" for duplicates)
+    keyed the current way.
 
-    2026-10-14: a state written by such an older build can already hold
-    current keys (`<folder>/<name>`) it took from the drive - with no
-    "name" field. The name is then the key minus its folder path, not the
-    whole key (see repair_nested_names)."""
+    Such a state can already hold current keys (`<folder>/<name>`) taken
+    from the drive, with no "name" field. The name is then the key minus
+    its folder path, not the whole key (see repair_nested_names)."""
     new: dict[str, dict] = {}
     for key, value in old.items():
         value = dict(value)
@@ -314,22 +305,15 @@ def _rekey_playlists(old: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
-# playlists named after their own folder path (2026-10-14)
+# playlists named after their own folder path
 # --------------------------------------------------------------------------
-# James: "The playlist folders are getting messed up with duplicate empty
-# folders when syncing between Linux and Windows PCs" - each folder showed a
-# second, mostly empty copy of every playlist, named e.g.
-# "Billboard Hot 100/1950-59/1951" next to the real "1951" (170 of them on
-# PC1 after its 2026-10-14 sync; all made on another PC on 2026-10-13 at
-# 21:00 UTC). How: a MusicMgr from before 1.7.1 (playlists keyed by name
-# alone) syncs. It reads the key "Billboard Hot 100/1950-59/1951" as a
-# playlist *name*, creates that playlist in the folder (a chart one with no
-# songs - those builds didn't carry chart track lists) and writes the drive
-# back with no `playlist_keys` marker and no "name" fields. The next current
-# build re-keyed that state taking the whole key as the name, so every PC
-# that synced afterwards got the copies too.
+# A MusicMgr from before 1.7.1 (playlists keyed by name alone) reads a key
+# like "Billboard Hot 100/1950-59/1951" as a playlist *name*, creates an
+# empty playlist by that name in the folder, and writes the drive back with
+# no `playlist_keys` marker. Re-keying that state would then spread a
+# second, mostly empty copy of every playlist to each PC.
 #
-# Now: a name that starts with its own folder path is cut back to the real
+# So: a name that starts with its own folder path is cut back to the real
 # name wherever a state is read, a copy whose real playlist is there is
 # dropped, this library's own copies are cleaned up at the start of each
 # sync (repair_nested_playlists), and the sync says when the drive was last
@@ -479,6 +463,7 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: read_images(db), FOLDERS: {path: True for path in _folders_by_path(db)},
             RADIO: read_stations(db), OTR: _read_otr(db), PROFILES: read_profiles(db),
+            PROFILES_CHECKED: read_profiles_checked(db),
             TOP_TRACKS: read_top_tracks(db), SIMILAR: read_similar(db),
             PREFS: _prefs_sync().read_prefs(db), TUNER: _prefs_sync().read_tuner(db)}
 
@@ -539,7 +524,7 @@ def apply_stations(db: Session, merged: dict, local: dict, notes: "MergeNotes") 
 
 
 # --------------------------------------------------------------------------
-# artist profiles (2026-10-17)
+# artist profiles
 # --------------------------------------------------------------------------
 
 
@@ -552,6 +537,52 @@ def read_profiles(db: Session) -> dict[str, dict]:
         if artist.name_key and artist.name_key not in out:
             out[artist.name_key] = {"profile": artist.profile, "urls": artist.urls or None}
     return out
+
+
+def read_profiles_checked(db: Session) -> dict[str, str]:
+    """When each artist's profile was last looked up, by name_key."""
+    out: dict[str, str] = {}
+    for key, checked in db.execute(select(Artist.name_key, Artist.profile_checked_at)
+                                   .where(Artist.profile_checked_at.is_not(None))):
+        if key and key not in out:
+            out[key] = _iso(checked)
+    return out
+
+
+def merge_profiles_checked(local: dict, usb: dict) -> dict[str, str]:
+    """Every artist either side has looked up, with the later date. Nothing
+    is ever removed: a lookup that happened stays true, and artists this PC
+    doesn't have stay on the drive for the PCs that do."""
+    out = dict(usb or {})
+    for key, when in (local or {}).items():
+        if not when:
+            continue
+        theirs = _parse(out.get(key))
+        mine = _parse(when)
+        if theirs is None or (mine is not None and _aware(mine) > _aware(theirs)):
+            out[key] = when
+    return out
+
+
+def _aware(value: dt.datetime) -> dt.datetime:
+    return value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+
+
+def apply_profiles_checked(db: Session, merged: dict, notes: "MergeNotes") -> None:
+    """Mark artists another PC has looked up as looked up here too, unless
+    this PC's own lookup is later."""
+    want = merged.get(PROFILES_CHECKED) or {}
+    if not want:
+        return
+    for artist in db.scalars(select(Artist).where(Artist.name_key.in_(list(want)))):
+        theirs = _parse(want.get(artist.name_key))
+        if theirs is None:
+            continue
+        mine = artist.profile_checked_at
+        if mine is None or _aware(theirs) > _aware(mine):
+            artist.profile_checked_at = theirs.astimezone(dt.timezone.utc).replace(tzinfo=None)
+            notes.profiles_checked_set += 1
+    db.flush()
 
 
 def carry_artist_data(local: dict, base: dict, artists: set[str], cat: str) -> set[str]:
@@ -706,7 +737,7 @@ def apply_similar(db: Session, merged: dict, notes: "MergeNotes",
 
 
 # --------------------------------------------------------------------------
-# playlist / folder images (2026-09-28)
+# playlist / folder images
 # --------------------------------------------------------------------------
 
 
@@ -764,13 +795,12 @@ def carry_images(local: dict, base: dict, targets: dict) -> set[str]:
 
     Returns every key put back. `apply_images` sets each one whose playlist
     or folder exists by then - including the ones `apply_state` creates in
-    this same sync (2026-09-28 fix: those used to be skipped, because the
-    carried value made them look already set here).
+    this same sync.
 
-    A base saved before that fix (no `images_placed` marker) may list images
-    this PC never actually got, for playlists/folders that are here now with
-    no image. Those are put back too, once, instead of being read as this
-    PC having removed them."""
+    An older base (no `images_placed` marker) may list images this PC never
+    actually got, for playlists/folders that are here now with no image.
+    Those are put back too, once, instead of being read as this PC having
+    removed them."""
     was_missing = set(base.get("images_unplaced") or [])
     recheck = not base.get("images_placed")
     carried = set()
@@ -823,7 +853,7 @@ def _set(db: Session, key: str, value: str) -> None:
 def empty_state() -> dict:
     return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": [],
             IMAGES: {}, "images_unplaced": [], FOLDERS: {}, RADIO: {}, OTR: {},
-            PROFILES: {}, "profiles_unplaced": [], TOP_TRACKS: {}, "top_tracks_unplaced": [],
+            PROFILES: {}, "profiles_unplaced": [], PROFILES_CHECKED: {}, TOP_TRACKS: {}, "top_tracks_unplaced": [],
             SIMILAR: {}, "similar_unplaced": [], PREFS: {}, TUNER: {}}
 
 
@@ -839,28 +869,28 @@ def load_state(path: Path) -> Optional[dict]:
     state = empty_state()
     state.update({k: data.get(k, state[k]) for k in state})
     if IMAGES not in data:
-        # written before 2026-09-28 (or by an older MusicMgr on another PC):
-        # "no images" there means "not carried", not "all removed"
+        # written by an older MusicMgr: "no images" there means "not
+        # carried", not "all removed"
         state[IMAGES] = None
     if FOLDERS not in data:
-        # likewise for folders (2026-09-28)
+        # likewise for folders
         state[FOLDERS] = None
     if RADIO not in data:
-        # ...and radio stations (2026-10-01)
+        # ...and radio stations
         state[RADIO] = None
     if OTR not in data:
         state[OTR] = None
     for cat in _NEWER_CATEGORIES:
         if cat not in data:
-            # ...and everything added 2026-10-17
+            # ...and the newer per-artist and prefs categories
             state[cat] = None
     if data.get("playlist_keys") != PLAYLIST_KEYS:
         if state["playlists"]:
-            # written by a MusicMgr from before 1.7.1 (2026-10-14): which PC,
-            # if it said, so the sync can say which one needs updating
+            # written by a MusicMgr from before 1.7.1: which PC, if it
+            # said, so the sync can say which one needs updating
             state[OLD_BUILD] = str(data.get("saved_by") or "unknown")
         state["playlists"] = _rekey_playlists(state["playlists"] or {})
-    # copies named after their own folder path (2026-10-14)
+    # copies named after their own folder path
     state["playlists"], _ = repair_nested_names(state["playlists"] or {})
     state["images_placed"] = bool(data.get("images_placed"))
     return state
@@ -881,8 +911,7 @@ def save_state(path: Path, state: dict, pc_id: str) -> None:
         data["images_placed"] = 1
     data["saved"] = _iso(_now())
     data["saved_by"] = pc_id
-    # which MusicMgr wrote it (2026-10-14), for tracking down a PC that
-    # needs updating
+    # which MusicMgr wrote it, for tracking down a PC that needs updating
     data["saved_by_version"] = __version__
     tmp = path.with_name(path.name + ".mmsync-tmp")
     with gzip.open(tmp, "wt", encoding="utf-8") as fh:
@@ -916,9 +945,8 @@ class MergeNotes:
     images_in: int = 0
     folders_in: list[str] = field(default_factory=list)
     folders_removed: list[str] = field(default_factory=list)
-    #: what this PC sent to the drive (2026-09-28: James saw "Everything is
-    #: in sync" right after his chart playlists had gone out, since only
-    #: incoming changes were counted)
+    #: what this PC sent to the drive (so "Everything is in sync" isn't
+    #: shown when only outgoing changes happened)
     ratings_out: int = 0
     playlists_out: int = 0
     folders_out: int = 0
@@ -927,24 +955,24 @@ class MergeNotes:
     #: what the drive holds after this sync
     playlists_total: int = 0
     folders_total: int = 0
-    #: charts (2026-09-30, chart_sync.py); None when Charts isn't synced
+    #: charts (chart_sync.py); None when Charts isn't synced
     charts: Optional[object] = None
-    #: folders the drive no longer had that James chose to keep (2026-09-30)
+    #: folders the drive no longer had that the user chose to keep
     folders_kept: list[str] = field(default_factory=list)
-    #: radio stations (2026-10-01), by stream address
+    #: radio stations, by stream address
     stations_in: list[str] = field(default_factory=list)
     stations_removed: list[str] = field(default_factory=list)
     stations_out: int = 0
-    #: old-time radio progress (2026-10-01): changes taken / sent
+    #: old-time radio progress: changes taken / sent
     otr_in: int = 0
     otr_out: int = 0
-    #: 2026-10-14: copies of playlists named after their own folder path
+    #: copies of playlists named after their own folder path
     #: ("Billboard Hot 100/1950-59/1951") cleaned out of this library
     nested_cleaned: int = 0
     #: the drive was last written by a MusicMgr from before 1.7.1 - that
     #: PC's id, or "unknown"; it makes those copies and needs updating
     old_build_pc: Optional[str] = None
-    #: artist profiles (2026-10-17), by name_key: changed / cleared on the
+    #: artist profiles, by name_key: changed / cleared on the
     #: drive, and how many this PC sent
     profiles_in: list[str] = field(default_factory=list)
     profiles_removed: list[str] = field(default_factory=list)
@@ -953,18 +981,20 @@ class MergeNotes:
     #: doesn't have waits for it - see carry_artist_data)
     profiles_set: int = 0
     profiles_cleared: int = 0
-    #: top songs (2026-10-17), the same way
+    #: artists marked as already looked up by another PC
+    profiles_checked_set: int = 0
+    #: top songs, the same way
     top_tracks_in: list[str] = field(default_factory=list)
     top_tracks_removed: list[str] = field(default_factory=list)
     top_tracks_out: int = 0
     top_tracks_set: int = 0
     top_tracks_cleared: int = 0
-    #: similar artists (2026-10-17), the same way
+    #: similar artists, the same way
     similar_in: list[str] = field(default_factory=list)
     similar_removed: list[str] = field(default_factory=list)
     similar_out: int = 0
     similar_set: int = 0
-    #: playback & look, and the tuner (2026-10-17): settings changed here /
+    #: playback & look, and the tuner: settings changed here /
     #: sent; `look_in` - a new skin or finish waits for a restart
     prefs_in: int = 0
     prefs_out: int = 0
@@ -1248,6 +1278,8 @@ def merge(local: dict, usb: dict, base: dict,
     notes.profiles_in = sorted(k for k in taken_pr if profiles[k] != local_pr.get(k))
     notes.profiles_removed = sorted(k for k in local_pr if k not in profiles)
     notes.profiles_out = _changed(profiles, usb.get(PROFILES) or {})
+    profiles_checked = merge_profiles_checked(local.get(PROFILES_CHECKED) or {},
+                                              usb.get(PROFILES_CHECKED) or {})
 
     # top songs: three-way per artist, chart and picks as one; changed on
     # both -> this PC's
@@ -1280,20 +1312,18 @@ def merge(local: dict, usb: dict, base: dict,
 
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: images, FOLDERS: folders, RADIO: stations, OTR: otr,
-            PROFILES: profiles, TOP_TRACKS: top, SIMILAR: similar,
+            PROFILES: profiles, PROFILES_CHECKED: profiles_checked,
+            TOP_TRACKS: top, SIMILAR: similar,
             PREFS: prefs, TUNER: tuner}, notes
 
 
 # --------------------------------------------------------------------------
-# whole folders going away (2026-09-30)
+# whole folders going away
 # --------------------------------------------------------------------------
 #
-# James: "Please fix the sync so it asks before removing a whole folder of
-# playlists." That evening a sync on his D:\MusicMgr PC removed 78 Records
-# (with DECCA) and Personal Favorites - 29 playlists - because the drive's
-# state didn't list them while this PC's base did, which the merge reads as
-# "deleted on the other PC". Removing single playlists that way is still
-# automatic; emptying a whole folder now needs a yes.
+# A drive state that doesn't list playlists this PC's base does reads as
+# "deleted on the other PC". Removing single playlists that way is
+# automatic; emptying a whole folder needs a yes.
 
 
 @dataclass
@@ -1342,7 +1372,7 @@ def _image_folder(key: str) -> Optional[str]:
 
 def keep_folders(local: dict, usb: dict, merged: dict, notes: MergeNotes,
                  tops: list[str]) -> None:
-    """James said keep: put these folders, their playlists and their images
+    """The user said keep: put these folders, their playlists and their images
     back into the merged state as this PC has them. They then go out to the
     drive as if they were new here, so the other PCs get them back too."""
     for key in list(notes.playlists_removed):
@@ -1635,7 +1665,7 @@ def revive(merged: dict, base: dict, idx: TrackIndex, notes: "MergeNotes") -> No
 
 def enabled_categories(db: Session) -> frozenset:
     """Which categories this PC syncs (Settings → USB sync checkboxes, all
-    on by default - 2026-09-24 - except DEFAULT_OFF, 2026-10-17)."""
+    on by default except DEFAULT_OFF)."""
     chosen = set()
     for cat in CATEGORIES:
         row = db.get(Setting, PREF_PREFIX + cat)
@@ -1684,7 +1714,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         include = enabled_categories(db)
     if pairs is None:
         pairs = list(db.scalars(select(SyncPair).where(SyncPair.drive_id == drive.drive_id)))
-    # playlists named after their own folder path (2026-10-14) - before
+    # playlists named after their own folder path - before
     # this library is read, so the copies never reach the merge
     nested = repair_nested_playlists(db) if PLAYLISTS in include else 0
     idx = TrackIndex(db, pairs)
@@ -1714,7 +1744,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         if base[cat] is None:
             base[cat] = {}
         if usb[cat] is None:
-            # ...or anything added 2026-10-17
+            # ...or any of the newer categories
             usb[cat] = copy.deepcopy(base[cat])
     original_base = dict(base)
     for cat in _STATE_CATEGORIES + _WITH_PLAYLISTS + _WITH_RADIO:
@@ -1741,7 +1771,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
                     "(pc %s) - update that PC", notes.old_build_pc)
     revive(merged, base, idx, notes)
     if confirm_removals is not None and PLAYLISTS in include:
-        # 2026-09-30: never empty a whole folder of playlists without asking
+        # never empty a whole folder of playlists without asking
         gone = whole_folder_removals(local, notes)
         if gone and not confirm_removals(gone):
             keep_folders(local, usb, merged, notes, [g.path for g in gone])
@@ -1763,6 +1793,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         notes.otr_in = notes.otr_out = 0
     if PROFILES not in include:
         notes.profiles_in, notes.profiles_removed, notes.profiles_out = [], [], 0
+        # the drive keeps what it had
+        merged[PROFILES_CHECKED] = copy.deepcopy(usb.get(PROFILES_CHECKED) or {})
     if TOP_TRACKS not in include:
         notes.top_tracks_in, notes.top_tracks_removed, notes.top_tracks_out = [], [], 0
     if SIMILAR not in include:
@@ -1780,6 +1812,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         apply_images(db, merged, local, notes, carried)
     if PROFILES in include:
         apply_profiles(db, merged, local, notes, carried_artist[PROFILES])
+        apply_profiles_checked(db, merged, notes)
     if TOP_TRACKS in include:
         apply_top_tracks(db, merged, notes, carried_artist[TOP_TRACKS])
     if SIMILAR in include:
@@ -1820,8 +1853,7 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     base_copy["unresolved"] = sorted(k for k in _referenced_keys(merged) if not _resolvable(idx, k))
     save_state(base_state_path(drive), base_copy, pc_id)
     if CHARTS in include:
-        # 2026-09-30 - James: "I would like to have Charts be added to the
-        # SETTINGS Sync to USB". Its own files; see chart_sync.py
+        # its own files; see chart_sync.py
         from .chart_sync import sync_charts
 
         if stage is not None:

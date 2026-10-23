@@ -1,8 +1,5 @@
-"""The tag editor dialogs (2026-10-06).
-
-James: "Tag editor with MusicBrainz lookup. Fix tags in the files
-themselves, plus a 'look up this album' button. Better tags would also
-improve chart matching."
+"""The tag editor dialogs - fix tags in the files themselves, with a
+MusicBrainz "look up this album" (better tags also improve chart matching).
 
 `TagEditorDialog` - "Edit tags…" on an album page, or on songs picked in
 Title Details (one or many; right-click or the button above the table).

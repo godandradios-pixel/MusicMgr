@@ -26,12 +26,8 @@ and show progress rather than freezing on it.
 (see MetadataScanThread) - all four queries run one after another *inside*
 it, each announced with its own `progress(0, 0, "...")` tick first, so
 every phase (including the three individually-fast ones) shows up on
-screen instead of only the slow lyrics scan getting a progress bar while
-the other three run silently on the UI thread first. James, 2026-09-22,
-after the first version of this dashboard: "I click the option and it
-looks like nothing is happening" - that silent multi-second stretch was
-exactly those three "fast" queries running synchronously in the button's
-own click handler, before the progress bar was even made visible.
+screen and none of them runs silently on the UI thread before the
+progress bar appears.
 """
 
 from __future__ import annotations
@@ -73,15 +69,11 @@ def scan_missing_metadata(
     progress bar (MetadataScanThread) has something to show throughout the
     whole scan, not just its last, slowest phase.
 
-    2026-09-22 same-day follow-up (James: "add a real cancel button that
-    stops any process running within Settings") - every query here is
-    read-only (nothing in this whole module ever writes to the database),
-    so there's no partial-write risk to guard against at all: `should_stop`
-    just skips whichever phases haven't started yet the moment it's set,
-    checked between phases and, for the one slow phase, inside its own row
-    loop too (see releases_missing_lyrics_rows) - the dashboard then simply
-    opens with fewer categories filled in than a full scan would have
-    found."""
+    `should_stop` (the Settings cancel button) skips whichever phases
+    haven't started yet, checked between phases and inside the slow
+    phase's row loop (see releases_missing_lyrics_rows). Every query here
+    is read-only, so there's no partial-write risk; the dashboard just
+    opens with fewer categories filled in."""
 
     def tick(name: str) -> None:
         if progress:

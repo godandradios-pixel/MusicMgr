@@ -1,7 +1,7 @@
-"""Is this file in the old-time radio folder? (2026-10-13)
+"""Is this file in the old-time radio folder?
 
-James keeps his old-time radio shows in D:\\Radio (~/Radio on the Mint
-PCs) - the Radio page's own folder (services/otr.py). They aren't music:
+Old-time radio shows live in a Radio folder (e.g. D:\\Radio, ~/Radio on
+Linux) - the Radio page's own folder (services/otr.py). They aren't music:
 the music scan leaves that folder out (services/scanner.py) and the artist
 profile download skips anyone whose files are only there
 (services/artist_bio_downloader.py). Both ask here so they agree.

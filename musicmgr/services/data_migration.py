@@ -12,21 +12,14 @@ checkout.
 Why this exists rather than "just copy the folder": cover art paths are
 stored in the database as absolute paths. Copying ``artwork/`` without
 rewriting ``releases.cover_path`` leaves every album showing its
-placeholder tile - see architecture.md's "Where things live" and the
-2026-09-08 new-PC report this was built for. ``migrate()`` copies,
-rewrites those paths, verifies the result, and only then (if asked) offers
-to remove the original - never the other order.
+placeholder tile - see architecture.md's "Where things live".
+``migrate()`` copies, rewrites those paths, verifies the result, and only
+then (if asked) offers to remove the original - never the other order.
 
-Artist portraits (``artists.image_path``, under ``artists/``) are stored
-and go stale the exact same way as album covers, and get the exact same
-treatment here - copied, repointed by filename, verified. This was missing
-from the first version of this module (2026-09-08: "I still don't seem to
-be able to get my artist and album artwork showing" turned up covers now
-working, portraits still not, since ``migrate()``/``repair()`` only ever
-touched ``artwork/``/``cover_path`` and never knew ``artists/``/
-``image_path`` existed) - every function/field/message below that
-mentions "cover" or "artwork" has an "artist image"/"artists" counterpart
-doing the same thing for the other folder.
+Artist portraits (``artists.image_path``, under ``artists/``) go stale the
+same way and get the same treatment - copied, repointed by filename,
+verified. Every function/field/message below that mentions "cover" or
+"artwork" has an "artist image"/"artists" counterpart.
 
 **The GUI path is riskier than the CLI's documented "close the app
 first."** A concurrent write during the ``shutil.copy2`` of ``library.db``
@@ -181,9 +174,8 @@ def verify(
     expected: dict[str, int],
     artist_img_dir: Optional[Path] = None,
 ) -> list[str]:
-    """``artist_img_dir`` is optional only so this stays callable the old
-    way from anywhere that hasn't been updated - both real callers below
-    always pass it."""
+    """``artist_img_dir`` is optional only for backward compatibility -
+    both real callers below always pass it."""
     problems: list[str] = []
     if not db_path.exists():
         return [f"database missing at {db_path}"]
@@ -221,18 +213,10 @@ def verify(
         finally:
             conn.close()
     except sqlite3.DatabaseError as exc:
-        # 2026-09-13 fix: a database corrupted badly enough (e.g. "database
-        # disk image is malformed") can fail before PRAGMA integrity_check
-        # ever runs - snapshot_counts()'s own row-count queries above raise
-        # first. That used to propagate straight out of verify() as an
-        # unhandled sqlite3.DatabaseError, breaking this function's
-        # documented "returns a list of problems, never raises" contract
-        # (and, one level up, migrate()/repair()'s "reports a clean failed
-        # MigrationResult rather than raising" - see the matching notes
-        # there). Reporting it as just another problem string means
-        # integrity_check's job as "the backstop for a torn read" still
-        # gets done even when the corruption is too severe for
-        # integrity_check itself to be the thing that notices it.
+        # a badly corrupted database ("database disk image is malformed")
+        # can fail in the row-count queries above before PRAGMA
+        # integrity_check runs. Report it as a problem so verify() keeps its
+        # "returns a list of problems, never raises" contract.
         problems.append(f"database unreadable: {exc}")
     return problems
 
@@ -291,9 +275,8 @@ class MigrationResult:
     error: Optional[str] = None
     expected_counts: dict[str, int] = field(default_factory=dict)
     changed_covers: int = 0
-    #: 2026-09-08 follow-up - artist portraits get the exact same
-    #: copy/repoint/verify treatment as album covers now; see the module
-    #: docstring for why this was missing from the first version.
+    #: artist portraits get the same copy/repoint/verify treatment as
+    #: album covers
     changed_artist_images: int = 0
     problems: list[str] = field(default_factory=list)
     removed_source: bool = False
@@ -382,21 +365,16 @@ class MigrationResult:
 
 
 def repair(data_dir: Path) -> MigrationResult:
-    """Repoint every release's cover_path - and every artist's image_path,
-    since 2026-09-08 - at the artwork/portrait files already sitting in
-    this exact data folder, by filename - without moving or copying
-    anything.
+    """Repoint every release's cover_path and every artist's image_path at
+    the artwork/portrait files already sitting in this exact data folder,
+    by filename - without moving or copying anything.
 
-    This is the fix for the specific bug that motivated this module: a
-    data/ folder copied by hand (or otherwise already correctly in place)
-    where the database still remembers the *old* machine's absolute
-    cover_path/image_path values, even though the image files themselves
-    made the trip fine under the same filenames. migrate() can't help here -
-    its very first check treats a matching source and destination as a
-    no-op, which is the right behavior for "move my data" but wrong for
-    "the data's already here, the paths just don't know it" - hence this
-    separate, dedicated pass. Nothing is copied and no other file is
-    touched; this is just rewrite_cover_paths()/rewrite_artist_image_paths()
+    For a data/ folder copied by hand (or otherwise already in place)
+    whose database still remembers the *old* machine's absolute paths.
+    migrate() treats a matching source and destination as a no-op, which is
+    right for "move my data" but wrong for "the data's already here, the
+    paths just don't know it". Nothing is copied and no other file is
+    touched; this is rewrite_cover_paths()/rewrite_artist_image_paths()
     against a database's own folder, guarded and reported the same way
     migrate() is.
     """
@@ -418,17 +396,10 @@ def repair(data_dir: Path) -> MigrationResult:
             db_path, art_dir, snapshot_counts(db_path), artist_img_dir
         )
     except sqlite3.DatabaseError as exc:
-        # 2026-09-13 fix: this used to catch only sqlite3.OperationalError
-        # ("database is locked"/"busy") - but OperationalError is a
-        # *subclass* of DatabaseError, not the whole family. A genuinely
-        # corrupted library.db (e.g. "database disk image is malformed")
-        # raises plain DatabaseError, which slipped straight past this
-        # narrower catch and crashed repair()/migrate() outright - exactly
-        # what the module docstring promises never happens ("catches
-        # OperationalError/OSError and reports them as an ordinary failed
-        # MigrationResult rather than raising"). Catching the parent class
-        # closes that gap while still covering every OperationalError case
-        # this already handled.
+        # DatabaseError, not just OperationalError ("database is locked"),
+        # which is a subclass: a corrupted library.db raises plain
+        # DatabaseError, and the module docstring promises a failed
+        # MigrationResult rather than an exception.
         result.reason = "db_busy"
         result.error = str(exc)
         return result
@@ -515,9 +486,7 @@ def migrate(
         else:
             dst_art.mkdir(parents=True, exist_ok=True)
 
-        # 2026-09-08 follow-up - same treatment as artwork/ above, for the
-        # artist portraits folder this originally missed entirely (see the
-        # module docstring).
+        # same treatment as artwork/ above, for the artist portraits
         src_artist_img = source / "artists"
         dst_artist_img = dest / "artists"
         if src_artist_img.is_dir():
@@ -542,10 +511,8 @@ def migrate(
         report("Verifying…")
         problems = verify(dst_db, dst_art, expected, dst_artist_img)
     except sqlite3.DatabaseError as exc:
-        # 2026-09-13 fix - see the matching note in repair(): OperationalError
-        # is a subclass of DatabaseError, not the whole family, so a
-        # corrupted source database used to crash migrate() outright
-        # instead of coming back as a clean, reportable MigrationResult.
+        # DatabaseError, not just OperationalError - see the matching note
+        # in repair()
         result.reason = "db_busy"
         result.error = str(exc)
         return result

@@ -1,15 +1,12 @@
 """Two-way sync between this PC's media folders and a MusicMgr USB drive.
 
-2026-09-23 - James: "I would like to eliminate GoodSync from my workflow...
-a check for new music against my USB thumb drive", then "The sync of
-music, videos, Movies should be two-way" and "I will never run the MusicMgr
-directly from the USB". Plan: claude/2026-09-23-usb-sync-plan.md (step 1).
+Replaces GoodSync; MusicMgr is never run from the USB itself. Plan:
+claude/2026-09-23-usb-sync-plan.md (step 1).
 
-Why this exists: GoodSync copied the live library.db, -wal and -shm files
-independently between PCs, which is what corrupted D:\\MusicMgr\\data\\
-library.db on 2026-09-23. This module never touches a database file. It
-syncs *folders of media* only, and every change is shown for review before
-anything is copied or deleted.
+This module never touches a database file (copying a live library.db and
+its -wal/-shm files independently corrupts it). It syncs *folders of media*
+only, and every change is shown for review before anything is copied or
+deleted.
 
 Pieces (no Qt in here - the Settings page drives it through two QThreads):
 
@@ -27,7 +24,7 @@ Pieces (no Qt in here - the Settings page drives it through two QThreads):
 - **compare()** walks both sides (sizes and times only - no hashing unless
   a size matches but the time doesn't) and returns a `PairPlan`: copies
   each way, conflicts, deletions, case-only renames, plus rows to record.
-- **apply()** runs the rows James left checked: renames, then copies, then
+- **apply()** runs the rows the user left checked: renames, then copies, then
   deletions. Copies go to a temp name and are renamed into place, so a
   pulled drive never leaves half a file. Deletions are recoverable: local
   files go to the Recycle Bin / Trash, USB files move to
@@ -101,11 +98,8 @@ def _name_key(rel: str) -> str:
 
     The drive is FAT/exFAT, which ignores case on every OS, so `Ace.jpg`
     here and `ACE.jpg` there are one file even on Linux - and accented
-    names can be stored composed or decomposed (NFC/NFD). 2026-09-28:
-    Mint compared case-sensitively and offered to upload 14 artist
-    pictures that were already on the drive under other capitals.
-    (Two files here that differ only in case can't both live on the
-    drive anyway.)"""
+    names can be stored composed or decomposed (NFC/NFD). (Two files here
+    that differ only in case can't both live on the drive anyway.)"""
     return unicodedata.normalize("NFC", rel).casefold()
 
 
@@ -187,7 +181,7 @@ def candidate_roots() -> list[Path]:
             elif kind == 3:  # FIXED (some USB SSDs report this)
                 fixed.append(Path(root))
         # removable drives first: if a copy of a drive's marker turns up on
-        # a PC disk too, the real stick wins (2026-10-22, see find_drives)
+        # a PC disk too, the real stick wins (see find_drives)
         return removable + fixed
     user = os.environ.get("USER") or ""
     roots: list[Path] = []
@@ -212,12 +206,10 @@ def _holds_data_dir(root: Path) -> bool:
 def find_drives(roots: Optional[Iterable[Path]] = None) -> list[Drive]:
     """Every connected MusicMgr drive (normally zero or one).
 
-    2026-10-22: the JukeBox PC's own DATA disk (D:) held a copy of the
-    stick's MusicMgr\\sync\\drive.json - same drive id - and D: was checked
-    before the stick on E:, so MusicMgr took D: for the USB and synced
-    D:\\Music with itself. Now the disk holding this library's own data
-    folder is never taken for the USB (MusicMgr is never run from the
-    stick), and removable drives are looked at before fixed ones."""
+    A PC disk can hold a stray copy of the stick's marker (same drive id),
+    so the disk holding this library's own data folder is never taken for
+    the USB (MusicMgr is never run from the stick), and removable drives
+    are looked at before fixed ones."""
     found = []
     seen = set()
     for root in roots if roots is not None else candidate_roots():
@@ -267,12 +259,9 @@ REMOVED_PREFIX = "removed:"
 def on_drive(local: str | Path, drive: Drive) -> bool:
     """True if `local` is the USB drive itself or a folder on it.
 
-    2026-10-22 - on the JukeBox PC a stray copy of the drive marker made its
-    own DATA disk (D:) count as the USB, so its pairs read D:\\Music <->
-    USB\\Music with "USB" = D: - one folder synced with itself. Every check
-    said "everything is in sync", nothing was ever copied to the PC, and
-    Jukebox cards whose songs weren't in its library never placed. A pair's PC side must be on the PC's own
-    disk, never on the drive it syncs with."""
+    A pair's PC side must be on the PC's own disk, never on the drive it
+    syncs with - otherwise one folder syncs with itself and every check
+    silently reports "everything is in sync"."""
     try:
         loc = Path(os.path.normcase(os.path.realpath(local)))
         root = Path(os.path.normcase(os.path.realpath(drive.root)))
@@ -285,10 +274,9 @@ def on_drive_message(local: str | Path, drive: Drive) -> str:
     return (f"{local} is on the USB drive itself ({drive.root}), so it would only sync "
             "with itself. Pick a folder on this PC's own disk.")
 
-#: 2026-10-13 - James: "I would like to add D:\Radio as a Sync settings".
 #: The Radio page's old-time radio folder (services/otr.py) isn't a watched
-#: music folder, so it never got a pair of its own; it now pairs with a
-#: "Radio" folder on the drive, like D:\Music <-> Music.
+#: music folder; it pairs with a "Radio" folder on the drive, like
+#: D:\Music <-> Music.
 RADIO_KIND = "radio"
 RADIO_USB_FOLDER = "Radio"
 
@@ -305,8 +293,8 @@ def ensure_default_pairs(db: Session, drive: Drive) -> list[SyncPair]:
     """Pair every watched folder that has a same-named folder on the drive
     and isn't paired yet (D:\\Music <-> <drive>\\Music), plus the artwork
     folders. Returns all of this drive's pairs, oldest first, including
-    removed ones (filter with `is_removed`). Never re-creates a pair James
-    removed: `remove_pair` keeps a "removed:" marker row for that."""
+    removed ones (filter with `is_removed`). Never re-creates a pair the
+    user removed: `remove_pair` keeps a "removed:" marker row for that."""
     pairs = list(db.scalars(select(SyncPair).where(SyncPair.drive_id == drive.drive_id)))
     _retire_stray_markers(db, drive, pairs)
     existing = {_fold(_norm_local(p.local_path)): p for p in pairs}
@@ -319,7 +307,7 @@ def ensure_default_pairs(db: Session, drive: Drive) -> list[SyncPair]:
             pair = SyncPair(drive_id=drive.drive_id, local_path=local, usb_rel_path=name, kind="media")
             db.add(pair)
             existing[_fold(local)] = pair
-    # step 2 (2026-09-24): the name-based artwork folders travel too - but
+    # the name-based artwork folders travel too - but
     # only once this data folder's pictures have been renamed, or old
     # id-named files would be pushed to the other PCs
     from . import artwork_names
@@ -333,8 +321,7 @@ def ensure_default_pairs(db: Session, drive: Drive) -> list[SyncPair]:
                 continue
             # an artwork pair always syncs *this* library's own data folder:
             # found by its folder name (artwork / artists), and repointed if
-            # the data folder has moved since (2026-09-24, James saw
-            # C:\\Projects\\...\\artwork where he expected D:\\MusicMgr\\...)
+            # the data folder has moved since
             match = next(
                 (p for p in pairs
                  if p.kind in ("artwork", REMOVED_PREFIX + "artwork")
@@ -365,14 +352,12 @@ STRAY_SUFFIX = ".stray"
 def _retire_stray_markers(db: Session, drive: Drive, pairs: list[SyncPair]) -> None:
     """A copy of this drive's marker on the disk a pair's PC folder is on.
 
-    2026-10-22 (JukeBox PC): D:\\MusicMgr\\sync\\drive.json was a copy of the
-    stick's, so D: was taken for the USB and every pair synced its folder
-    with itself. Those pairs' sync lists then hold every file "on both
-    sides"; checked against the real stick, files only on the PC would look
-    deleted from the USB and be offered for deletion here. So: forget those
-    pairs' sync lists (the next check is a first sync - copies only, nothing
-    counts as deleted) - every pair of the drive, since all of them were
-    compared against the stray - and rename the stray marker to drive.json.stray so
+    If a PC disk held a copy of the stick's marker, that disk was taken for
+    the USB and every pair synced with itself, so their sync lists hold
+    every file "on both sides"; against the real stick, PC-only files would
+    then look deleted from the USB. So every pair of the drive forgets its
+    sync list (the next check is a first sync - copies only, nothing counts
+    as deleted), and the stray marker is renamed to drive.json.stray so
     this happens once. The rename is all that's touched on disk."""
     roots: dict[str, Path] = {}
     for pair in pairs:
@@ -416,7 +401,7 @@ def _retire_stray_markers(db: Session, drive: Drive, pairs: list[SyncPair]) -> N
 
 
 def _ensure_radio_pair(db: Session, drive: Drive, pairs: list[SyncPair], existing: dict) -> None:
-    """Pair the Radio page's folder with <drive>\\Radio (2026-10-13).
+    """Pair the Radio page's folder with <drive>\\Radio.
 
     * This PC has a radio folder (D:\\Radio): paired, and an empty Radio
       folder is made on the drive if there isn't one yet, so the first
@@ -425,7 +410,7 @@ def _ensure_radio_pair(db: Session, drive: Drive, pairs: list[SyncPair], existin
       PC): ~/Radio is made, becomes the Radio page's folder, and the
       shows come down to it.
     * The pair follows the Radio page's folder if that's changed later,
-      and a pair James removed stays removed ("Add pair…" brings it back).
+      and a pair the user removed stays removed ("Add pair…" brings it back).
     """
     from . import otr
 
@@ -520,9 +505,8 @@ def update_pair(db: Session, pair_id: int, *, local_path: Optional[str | Path] =
         changed = True
         if pair.kind == RADIO_KIND:
             # the Radio pair follows the Radio page's folder
-            # (_ensure_radio_pair), so moving the pair moves that folder too.
-            # 2026-10-22: James changed it from C:\\Users\\JB\\Radio to D:\\Radio
-            # in Folder pairs, pressed OK, and it snapped straight back.
+            # (_ensure_radio_pair), so moving the pair must move that folder
+            # too, or the change would snap straight back.
             from . import otr
 
             otr.set_root(db, pair.local_path)

@@ -1,11 +1,8 @@
 """Library browser.
 
-Four presentations, switched from the sidebar rather than a pill row on the
-page itself - Artists / Albums / Tracks / Title Details each get their own
-top-level nav button (see app.py:NAV_ITEMS/LIBRARY_MODE_KEYS/navigate; a
-single "Library" item with these four nested underneath used to be here
-instead, flattened out 2026-09-06 at James's request), so the sidebar always
-shows which one you're in and the page starts one tap closer to content:
+Four presentations, each with its own top-level nav button in the sidebar
+(see app.py:NAV_ITEMS/LIBRARY_MODE_KEYS/navigate), so the sidebar always
+shows which one you're in:
 
   * **Albums**  - cover grid -> release detail
   * **Artists** - circular portrait grid -> artist page -> release detail
@@ -13,70 +10,42 @@ shows which one you're in and the page starts one tap closer to content:
     then each release with its tracks in two columns
   * **Title Details** - a flat, sortable table of every track: Genre, Album
     Artist, Album, Track #, Title, Time, Year, and a tappable Rating column
-    (see `widgets/track_details_table.py`). Replaced the old three-pane
-    Genre browser (genre -> releases -> tracks), which filed tracks under a
-    release-level tag nobody actually browses music by (2026-09-05; Album
-    column added 2026-09-06).
+    (see `widgets/track_details_table.py`).
 
 `select_mode(mode)` is the seam: each of the sidebar's four Library buttons
 calls it by name (via app.py's navigate()) to switch presentations, and it's
 the same seam tests use rather than reaching into this view's internals.
 
-A search box in the header live-filters whichever of these is on screen, but
-each presentation only searches its own kind of thing (James, 2026-09-06):
-Artists by artist name, Albums by album title, Tracks by album or track
-title (an artist heading is no longer itself a search target - see
-`AlbumTracksPanel.set_filter_text`), and Title Details by any of its
-columns (see `TrackDetailsTable._row_matches`). A matching video is still
-woven into whichever presentation is on screen the same way (2026-09-06) - a
-tile in Albums/Artists, a "▶ Videos" block under its artist in the Tracks
-document, a row in Title Details - but only ever as a search result, never
-in the default, unfiltered browse; see `_video_tiles()`,
-`AlbumTracksPanel.load()`, and `TrackDetailRow.is_video`. Each presentation
-matches a video the same way it matches its own native content, not by both
-title and artist everywhere: Albums/Artists match only the video's *artist*
-name, same as they match a release's or artist's own name (James, 2026-09-06:
-searching "rush" in Artists was surfacing an unrelated "Rush, Rush" video by
-Paula Abdul purely because its *title* contained "rush" - see
-`CoverGrid.set_filter_text`); Tracks matches only the video's own title, same
-as it matches a track's; Title Details matches either, since it searches
-every column. Tapping a video switches to the Videos tab and plays it there
-(`_activate_video()`), the same hand-off the artist page's own video list
-already used. In Albums/Artists specifically, a search that matches an
-artist's *name* collapses every one of that artist's matching videos into a
-single "▶ N videos" tile rather than a tile each - an artist with several
-videos was otherwise flooding the grid for one name match (2026-09-06, same
-day). Tapping that collapsed tile
-switches to Videos grouped by Artist and scrolled to that artist's section
-instead of playing a specific video (`_activate_video_group()`); see
-`CoverGrid._rebuild()`'s "video_group" handling. A single A-Z jump bar sits
-directly under the search box, shared
-by all four presentations (a jump bar built into each grid and a letter bar
-built into the Tracks document, before this). Title Details briefly opted
-out of it (2026-09-05, closer to Charts' admin-table treatment - see that
-section in architecture.md) but joined it the next day for consistency with
-the rest of Library (2026-09-06); it only makes sense while the table is
-sorted by one of its text columns (Genre/Album Artist/Album/Title), so the
-bar hides itself the moment the table is sorted by Track #/Time/Year/Rating
-instead, the same as it already hides for a grid sorted by something
-non-alphabetical. `_refresh_jump_bar()` is what keeps the shared bar in
-sync: it asks the active presentation (`CoverGrid.jump_letters()`,
-`AlbumTracksPanel.jump_letters()`, or `TrackDetailsTable.jump_letters()`)
-which letters make sense right now, hides the bar entirely when the answer
-is "none" (Albums sorted by Year, Title Details sorted by Year, etc. -
-there's no alphabetical order to jump within) and otherwise shows it.
-Tapping a letter both scrolls the active presentation to it (`_on_letter_key`,
-off `JumpBar.letterPicked` - the scroll-scrubbing signal, which snaps a tap
-to the nearest letter that actually has something to jump to) and types it
-into the search box (`_on_letter_typed`, off `JumpBar.letterTyped` - always
-the literal letter tapped, snap or no snap, so typing the next letter of a
-word that no longer matches anything still lands in the box) - the same
-touch-panel-has-no-keyboard reasoning as `common.py:SearchBar`'s on-screen
-keyboard, just spelled out one big letter at a time instead. Space and
-Backspace buttons sit next to the search box for the same reason - the A-Z
-bar alone can spell a word but can't separate two of them or fix a mis-tap -
-and Clear is its own oversized button rather than QLineEdit's built-in
-(tiny, mouse-sized) clear icon.
+A search box in the header live-filters whichever of these is on screen,
+each by its own kind of thing: Artists by artist name, Albums by album
+title, Tracks by album or track title (see
+`AlbumTracksPanel.set_filter_text`), and Title Details by any column (see
+`TrackDetailsTable._row_matches`). Matching videos are woven in only as
+search results, never in the unfiltered browse - a tile in Albums/Artists,
+a "▶ Videos" block under its artist in Tracks, a row in Title Details; see
+`_video_tiles()`, `AlbumTracksPanel.load()`, and `TrackDetailRow.is_video`.
+Each presentation matches a video the way it matches its own content:
+Albums/Artists by the video's *artist* name only (so "rush" doesn't find
+an unrelated "Rush, Rush" video - see `CoverGrid.set_filter_text`), Tracks
+by its title, Title Details by either. Tapping a video switches to the
+Videos tab and plays it there (`_activate_video()`). In Albums/Artists, a
+search matching an artist's name collapses that artist's videos into one
+"▶ N videos" tile, which opens Videos grouped by Artist and scrolled to
+that artist (`_activate_video_group()`; see `CoverGrid._rebuild()`'s
+"video_group" handling).
+
+One A-Z jump bar under the search box is shared by all four
+presentations. `_refresh_jump_bar()` asks the active one
+(`CoverGrid.jump_letters()`, `AlbumTracksPanel.jump_letters()`, or
+`TrackDetailsTable.jump_letters()`) which letters make sense, and hides
+the bar when there's no alphabetical order to jump within (Albums or
+Title Details sorted by Year, etc.). Tapping a letter both scrolls to it
+(`_on_letter_key`, off `JumpBar.letterPicked`, which snaps to the nearest
+letter with content) and types the literal letter into the search box
+(`_on_letter_typed`, off `JumpBar.letterTyped`) - a touch panel has no
+keyboard. Space and Backspace buttons sit next to the search box for the
+same reason, and Clear is its own oversized button rather than
+QLineEdit's tiny clear icon.
 
 Every route ends at the same `ReleaseDetailPanel`, so a release looks and
 behaves the same however you reached it. Rather than a single "‹ Back" pill,
@@ -160,7 +129,7 @@ class LibraryView(BaseView):
         #: artist's own name.
         self._artist_breadcrumb_actions: list[Callable[[], None]] = []
         #: the `root` the artist page was last opened with, so the ‹ ›
-        #: arrows (2026-10-17) keep the same leading crumb while stepping
+        #: arrows keep the same leading crumb while stepping
         #: from one artist to the next
         self._artist_root: Optional[tuple[str, Callable[[], None]]] = None
         #: what the album page was last opened with - its breadcrumb
@@ -174,14 +143,8 @@ class LibraryView(BaseView):
         self.stats = dim_label("")
         self.header.insertWidget(1, self.stats)
 
-        # Artists/Albums/Tracks/Genre used to be a pill row right here; they
-        # now live in the sidebar (app.py:_build_nav), nested under Library,
-        # so this row is just the search controls.
-        #
-        # 2026-09-13 follow-up: stored on self (not just a local variable)
-        # so _build_details() below - called later in this same __init__,
-        # but from a separate method scope - can still reach it to insert
-        # the "Videos only" checkbox (see _build_details).
+        # just the search controls (the modes are in the sidebar). Kept on
+        # self so _build_details() can add the "Videos only" checkbox to it.
         header_controls = QHBoxLayout()
         self.header_controls = header_controls
         header_controls.setSpacing(8)
@@ -246,16 +209,10 @@ class LibraryView(BaseView):
         self.panes.addWidget(self._build_track_list())      # 5
         self.body().addWidget(self.panes, 1)
 
-        # 2026-10-03, James: "on the Albums page, let's move up the 6365
-        # albums to free up an entire row of space". The grids' "N albums"
-        # / "N artists" count had a row to itself above the tiles (no sort
-        # picker there since 2026-09-05, so nothing else shared it). It now
-        # sits at the right end of the search row, like Title Details'
-        # "Videos only" checkbox, and the grids' own header row is hidden.
-        #
-        # Same for Tracks ("Do the same for Tracks"): its "N albums · N
-        # tracks" count moves up too, and its "Album and Tracks" heading
-        # goes with the hidden row - the sidebar already says Tracks.
+        # The grids' "N albums" / "N artists" count and Tracks' "N albums ·
+        # N tracks" sit at the right end of the search row, like Title
+        # Details' "Videos only" checkbox, and the panes' own header rows
+        # (and Tracks' heading) are hidden, freeing a row for content.
         for grid in (self.album_grid, self.artist_grid, self.track_panel):
             self.header_controls.addWidget(grid.count_label)
             grid.header_bar.setVisible(False)
@@ -284,22 +241,10 @@ class LibraryView(BaseView):
 
     def _build_album_grid(self) -> QWidget:
         # no sort picker here - always by Artist (see "Sort chips removed
-        # from Library grids" in architecture.md, 2026-09-05)
-        # art_size=115 (smaller than CoverGrid's own 190px default) -
-        # 2026-09-22, James: "please make the album artwork a bit smaller
-        # so that I can fit 3 rows instead of 2" (screenshot of his Albums
-        # grid showing 2 rows fitting the window, a hint of a clipped 3rd).
-        # Same "shrink art_size, everything else follows" fix the artist
-        # grid below already got (2026-09-07), just a bigger cut - that one
-        # only needed "a bit more per row" horizontally (190 -> 150); this
-        # one needs a whole extra *row* to fit vertically, which costs a
-        # proportionally bigger reduction since TILE_CAPTION/TILE_PAD don't
-        # shrink with it. Sized by measuring a real (offscreen) MainWindow
-        # at a window size matching his screenshot's apparent scaling
-        # (Windows 125% display scaling, going by the ratio of rows that
-        # actually fit there) - 115px keeps a little headroom rather than
-        # landing exactly on the 3-row ceiling, so it isn't a hair's width
-        # from falling back to 2 on a slightly shorter window.
+        # from Library grids" in architecture.md)
+        # art_size=115 (smaller than CoverGrid's 190px default) fits three
+        # rows instead of two on the jukebox screen (Windows 125% scaling),
+        # with a little headroom; TILE_CAPTION/TILE_PAD don't shrink with it.
         self.album_grid = CoverGrid(
             sorts=ALBUM_SORTS, noun="album",
             default_sort="subtitle", show_sort_picker=False, art_size=115,
@@ -316,24 +261,11 @@ class LibraryView(BaseView):
 
     def _build_artist_grid(self) -> QWidget:
         # no sort picker here - always by Name (see "Sort chips removed
-        # from Library grids" in architecture.md, 2026-09-05)
-        # art_size=115 - 2026-09-22, James, right after the album grid's own
-        # art_size=115 shrink above (see that method's own docstring for the
-        # 190px default -> 115px reasoning): "I like that size of the album
-        # artwork. Please size the artist pictures similar size." Matches
-        # the album grid exactly rather than picking a separately-tuned
-        # circle size, so both grids now read as one consistent size across
-        # the two presentations.
-        #
-        # Previously 150px (James, 2026-09-07: "can we make the artist
-        # pictures just a bit smaller? I want to be able to fit more on the
-        # page") - that value was deliberately kept above the 130px the
-        # artist page's own embedded "More from this artist" grid uses
-        # (artist_panel.py), reasoning that 130px reads as a strip rather
-        # than a browsable grid of its own. 115px goes below that line
-        # anyway, per this explicit follow-up request; if the portraits end
-        # up feeling too strip-like at this size, this is the value to
-        # revisit.
+        # from Library grids" in architecture.md)
+        # art_size=115 - matches the album grid, so both grids read as one
+        # size. It's below the 130px of the artist page's "More from this
+        # artist" strip (artist_panel.py); if portraits feel too strip-like,
+        # this is the value to revisit.
         self.artist_grid = CoverGrid(
             sorts=ARTIST_SORTS, shape=SHAPE_CIRCLE, noun="artist",
             default_sort="title", show_sort_picker=False, art_size=115,
@@ -346,13 +278,10 @@ class LibraryView(BaseView):
 
     def _build_artist_detail(self) -> QWidget:
         self.artist_detail = ArtistDetailPanel(self.ctx)
-        # 2026-09-22 follow-up (James: "is there any way we can have a back
-        # button when you go from missing metadata to the album and then
-        # back") - the page's one leading crumb used to always jump to the
-        # Artists grid; it's now whatever _open_artist's own `root` param
-        # last set (see _on_artist_breadcrumb/_artist_breadcrumb_actions),
-        # the same "index-matched actions list" shape _open_release already
-        # uses for its own (longer) ancestor chain.
+        # the page's one leading crumb is whatever _open_artist's `root`
+        # last set (default: the Artists grid; see _on_artist_breadcrumb/
+        # _artist_breadcrumb_actions) - the same "index-matched actions
+        # list" shape _open_release uses for its longer ancestor chain.
         self.artist_detail.breadcrumb.crumbActivated.connect(self._on_artist_breadcrumb)
         self.artist_detail.releaseActivated.connect(self._open_release_from_artist)
         self.artist_detail.previousArtistRequested.connect(lambda: self._step_artist(-1))
@@ -445,36 +374,18 @@ class LibraryView(BaseView):
         self.details_table.ratingChanged.connect(self._on_rating_changed)
         self.details_table.videoActivated.connect(self._activate_video)
         self.details_table.trackActivated.connect(self._play_from_details)
-        # 2026-10-06 - the tag editor (ui/widgets/tag_editor.py)
+        # the tag editor (ui/widgets/tag_editor.py)
         self.details_table.editTagsRequested.connect(self.edit_tags)
         self.details_table.updated.connect(self._refresh_jump_bar)
-        # There used to be a `jukeboxToggleRequested` connection here too,
-        # wired to `_on_jukebox_toggle_requested`/`_open_jukebox_picker_for`
-        # (a Jukebox column, added 2026-09-07). Both the signal and those
-        # two handlers are gone as of a 2026-09-13 follow-up (James: "remove
-        # the jukebox option on the Title details table to give me more
-        # space for the title of the song") - see track_details_table.py's
-        # module docstring for the removal's full rationale. Adding a track
-        # to the jukebox board is still possible from Now Playing's own
-        # toggle or the Jukebox page's own "+ Add to jukebox" picker.
+        # No Jukebox column here (room for the title instead - see
+        # track_details_table.py's module docstring); tracks are added to
+        # the board from Now Playing's toggle or the Jukebox page's picker.
 
-        # 2026-09-13, second follow-up - James: "move the Videos only
-        # checkbox up on the Search this View..., to the right of the
-        # Space and backspace buttons" and "don't take up an entire row
-        # for just that Videos only." TrackDetailsTable still owns the
-        # checkbox itself (construction, styling, the toggle wiring into
-        # its own `_apply_filter`) - see its own docstring - this just
-        # reparents that one widget into the shared search header instead
-        # of the table's own layout.
-        #
-        # Third follow-up, same day ("move checkbox and Videos only
-        # completely to the right, justified right"): plain `addWidget`
-        # rather than an `insertWidget` at some index among the search
-        # buttons - `header_controls` already ends with the `addStretch(1)`
-        # from `__init__` by the time this method runs, so appending here
-        # lands the checkbox after that stretch, flush against the header's
-        # right edge, with the flexible space it just ate pushing it there
-        # rather than the search box/buttons cluster on the left.
+        # TrackDetailsTable owns the "Videos only" checkbox (styling and
+        # wiring into its `_apply_filter`); this reparents it into the
+        # shared search header so it doesn't take a row of its own.
+        # `header_controls` already ends with `__init__`'s addStretch(1),
+        # so a plain addWidget lands it flush right.
         self.header_controls.addWidget(self.details_table.videos_only_checkbox)
         # Title Details is the only presentation this checkbox means
         # anything for, so it starts hidden (the header's `_mode` is still
@@ -483,18 +394,8 @@ class LibraryView(BaseView):
         # Title-Details-only sync it already does for the A-Z bar.
         self.details_table.videos_only_checkbox.setVisible(self._mode == BROWSE_DETAILS)
 
-        # 2026-09-16 follow-up (James: "Remove the Title Details (99,754
-        # tracks) to free up a row. It's redundant with the top line
-        # Library label") - this used to come back wrapped in `_pane()`,
-        # a small heading label ("Title Details (N tracks)", kept live by
-        # `_load_details()` below) sitting above the table. Every other
-        # pane here (Albums/Artists/Tracks/the two detail panels) already
-        # returns its own content widget directly with no heading of its
-        # own - Title Details was the only one that had it, and the count
-        # it showed just repeated what `self.stats` already says at the
-        # top of the page ("N artists · N releases · N tracks"). `_pane()`
-        # had no other caller, so it's gone entirely rather than left
-        # behind unused.
+        # no heading above the table, like every other pane - the count is
+        # already in `self.stats` at the top of the page.
         return self.details_table
 
     # -- data loading ---------------------------------------------------------
@@ -549,12 +450,9 @@ class LibraryView(BaseView):
                 self._load_details()
             else:
                 self._apply_search()
-        # 2026-09-13, second follow-up (see _build_details) - the "Videos
-        # only" checkbox now lives in the shared search header, so it has
-        # to be shown/hidden by hand on a mode switch the same way the A-Z
-        # bar already is below, rather than getting that for free from
-        # QStackedWidget swapping panes the way it did as part of Title
-        # Details' own layout.
+        # the "Videos only" checkbox lives in the shared search header (see
+        # _build_details), so it's shown/hidden by hand on a mode switch,
+        # like the A-Z bar below.
         self.details_table.videos_only_checkbox.setVisible(self._mode == BROWSE_DETAILS)
         self._refresh_jump_bar()
 
@@ -586,13 +484,10 @@ class LibraryView(BaseView):
         there's no physical keyboard on a touch panel and tapping letters can
         spell out a search term the same way typing one would. This always
         gets the literal letter tapped (`JumpBar.letterTyped`), never the
-        scroll-snapped one `_on_letter_key` gets - typing "RU" already narrows
-        the Artists grid to nothing starting with "S", but "S" still has to
-        land in the box as the next letter of "RUSH". '#' isn't a real
-        character, so it never gets typed, only used for its usual jump. Uses
-        insert(), same as the Space button, so it lands at the cursor rather
-        than always at the end - one less surprise if the box already has
-        text and a caret.
+        scroll-snapped one `_on_letter_key` gets - after "RU" nothing starts
+        with "S", but "S" still has to land in the box for "RUSH". '#' is
+        never typed, only jumped to. Uses insert(), like the Space button,
+        so it lands at the cursor.
         """
         if letter != "#":
             self.search_box.insert(letter)
@@ -632,7 +527,7 @@ class LibraryView(BaseView):
     def _video_tiles(self, session) -> list[GridTile]:
         """GridTiles for every video, woven into Albums/Artists search results -
         hidden by CoverGrid unless the search box matches one (see the module
-        docstring, 2026-09-06). Shared by both grids since a video tile means
+        docstring). Shared by both grids since a video tile means
         the same thing in either: tap it, and Videos opens and plays it."""
         tiles: list[GridTile] = []
         for row in video_svc.list_videos_for_search(session):
@@ -726,18 +621,9 @@ class LibraryView(BaseView):
                     GridTile(
                         key=artist.id,
                         title=artist.name,
-                        # "5 releases · 96", not "5 releases · 96 tracks"
-                        # (2026-09-23, James, from a screenshot of the
-                        # Artists grid: "the tracks text is truncated when
-                        # viewing artists ... or maybe just drop the word
-                        # tracks"). At 115px tiles - see _build_artist_grid
-                        # for why they're that size - the full caption
-                        # elided to "5 releases · 96 tr…", so that word was
-                        # only ever half-drawn. It's also the one word this
-                        # grid can spare: every tile reads
-                        # "<N> releases · <M>", which makes the second
-                        # number unambiguous in context. cover_grid.py's
-                        # caption font came down a point in the same pass.
+                        # "5 releases · 96", not "... 96 tracks": the full
+                        # caption doesn't fit a 115px tile, and the second
+                        # number is unambiguous in context.
                         subtitle=(
                             f"{release_count} release"
                             f"{'s' if release_count != 1 else ''} · {track_count}"
@@ -792,14 +678,14 @@ class LibraryView(BaseView):
 
     def _activate_video(self, video_id: int) -> None:
         """A search-matched video (in any of the four presentations - see the
-        module docstring, 2026-09-06) switches to the Videos tab and plays
+        module docstring) switches to the Videos tab and plays
         it there - a video plays in its own embedded pane, never inline
         inside the Library view."""
         self.ctx.navigateRequested.emit("videos")
         self.ctx.playVideoRequested.emit(video_id)
 
     def _activate_video_group(self, artist: str) -> None:
-        """A collapsed "N videos" tile (Albums/Artists grid, 2026-09-06) -
+        """A collapsed "N videos" tile (Albums/Artists grid) -
         the search matched this artist's name rather than any one video's
         own title, so there's no single video to hand off to like
         `_activate_video` does. Switches to the Videos tab grouped by
@@ -815,7 +701,7 @@ class LibraryView(BaseView):
         siblings: Optional[Callable[[], list]] = None,
     ) -> None:
         """`siblings` returns the release ids the page's ‹ › arrows step
-        through (2026-10-17) - the Albums grid's order, or an artist's
+        through - the Albums grid's order, or an artist's
         releases. None hides the arrows (Now Playing, Missing metadata:
         there's no list to be "next" in)."""
         self._release_ancestors = list(ancestors)
@@ -878,16 +764,16 @@ class LibraryView(BaseView):
         arrows.setVisible(True)
 
     def _open_artist_from_elsewhere(self, artist_id: int) -> None:
-        """ctx.openArtistRequested - Now Playing's tappable artist name
-        (2026-09-06). Sets Artist mode first so the sidebar highlights the
+        """ctx.openArtistRequested - Now Playing's tappable artist name.
+        Sets Artist mode first so the sidebar highlights the
         right Library button for what's actually on screen, the same
         ordering app.py's navigate() uses for its own "library" hand-off."""
         self.select_mode(BROWSE_ARTIST)
         self._open_artist(artist_id)
 
     def _open_release_from_elsewhere(self, release_id: int) -> None:
-        """ctx.openReleaseRequested - Now Playing's tappable album art/title
-        (2026-09-06). A release opened this way isn't part of the Albums or
+        """ctx.openReleaseRequested - Now Playing's tappable album art/title.
+        A release opened this way isn't part of the Albums or
         Artists browsing hierarchy, so its breadcrumb gets a standalone "Now
         Playing" ancestor that jumps back to Now Playing itself, rather than
         one of those grids."""
@@ -898,13 +784,10 @@ class LibraryView(BaseView):
     def _return_to_missing_metadata(self) -> None:
         """The "Missing metadata" breadcrumb crumb's click target, shared by
         both _open_artist_from_missing_metadata and
-        _open_release_from_missing_metadata below (2026-09-22 - James: "is
-        there any way we can have a back button when you go from missing
-        metadata to the album and then back"). Settings reopens its
-        dashboard dialog from its cached scan (SettingsView.
-        _last_metadata_scan/view_missing_metadata) in response, rather than
-        rerunning it - the whole point here is a cheap round trip, not
-        another wait."""
+        _open_release_from_missing_metadata below - a way back to the
+        dashboard. Settings reopens its dialog from its cached scan
+        (SettingsView._last_metadata_scan/view_missing_metadata) rather
+        than rerunning it, so the round trip is cheap."""
         self.ctx.navigateRequested.emit("settings")
         self.ctx.missingMetadataBackRequested.emit()
 
@@ -958,7 +841,7 @@ class LibraryView(BaseView):
     tag_editor_class = None
 
     def edit_tags(self, track_ids: list) -> None:
-        """Open the tag editor on songs picked in Title Details (2026-10-06).
+        """Open the tag editor on songs picked in Title Details.
         Saving emits libraryChanged, which reloads the table."""
         if not track_ids:
             return
@@ -979,7 +862,7 @@ class LibraryView(BaseView):
 
     def _play_from_details(self, track_id: int) -> None:
         """A double-clicked Title Details row (`TrackDetailsTable.
-        trackActivated`, 2026-09-06 follow-up) queues the whole currently
+        trackActivated`) queues the whole currently
         visible/sorted table, starting at that row - the same "queue
         what's on screen" rule `TrackListPanel.play_from` already uses for
         the Tracks presentation's own flat all-library list, since Title
@@ -990,16 +873,8 @@ class LibraryView(BaseView):
         loaded, hence matching by track_id below rather than assuming the
         tapped index survives the filter.
 
-        2026-09-07 follow-up (James: double-clicking "Midwest Midnight"
-        instead started playing "0.0 Baby", the first row in the table) -
-        the tapped row itself can be one of the skipped, not-playable
-        ones, and `next(..., 0)` used to fall back to queue position 0
-        whenever that happened, silently starting whatever the first
-        *playable* row was instead - with nothing on screen to explain
-        why a completely different track started. That's distinct from
-        the "nothing at all is playable" case above, which already
-        notifies; this notifies too, rather than guessing at something
-        to play instead."""
+        When the tapped row itself isn't playable, this notifies rather
+        than starting some other track (e.g. the first playable row)."""
         rows = self.details_table.model.rows()
         items = [r.to_queue_item() for r in rows if r.playable]
         if not items:
@@ -1017,9 +892,8 @@ class LibraryView(BaseView):
     def select_mode(self, mode: str) -> bool:
         """Activate a browse mode by name. This is the seam the sidebar's
         Artists/Albums/Tracks/Title Details buttons call into (see
-        app.py:navigate) now that those aren't chips on this page anymore,
-        and the same seam tests use rather than reaching into this view's
-        internals."""
+        app.py:navigate), and the same seam tests use rather than reaching
+        into this view's internals."""
         if mode not in (BROWSE_ALBUM, BROWSE_ARTIST, BROWSE_TRACK, BROWSE_DETAILS):
             return False
         self._on_mode_changed(mode)

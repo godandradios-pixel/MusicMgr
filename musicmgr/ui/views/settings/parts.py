@@ -1,6 +1,5 @@
 """Settings page building blocks shared by its sections: background
-threads, small dialogs, the tool-row widget and helpers. Split out of
-the old one-file settings.py (2026-10-22)."""
+threads, small dialogs, the tool-row widget and helpers."""
 
 from __future__ import annotations
 
@@ -28,13 +27,13 @@ from ....services import updater
 from ....services import video_scanner
 from ...widgets.common import SearchBar, TouchButton, TouchList, dim_label
 
-#: which Settings groups are open, comma separated (2026-10-01)
+#: which Settings groups are open, comma separated
 SECTIONS_OPEN_KEY = "settings_sections_open"
 SECTIONS_OPEN_DEFAULT = ("library",)
 
 
 class LoudnessAnalyzeThread(QThread):
-    """Settings > Maintenance > "Volume levels" (2026-10-01) - gives every
+    """Settings > Maintenance > "Volume levels" - gives every
     track without a level one: its ReplayGain tags if it has them, otherwise
     MusicMgr measures it (services/replaygain.py:analyze_library). Commits
     per file, so Cancel keeps everything finished so far."""
@@ -66,16 +65,10 @@ PREAMP_CHOICES = [(f"{n:+d} dB" if n else "0 dB (standard)", float(n)) for n in 
 class LastfmCredentialsDialog(QDialog):
     """A free Last.fm API key - see services/lastfm_popularity.py's module
     docstring for why the "Update track popularity from Last.fm…" button
-    below needs this at all. Just the one field, unlike the short-lived
-    Spotify attempt this replaced (SpotifyCredentialsDialog, gone - Spotify
-    needed a client ID *and* secret; Last.fm's key-only auth needs only
-    this). A `SearchBar` (the same touch-keyboard-equipped field the app
-    already uses for every other text entry - see ui/widgets/cover_grid.py:
-    JumpBar/ui/views/videos.py's search row) rather than a plain QLineEdit,
-    since this is a touch panel with no physical keyboard to type a key
-    on otherwise. Masked (SearchBar's `password=True`) - a small courtesy
-    even for a value typed once during setup on what might be a
-    shared/kiosk screen.
+    below needs this. Last.fm's key-only auth needs just the one field. A
+    `SearchBar` (the app's touch-keyboard-equipped text field) rather than a
+    plain QLineEdit, since a touch panel may have no physical keyboard;
+    masked (`password=True`) since it may be a shared/kiosk screen.
     """
 
     def __init__(self, api_key: str, parent=None) -> None:
@@ -110,8 +103,8 @@ class DiscogsCredentialsDialog(QDialog):
     """A free Discogs personal access token - see
     services/artwork_downloader.py's module docstring for why the "Search
     for missing album artwork…" button below needs this. Same one-field
-    shape as LastfmCredentialsDialog just above, for the same reason
-    (Discogs' token-only auth needs just the one value, no OAuth flow)."""
+    shape as LastfmCredentialsDialog (Discogs' token-only auth needs just
+    the one value, no OAuth flow)."""
 
     def __init__(self, token: str, parent=None) -> None:
         super().__init__(parent)
@@ -143,15 +136,10 @@ class DiscogsCredentialsDialog(QDialog):
 
 class NukeConfirmDialog(QDialog):
     """A stronger-than-usual confirmation for `SettingsView.nuke_library`
-    below. Every other destructive action in this app (see
-    purge_missing_files' own docstring) is one Yes/No QMessageBox, but
-    none of those permanently destroy the *entire* library with no way
-    back the way this does - James was asked whether to keep a
-    timestamped backup first and explicitly chose not to (see
-    db.session.reset_database's own docstring). Requiring the exact word
-    NUKE typed out before Ok even enables is deliberate extra friction
-    against a mis-tap on a touchscreen kiosk, on top of that choice, not
-    instead of it.
+    below. Other destructive actions are one Yes/No QMessageBox, but this
+    permanently destroys the entire library with no backup kept (see
+    db.session.reset_database). Requiring the word NUKE typed before Ok
+    enables is deliberate friction against a mis-tap on a touchscreen.
     """
 
     CONFIRM_WORD = "NUKE"
@@ -196,35 +184,21 @@ class NukeConfirmDialog(QDialog):
 
 class ScanThread(QThread):
     """Scans every given folder for *both* music and videos, one after the
-    other, and reports one combined summary - see the module docstring for
-    why there's no longer a separate video scan thread/button. Progress
+    other, and reports one combined summary - see the settings package
+    docstring for why there's one watched-folder list for both. Progress
     messages are prefixed "Audio:"/"Video:" so it's clear which pass is
     running.
 
-    2026-09-08 follow-up - James: "have the progress bar appear on the line
-    with the folder." `progress` grew a `folder` argument (the exact
-    `WatchedFolder.path` string the caller passed to scan_folder/
-    scan_video_folder) alongside the existing (done, total, filename), so
-    SettingsView can route each tick to that one folder's row in the list
-    instead of a single page-wide bar - see SettingsView._on_progress and
-    ui/widgets/common.py's TouchList.update_row. Only one folder is ever
-    "current" at a time either way (both passes scan self.folders one at a
-    time, never concurrently), so a per-row readout is never ambiguous
-    about which row it belongs to.
+    `progress` carries `(done, total, folder, message)`, `folder` being the
+    exact `WatchedFolder.path`, so SettingsView can show each tick on that
+    folder's row (see SettingsView._on_progress and TouchList.update_row in
+    ui/widgets/common.py). Folders are scanned one at a time, so a per-row
+    readout is never ambiguous.
 
-    2026-09-18 follow-up (James: "The orginal scan was not pulling the
-    comments field from a file tag and putting that into the database") -
-    an ordinary scan only reads tags for a file it hasn't seen before, or
-    one whose size/mtime changed (see scanner.py:_needs_import), so fixing
-    a tag-reading bug (like the comment one just above) never touches a
-    file already sitting in the library. `force` (surfaced as the "Re-read
-    all tags (takes more time)" checkbox in SettingsView, next to the
-    folder buttons) threads a `force=True` into both scan calls below,
-    which makes every watched file's tags get re-read regardless of
-    whether the file itself has changed - the only way to back-fill a tag
-    fix onto an already-scanned library. Off by default since re-reading
-    every file on every routine scan would make scanning a large library
-    far slower for no normal benefit."""
+    `force` (the "Re-read all tags (takes more time)" checkbox) passes
+    `force=True` to both scans so every file's tags are re-read even if the
+    file hasn't changed (see scanner.py:_needs_import) - the only way to
+    back-fill a tag-reading fix. Off by default since it's much slower."""
 
     progress = Signal(int, int, str, str)
     finished_with = Signal(str)
@@ -232,12 +206,7 @@ class ScanThread(QThread):
     def __init__(self, folders: list[str], force: bool = False, parent=None) -> None:
         super().__init__(parent)
         self.folders = folders
-        # 2026-09-17 follow-up (James: "still blank after a rescan", chasing
-        # the MP3 Comment-tag fix - see scanner.py's `import_file` docstring
-        # for why an ordinary rescan alone could never have picked it up) -
-        # the "Force full re-read" checkbox below sets this, threaded
-        # through both the audio pass (`scanner.scan_folder`) and the video
-        # pass (`video_scanner.scan_video_folder`) below.
+        # see the class docstring; passed to both the audio and video pass
         self.force = force
 
     def run(self) -> None:  # pragma: no cover - exercised interactively
@@ -258,20 +227,15 @@ class ScanThread(QThread):
                         force=self.force,
                         should_stop=self.isInterruptionRequested,
                     )
-                # 2026-10-13: old-time radio files an older scan added
+                # old-time radio files an older scan added
                 audio_result.radio_removed = scanner.remove_radio_files(session)
                 audio_result.skipped_removed = scanner.remove_skipped_folder_files(session)
                 audio_result.case_duplicates_removed = scanner.merge_case_duplicate_files(session)
                 audio_result.missing = scanner.mark_missing_files(session)
                 audio_result.removed = scanner.purge_orphaned_tracks(session)
                 scanner.tidy_after_scan(session)
-            # 2026-09-22 - James: "add a real cancel button that stops any
-            # process running within Settings" - a cancel mid-audio-pass
-            # skips the video pass entirely rather than starting a second
-            # multi-folder walk right after being asked to stop; the audio
-            # side above still gets its own mark_missing_files/
-            # purge_orphaned_tracks bookkeeping either way, same as any
-            # other scan, cancelled or not.
+            # a cancel mid-audio-pass skips the video pass entirely; the
+            # audio side above still gets its missing/purge bookkeeping
             if not self.isInterruptionRequested():
                 with session_scope() as session:
                     for folder in self.folders:
@@ -287,7 +251,7 @@ class ScanThread(QThread):
                             force=self.force,
                             should_stop=self.isInterruptionRequested,
                         )
-                    # 2026-10-21: videos an older scan took from _gsdata_
+                    # videos an older scan took from _gsdata_
                     video_result.skipped_removed = video_scanner.remove_skipped_folder_videos(session)
                     video_result.missing = video_scanner.mark_missing_videos(session)
             summary = f"Audio: {audio_result.summary()} · Video: {video_result.summary()}"
@@ -308,11 +272,10 @@ class MigrationThread(QThread):
     remove_source is deliberately never passed here as True: this app's own
     database is still open against `source` (config.DATA_DIR) while this
     thread runs, so deleting that folder out from under the running process
-    is a sharper risk than anything the CLI's closed-app --remove-source
-    faces. The originals are always left in place; SettingsView's
-    completion dialog (data_migration.MigrationResult.summary()) tells
-    James which files are now safe to delete by hand, once he's restarted
-    and confirmed the new location looks right.
+    is riskier than the CLI's closed-app --remove-source. The originals are
+    always left in place; SettingsView's completion dialog
+    (data_migration.MigrationResult.summary()) says which files are safe to
+    delete by hand after a restart confirms the new location.
     """
 
     progress = Signal(str)
@@ -332,13 +295,11 @@ class MigrationThread(QThread):
         self.finished_with.emit(result)
 
 
-# -- in-app updates (2026-09-23) ----------------------------------------------
-# James: "a settings option that checks for updates to the program... connect
-# to the github to check... I would like the update to be automatic", then
-# "always ask first" when offered the choice - so the only thing that happens
-# on its own is a once-a-day *check*; downloading and installing always wait
-# for a tap. All the real work is in services/updater.py (headless, tested
-# there); these are just its threads and its one dialog.
+# -- in-app updates ------------------------------------------------------------
+# The only thing that happens on its own is a once-a-day *check* against
+# GitHub; downloading and installing always wait for a tap. The real work is
+# in services/updater.py (headless, tested there); these are its threads and
+# its one dialog.
 
 
 class UpdateCheckThread(QThread):
@@ -444,42 +405,14 @@ class UpdateAvailableDialog(QDialog):
 class _ToolRow(QWidget):
     """One row of the Settings page's "Maintenance" list: one action button
     on the left, a title and a short description of what it does filling
-    the rest of the row. 2026-09-16 follow-up (James: "let's have settings
-    be rows in a table. All those 'buttons' at bottom are cramed and I
-    can't read their text") - replaces a single `QHBoxLayout` that packed
-    nine `TouchButton`s edge to edge (`add_folder`/`remove_folder` and up
-    through `purge_missing_files` below), which read fine at the width it
-    was built at but clipped every button's own label the moment the
-    window was any narrower - there was nowhere left to shrink to once the
-    buttons themselves started truncating. A vertical list of rows has no
-    such ceiling: each button keeps its full label, and the description
-    text is somewhere for James to actually read what a button does rather
-    than guessing from a name he might not be able to see all of.
+    the rest of the row. A vertical list of rows lets each button keep its
+    full label at any window width, with a description to read.
 
-    2026-09-16 same-day follow-up #2 (James, seeing the first version of
-    this table: "put the action buttons to the left of the text. It looks
-    strange having them hanging way out to the right") - on a wide window
-    the text column's own stretch factor pushed each button out to the far
-    right edge of the card, a long way from the title/description it
-    belongs to; putting the button first reads as one unit with the text
-    immediately next to it regardless of how wide the card is.
-
-    2026-09-16 same-day follow-up #3 (James, on that same screenshot:
-    "extend the buttons so that the text can be displayed. Also make the
-    button the brown pallete colors") - the left-hand column's *first*
-    attempt gave every button one arbitrary fixed width (120px), which
-    turned out narrower than several of the actual labels ("Download…",
-    "Set key…") once TouchButton's touch-scaled font was accounted for, so
-    those still clipped. `_size_tool_row_buttons` below (called once from
-    SettingsView.__init__, after every row exists) replaces that guess with
-    each button's own `sizeHint()`, so the column is always exactly as wide
-    as its longest real label - no more guessing a pixel number that has to
-    be revisited every time a button's text changes. `primary=True` (the
-    walnut-brown `#Primary`/`#PrimaryWarm` fill - see theme.py's COLORS
-    comment for that palette's own history) is now this row's default
-    rather than opt-in, matching the rest of the page's brown-palette
-    buttons (add_btn's "Add folder…" above) instead of the plain gray
-    TouchButton default.
+    The button comes first so it reads as one unit with its text on a wide
+    window. `_size_tool_row_buttons` (called once from SettingsView after
+    every row exists) sizes the button column to the longest label's
+    `sizeHint()`. `primary=True` (the walnut-brown `#Primary` fill - see
+    theme.py's COLORS) is the default, matching the page's other buttons.
     """
 
     def __init__(
@@ -499,8 +432,7 @@ class _ToolRow(QWidget):
         title_label.setStyleSheet("font-weight: 600;")
         text_col.addWidget(title_label)
         desc = dim_label(description)
-        # wraps rather than widening the page past the window (a long
-        # description used to push a sideways scroll bar onto Settings)
+        # wraps rather than widening the page past the window
         desc.setWordWrap(True)
         text_col.addWidget(desc)
         row.addLayout(text_col, 1)
@@ -510,9 +442,7 @@ def _size_tool_row_buttons(rows: list["_ToolRow"]) -> None:
     """Give every `_ToolRow` button in `rows` the same fixed width - the
     widest one's own `sizeHint()`, plus a little breathing room - so the
     Maintenance table's left-hand button column lines up into a straight
-    edge instead of each button hugging its own (differently-sized) label.
-    See `_ToolRow`'s docstring for why this replaced an earlier hardcoded
-    guess."""
+    edge instead of each button hugging its own label."""
     if not rows:
         return
     width = max(row.button.sizeHint().width() for row in rows) + 12

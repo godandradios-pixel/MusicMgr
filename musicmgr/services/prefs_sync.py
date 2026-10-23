@@ -1,6 +1,4 @@
-"""Preferences and the Radio page's tuner, shared through the USB drive
-(2026-10-17 - James chose these from a list of what the USB sync didn't
-carry yet: "Please proceed with 2., 3., and 4.").
+"""Preferences and the Radio page's tuner, shared through the USB drive.
 
 Two checkboxes in Settings → USB sync, each a flat `{key: value}` dict in
 library-state.json.gz, merged three-way key by key like the rest (see

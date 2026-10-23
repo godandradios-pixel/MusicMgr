@@ -4,15 +4,13 @@ to the current line as playback position updates.
 
 Also owns the per-track "Download lyrics" button in the empty state: unlike
 `JukeboxToggle`/`StarRating` (widget just reports the gesture, the view does
-the DB work), this widget runs the whole download itself end-to-end. That's
-a deliberate departure from that convention, not an oversight - downloading
-only ever writes a local .lrc sidecar file (no DB write, and no other view
-has any reason to care that it happened), so there's nothing for a view to
-do with the outcome that this panel can't already do by just reloading
-itself. See services/lyrics_downloader.py for why this network call exists
-at all despite the rest of the app's local-files-only stance.
+the DB work), this widget runs the whole download itself - deliberately:
+downloading only writes a local .lrc sidecar file (no DB write, nothing
+other views care about), so reloading this panel is all the follow-up
+needed. See services/lyrics_downloader.py for why this network call exists
+despite the app's local-files-only stance.
 
-2026-09-28: an "Edit lyrics" button (over the lyric list) and a "Sync
+An "Edit lyrics" button (over the lyric list) and a "Sync
 lyrics myself" button (in the empty state) both emit `editRequested` - the
 lyric editor needs the shared PlayerController to stamp timings against,
 which this widget deliberately doesn't hold, so NowPlayingView opens it
@@ -48,7 +46,7 @@ _DEFAULT_EMPTY_DETAIL = "Drop a matching .lrc file next to this track's audio fi
 
 _STATUS_MESSAGES = {
     "no_artist": "This track has no artist tag on file, so lyrics can't be looked up.",
-    # LRCLIB first, YouTube Music as the fallback (2026-10-21)
+    # LRCLIB first, YouTube Music as the fallback
     "not_found": "No lyrics found on LRCLIB or YouTube Music for this track.",
     "instrumental": "LRCLIB lists this as an instrumental - no lyrics to show.",
     "plain_only": 'Only plain (unsynced) lyrics were found for this track - skipped since "Synced lyrics only" is checked.',
@@ -60,9 +58,8 @@ class LyricsPanel(QWidget):
     #: "open the lyric editor for the loaded track" - see module docstring
     editRequested = Signal()
 
-    # `inline_edit=False` (2026-09-29, James on Now Playing: "Is there any
-    # way we can save some space by moving the Edit Lyrics button") leaves
-    # "Edit lyrics" out of this widget's own layout so the lyric list starts
+    # `inline_edit=False` leaves "Edit lyrics" out of this widget's own
+    # layout (to save space) so the lyric list starts
     # at the top of the pane - the caller places `edit_button` itself (Now
     # Playing puts it on the Up next/Lyrics tab row), same arrangement as
     # BioPanel's `inline_edit`. Visibility/enabled state is still managed
@@ -74,14 +71,11 @@ class LyricsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # 2026-09-20 - James: "is there anyway we can force LRCLIB to get
-        # only Synced lyrics" - a checkbox rather than a Settings-page
-        # global, so it's a per-download choice like everything else here;
-        # defaults on, matching what he actually asked for. Read at click
-        # time in _on_download_clicked and threaded straight through as
-        # LyricsDownloadThread's save_plain (inverted - checked means
+        # a per-download checkbox rather than a Settings-page global;
+        # defaults on. Read at click time in _on_download_clicked and passed
+        # as LyricsDownloadThread's save_plain (inverted - checked means
         # save_plain=False). See release_panel.py's matching checkbox for
-        # the per-album button's copy of this.
+        # the per-album button.
         self._synced_only_checkbox = QCheckBox("Synced lyrics only")
         self._synced_only_checkbox.setChecked(True)
 
@@ -237,9 +231,8 @@ class LyricsPanel(QWidget):
         self._current_index = idx
         past = QColor(COLORS["text_dim"])
         upcoming = QColor(COLORS["text"])
-        # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for this
-        # whole cleanup) - current lyrics line, walnut brown now instead
-        # of red-orange.
+        # current lyrics line in walnut brown (see ui/theme.py's #Primary
+        # comment)
         current = QColor(COLORS["jukebox_key_hi"])
         for i in range(self._list.count()):
             item = self._list.item(i)

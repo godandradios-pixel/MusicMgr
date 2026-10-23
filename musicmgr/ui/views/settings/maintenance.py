@@ -1,4 +1,4 @@
-"""Settings › Maintenance tools (artwork, artist info, metadata, duplicates, charts) (split out of settings.py, 2026-10-22)."""
+"""Settings › Maintenance tools (artwork, artist info, metadata, duplicates, charts)."""
 
 from __future__ import annotations
 
@@ -35,21 +35,12 @@ class MaintenanceSection:
     methods share the view's state."""
 
     def _build_maintenance(self, section) -> None:
-        """Build the Maintenance group (moved out of __init__, 2026-10-22)."""
+        """Build the Maintenance group."""
         # ---- maintenance ----
-        # 2026-09-16 follow-up (James: "let's have settings be rows in a
-        # table" - see _ToolRow's own docstring above for the full "buttons
-        # cramed" complaint this replaces) - one row per tool, each with its
-        # own button and a one-line description, inside a Card frame rather
-        # than nine TouchButtons packed into a single QHBoxLayout with
-        # nowhere left to shrink to.
-        #
-        # 2026-09-16 same-day follow-up #2 (James: "we don't need the line
-        # between the rows") - dropped the `divider()` separator this used
-        # to add between every row; the Card frame's own outline already
-        # groups these into one list without it.
-        # Maintenance (2026-10-01): one list of fifteen tools became three
-        # groups - artwork and track info, files and data, online services.
+        # one row per tool (see _ToolRow), each with its own button and a
+        # one-line description, inside Card frames with no dividers, in
+        # three groups - artwork and track info, files and data, online
+        # services.
         tool_rows: list[_ToolRow] = []
         tools: dict[str, QVBoxLayout] = {}
 
@@ -70,12 +61,9 @@ class MaintenanceSection:
             return row.button
 
         tools_group("Artwork & track info", "info")
-        # 2026-09-22 follow-up (James: "move that missing metadata settings
-        # option up closer to the progress bar") - first in this list
-        # rather than after the other four enrichment-source rows, since
-        # `self.progress`/`self.progress_label` just above this card is
-        # exactly what lights up while its own scan runs (see
-        # view_missing_metadata).
+        # first in the list, nearest `self.progress`/`self.progress_label`,
+        # which is what lights up while its scan runs (see
+        # view_missing_metadata)
         add_tool_row(
             "Missing metadata",
             "See everything still missing cover art, a biography, popularity data, or lyrics.",
@@ -88,9 +76,7 @@ class MaintenanceSection:
             "Import…",
             self.import_artist_images,
         )
-        # 2026-09-16 follow-up (James, on the new artist-profile page:
-        # "Settings option, like lyrics, to download profile") - see the
-        # module docstring and download_artist_profiles below.
+        # see download_artist_profiles below
         add_tool_row(
             "Artist profiles",
             "Download a biography for every artist that doesn't have one yet.",
@@ -109,7 +95,7 @@ class MaintenanceSection:
             "Search…",
             self.search_missing_artwork,
         )
-        # 2026-09-24 (USB sync step 2) - see services/artwork_names.py
+        # USB sync step 2 - see services/artwork_names.py
         add_tool_row(
             "Relink artwork",
             "Point albums and artists at their pictures in the artwork and artists folders "
@@ -117,7 +103,7 @@ class MaintenanceSection:
             "Relink",
             self.relink_artwork,
         )
-        # 2026-10-01 - volume levelling, see services/replaygain.py
+        # volume levelling, see services/replaygain.py
         add_tool_row(
             "Volume levels",
             "Read ReplayGain tags, or measure loudness, for every track without a level yet. "
@@ -145,9 +131,8 @@ class MaintenanceSection:
             "Purge…",
             self.purge_missing_files,
         )
-        # 2026-10-13 - James: "Duplicate finder ... from an identical file
-        # standpoint. Playlist should point to songs in albums not chart
-        # folders" - see services/duplicates.py
+        # identical-file duplicates, and moving playlist songs off chart-folder
+        # copies onto album copies - see services/duplicates.py
         add_tool_row(
             "Duplicates",
             "Move playlist and chart songs off Billboard, Hot Country and Oldies copies onto "
@@ -167,8 +152,8 @@ class MaintenanceSection:
             "Move…",
             self.move_data,
         )
-        # 2026-10-19 - James: daily library backups, local only, keep 7,
-        # with a Restore option - see services/library_backup.py
+        # daily library backups, local only, keep 7, with a Restore option -
+        # see services/library_backup.py
         add_tool_row(
             "Back up library",
             "Save a copy of your library now. MusicMgr also does this by itself the first time "
@@ -183,10 +168,8 @@ class MaintenanceSection:
             "Restore…",
             self.restore_library,
         )
-        # 2026-09-19 - James: "Create for me a 'nuke' option. Where you
-        # completely wipe out library.db and start with a fresh database."
-        # Deliberately last in this list - the most destructive action
-        # here by a wide margin, see NukeConfirmDialog/nuke_library below.
+        # wipes library.db and starts fresh. Deliberately last in this list -
+        # the most destructive action here, see NukeConfirmDialog/nuke_library.
         add_tool_row(
             "Nuke library",
             "Permanently erase your entire library database and start completely fresh.",
@@ -195,23 +178,18 @@ class MaintenanceSection:
         )
 
         tools_group("Online services", "services")
-        # 2026-09-22 follow-up (James: "move the 2 API key and token
-        # options to the bottom just above the nuke") - Last.fm API key/
-        # Discogs API token used to sit next to the button that actually
-        # uses each key (Track popularity/Album artwork respectively);
-        # moved here as a pair instead, right before the destructive
-        # "Nuke library" row below.
+        # the Last.fm key (Track popularity) and Discogs token (Album
+        # artwork) are kept together here rather than beside the tools
+        # that use them
         add_tool_row(
             "Last.fm API key",
             "Set the free API key track popularity needs to fetch Last.fm charts.",
             "Set key…",
             self.open_lastfm_credentials,
         )
-        # 2026-09-18 - James: "Ability to search for album artwork" - see
-        # services/artwork_downloader.py's module docstring for the full
-        # story and why this bulk button auto-applies the top match rather
-        # than reviewing each one (unlike the release page's own per-release
-        # "Search artwork" button, which always shows a picker first).
+        # see services/artwork_downloader.py's module docstring for why the
+        # bulk search auto-applies the top match (the release page's own
+        # "Search artwork" button always shows a picker first)
         add_tool_row(
             "Discogs API token",
             "Set the free personal access token album artwork search needs.",
@@ -238,20 +216,16 @@ class MaintenanceSection:
             self.ctx.libraryChanged.emit()
 
     def import_artist_images(self) -> None:
-        """2026-09-22 - James: "does the progress bar also work on the
-        import of artist images" (it didn't - this used to run entirely
-        synchronously in this very method, after the folder picker, with
-        no feedback for however long a big folder took). Threaded the same
-        way as every other bulk action on this page now - see
-        ArtistImagesImportThread (ui/widgets/common.py)."""
+        """Import artist images from a chosen folder on a background thread
+        with the page's progress bar - see ArtistImagesImportThread
+        (ui/widgets/common.py)."""
         folder = QFileDialog.getExistingDirectory(
             self, "Choose your folder of artist images", str(Path.home())
         )
         if not folder:
             return
-        # 2026-09-24 (USB sync step 2) - importing MusicBee's
-        # "Artist Pictures\Thumb" folder should fill gaps, not replace
-        # photos James already chose, unless he says so.
+        # importing MusicBee's "Artist Pictures\Thumb" folder should fill
+        # gaps, not replace photos already chosen, unless the user says so
         replace = QMessageBox.question(
             self,
             "Artist images",
@@ -333,12 +307,9 @@ class MaintenanceSection:
                 self, "Artist profiles", "Every artist already has a saved biography."
             )
             return
-        # 2026-10-17 - James: "Is there a way I can decide to completely
-        # skip an artist profile if one exists vs. always checking. This
-        # option takes way too long." Artists Wikipedia had nothing for (and
-        # ones whose bio isn't about music) used to be looked up again on
-        # every run; now they're remembered (Artist.profile_checked_at) and
-        # the run can be limited to artists never looked up before.
+        # artists already looked up with no luck (or a non-music bio) are
+        # remembered (Artist.profile_checked_at), so the run can be limited
+        # to artists never looked up before
         new_ids = bio_dl.artists_missing_bio(new_only=True)
         choice = self._ask_profile_scope(len(new_ids), len(all_ids))
         if choice is None:
@@ -608,45 +579,24 @@ class MaintenanceSection:
         self._last_metadata_scan = None
 
     def view_missing_metadata(self) -> None:
-        """James, 2026-09-22: "one screen listing releases missing cover
-        art, bio, lyrics, or popularity data, instead of only surfacing
-        that per-item" - see services/metadata_health.py's module docstring
-        for the full story.
+        """One screen listing everything missing cover art, a bio, lyrics,
+        or popularity data - see services/metadata_health.py's module
+        docstring.
 
-        2026-09-22 same-day follow-up (James, on the first version of this:
-        "I click the option and it looks like nothing is happening") - all
-        four categories, not just the slow lyrics one, now run inside
-        MetadataScanThread. The original version ran the three fast ones
-        right here, synchronously, before ever making the progress bar
-        visible - fast enough in a unit test's empty database, but a real
-        library's worth of indexed-but-not-free queries added up to a
-        genuinely silent multi-second freeze. `self.progress` is now made
-        visible (in indeterminate/"busy" mode - `setRange(0, 0)`, no
-        fraction to show yet) immediately, before the thread is even
-        started, so there's no gap at all between tapping "View…" and
-        seeing *something* move.
+        All four categories run inside MetadataScanThread (even the fast
+        queries add up to a multi-second freeze on a real library), and
+        `self.progress` is shown in busy mode (`setRange(0, 0)`) before the
+        thread starts, so tapping "View…" gives immediate feedback.
 
-        Browse-and-jump only (James, same conversation, asked for and chose
-        this scope explicitly over the dashboard also getting its own
-        "fix all" buttons) - picking a row just hands off to the same
-        ctx.navigateRequested/openArtistRequested/openReleaseRequested trip
-        Now Playing's own tappable artist/album already makes
-        (ui/views/nowplaying.py), landing on the artist/release page where
-        the actual fix button (Fetch bio, Search artwork, Fetch popularity,
-        Download lyrics) already lives.
+        Browse-and-jump only: picking a row navigates to the artist/release
+        page (as Now Playing's tappable artist/album does,
+        ui/views/nowplaying.py), where the fix buttons live.
 
-        2026-09-22 same-day follow-up (James: "is there any way ... I can
-        go back and forth to fix them. Right now it's a one time click and
-        then back to running the missing metadata query again") - a scan
-        already sitting in `self._last_metadata_scan` is reused instead of
-        rerun, so tapping "Missing metadata" again after fixing one item
-        (from _open_missing_metadata_dialog below) reopens instantly rather
-        than repeating the whole scan - the lyrics half in particular isn't
-        cheap on a real library. `self._metadata_visited` is never cleared
-        here, only added to (same method) and read by
-        MissingMetadataDialog to mark rows already picked, so working
-        through a long list keeps track of where you left off across
-        however many reopens that takes."""
+        A completed scan in `self._last_metadata_scan` is reused rather than
+        rerun, so reopening after fixing one item is instant (the lyrics
+        check isn't cheap). `self._metadata_visited` is only ever added to,
+        and MissingMetadataDialog marks those rows as already picked, so a
+        long list keeps its place across reopens."""
         if self._last_metadata_scan is not None:
             self._open_missing_metadata_dialog(self._last_metadata_scan)
             return
@@ -686,13 +636,9 @@ class MaintenanceSection:
             self._metadata_scan_thread.isInterruptionRequested()
         )
         self._hide_cancel(self._metadata_scan_thread)
-        # 2026-09-22 - James: "add a real cancel button..." - a cancelled
-        # scan's `result` is only whatever categories were reached before
-        # the stop (see scan_missing_metadata's own should_stop docstring),
-        # so it's shown once but deliberately NOT cached into
-        # `_last_metadata_scan` the way a completed scan is - reopening
-        # "Missing metadata" after a cancelled run re-scans from scratch
-        # instead of silently treating a partial result as the real one.
+        # a cancelled scan's `result` holds only the categories reached
+        # before the stop (see scan_missing_metadata's should_stop), so it's
+        # shown once but NOT cached - reopening re-scans from scratch
         if not cancelled:
             self._last_metadata_scan = result
         self._open_missing_metadata_dialog(result)
@@ -718,8 +664,6 @@ class MaintenanceSection:
         # openArtistRequested/openReleaseRequested Now Playing's own
         # tappable artist/album use) so the artist/release page's
         # breadcrumb leads back here instead of to the Artists/Albums grid
-        # - James, 2026-09-22: "is there any way we can have a back button
-        # when you go from missing metadata to the album and then back".
         if kind == "artist":
             self.ctx.openArtistFromMissingMetadataRequested.emit(item_id)
         else:
@@ -774,13 +718,9 @@ class MaintenanceSection:
         self.ctx.playlistsChanged.emit()
 
     def rematch_all(self) -> None:
-        """2026-09-22 - James: "does the progress bar also work on ...
-        charts" (it didn't - this used to be a plain loop over every
-        external chart, entirely synchronous, right here). Threaded the
-        same way as every other bulk action on this page now - see
-        RematchChartsThread (ui/widgets/common.py) and
-        services.charts.rematch_all_charts, which now owns the loop this
-        method used to."""
+        """Re-match every external chart on a background thread with the
+        page's progress bar - see RematchChartsThread (ui/widgets/common.py)
+        and services.charts.rematch_all_charts."""
         if self._rematch_thread is not None and self._rematch_thread.isRunning():
             self.ctx.notify("Already re-matching charts")
             return

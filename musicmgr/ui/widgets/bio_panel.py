@@ -2,27 +2,15 @@
 (Artist.profile: a free-text column, same shape as a Discogs bio) plus a
 "Fetch bio" button when nothing's saved yet.
 
-2026-09-16 follow-up - this widget existed before today but was never
-actually wired into any page, and nothing ever wrote to Artist.profile
-either (the importer this docstring used to say was "not wired up yet"
-still didn't exist). James: "Add a new menu option called artist
-profile...collect a brief writeup of the artist" - asked where the page
-should live and where the writeup should come from, he chose the existing
-Artist page (ui/widgets/artist_panel.py:ArtistDetailPanel, right below the
-release row) rather than a new sidebar section, and a network fetch
-"similar to lyrics" rather than manual entry only - see
-services/artist_bio_downloader.py's module docstring for the full story
-and why a fetched bio, unlike a downloaded lyric, is a database write. This
-is the first real caller BioPanel has ever had.
+Lives on the Artist page (ui/widgets/artist_panel.py:ArtistDetailPanel,
+below the release row); bios are fetched over the network like lyrics - see
+services/artist_bio_downloader.py's module docstring, including why a
+fetched bio, unlike a downloaded lyric, is a database write.
 
-Mirrors LyricsPanel's own shape almost exactly (see that widget's
-docstring): downloading only ever writes to the database (Artist.profile)
-and re-reads/redisplays that one row afterwards, so there's nothing for
-the artist page to do with the outcome that this panel can't already do
-by reloading itself - hence BioPanel taking `ctx` and running the whole
-fetch end-to-end, the same deliberate departure from the
-widget-just-reports/view-does-the-work convention LyricsPanel already
-made for the same reason.
+Mirrors LyricsPanel's shape (see that widget's docstring): a download only
+writes Artist.profile and redisplays it, so BioPanel takes `ctx` and runs
+the whole fetch itself rather than following the widget-reports/
+view-does-the-work convention.
 """
 
 from __future__ import annotations
@@ -95,9 +83,8 @@ class EditBioDialog(QDialog):
 
 
 class BioPanel(QWidget):
-    """`inline_edit=False` (2026-09-26, James: "we are taking an entire row
-    with the Edit Bio button") leaves the "Edit bio" button out of this
-    widget's own layout - the caller places `edit_button` itself (the
+    """`inline_edit=False` leaves the "Edit bio" button out of this
+    widget's own layout (to save a row) - the caller places `edit_button` itself (the
     artist page puts it on the same line as its "Biography" heading).
     Visibility/enabled state is still managed here either way."""
 
@@ -111,10 +98,8 @@ class BioPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # 2026-09-19 follow-up - James: "I need a way to adjust the artist
-        # bio. The automatic Get Bio got the wrong band" - Wikipedia name
-        # collisions (see artist_bio_downloader's module docstring) mean a
-        # fetch can land on a same-named but wrong artist. Unlike "Fetch
+        # Wikipedia name collisions (see artist_bio_downloader's module
+        # docstring) mean a fetch can land on a same-named wrong artist. Unlike "Fetch
         # bio" (only shown in the empty state, via EmptyState's own action
         # button), "Edit bio" sits in its own row above the stack so it's
         # reachable whether or not a bio is already showing - fixing a
@@ -242,7 +227,7 @@ class BioPanel(QWidget):
             self.ctx.notify(f"Couldn't save that biography: {outcome.detail or outcome.status}")
             return
 
-        # James may have navigated to a different artist while the (modal)
+        # the user may have navigated to a different artist while the (modal)
         # dialog was open - same guard _on_fetch_finished already uses
         if self._artist_id == artist_id:
             self.set_bio(dialog.text())

@@ -124,7 +124,7 @@ def _best_fuzzy(key: str, index: dict[str, Artist]) -> Optional[tuple[Artist, fl
 
 def _store(source: Path, artist: Artist) -> str:
     """Copy the image into the app's data folder as `artists\\<Artist>.jpg`
-    - the MusicBee naming (services/artwork_names.py, 2026-09-24), so the
+    - the MusicBee naming (services/artwork_names.py), so the
     same file name means the same artist on every PC and the folder can be
     synced as-is."""
     from . import artwork_names
@@ -144,23 +144,14 @@ def import_artist_images(
 
     `overwrite=False` leaves artists that already have a portrait alone.
 
-    2026-09-22 - James: "does the progress bar also work on the import of
-    artist images" (it didn't - this ran entirely on the UI thread with no
-    feedback at all, same class of problem the "Missing metadata"
-    dashboard had before it got a progress bar). `progress`, when given, is
-    called as `(done, total, name)` once per candidate image - `iter_candidates`
-    is materialized into a list up front rather than iterated lazily so
-    `total` is known from the start; a folder of artist portraits is small
-    enough (nowhere near the scanner's whole-library scale) that this
-    costs nothing worth avoiding.
+    `progress`, when given, is called as `(done, total, name)` once per
+    candidate image; the candidates are listed up front so `total` is known
+    from the start (a portrait folder is small).
 
-    2026-09-22 same-day follow-up (James: "add a real cancel button that
-    stops any process running within Settings") - `should_stop`, checked
-    once per candidate image, `break`s rather than raising: nothing here
-    commits per item (only the one `session.flush()` at the very end, once
-    the loop is done, one way or another), so a break just means fewer
-    artists get `image_path` set in memory before that flush runs - never a
-    rollback of anything already saved."""
+    `should_stop`, checked once per candidate, `break`s rather than raising:
+    nothing commits per item (one `session.flush()` at the end), so stopping
+    just means fewer artists get `image_path` set - nothing saved is rolled
+    back."""
     result = ArtistImageResult()
     folder = Path(folder).expanduser()
     if not folder.is_dir():

@@ -1,12 +1,6 @@
-"""A record player seen from above, for Now Playing (2026-09-30).
+"""A record player seen from above, for Now Playing.
 
-James: "on the Now Playing page, any way we can incorporate a visual that
-shows the album cover, spinning as if on a record player from the top
-view?"
-
-The album cover is the whole record (2026-09-30: "make the album art the
-whole record, it doesn't need to have space for the actual grooves") and
-turns.
+The album cover is the whole record (no space left for grooves) and turns.
 Everything else stays still, so the only per-frame work is rotating one
 small pixmap:
 
@@ -20,7 +14,7 @@ small pixmap:
   to its rest when stopped.
 
 Speed is 33⅓ rpm, or 78 rpm for a track whose position is a record side
-("A"/"B" - James's 78 rpm rips, see services/tracknum.py). Play and pause
+("A"/"B" - 78 rpm rips, see services/tracknum.py). Play and pause
 spin up and wind down over about a second instead of jumping. The frame
 timer only runs while something is moving and the widget is visible.
 """
@@ -61,7 +55,7 @@ LABEL_RATIO = 0.985
 #: how far in the arm travels by the end of a song, as a share of the radius
 RUN_OUT_RATIO = 0.42
 
-# 2026-10-13 - the console's cabinet, deck, felt and front panel come from
+# the console's cabinet, deck, felt and front panel come from
 # the turntable finish chosen in Settings › Appearance (ui/skins.py:
 # walnut, blonde oak, modern black, white). The record, tone arm and lamps
 # are the same in every finish.
@@ -102,9 +96,8 @@ class Turntable(QWidget):
 
     def _record_rect(self) -> QRectF:
         s = self._size
-        # the record runs to the very edge of the box (2026-09-30: "a little
-        # bit less box - have the spinning record go to the very edges");
-        # the deck only shows in the four corners
+        # the record runs to the very edge of the box; the deck only shows
+        # in the four corners
         r = s * 0.475
         c = QPointF(s * 0.5, s * 0.5)
         return QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
@@ -225,7 +218,7 @@ class Turntable(QWidget):
 
     def _make_base(self) -> QPixmap:
         """Everything that never moves, in the style of a late-1930s /
-        1940s console record changer (James's Philco "Beam of Light"):
+        1940s console record changer (a Philco "Beam of Light"):
         walnut cabinet, mottled brown bakelite deck, felt turntable, a
         curved record-support arm on the left, a speed-selector row and
         the arm rest on the right, a lever up front."""
@@ -453,8 +446,7 @@ class Turntable(QWidget):
                 p.setBrush(_fc(FINISH["lamp_off"]))
             p.drawEllipse(pos, s * 0.013, s * 0.013)
 
-        # tone arm (2026-09-30: "back off that philco beam of light needle,
-        # go back to a more realistic one"): a straight brushed-aluminium
+        # tone arm: a realistic straight brushed-aluminium
         # tube from a chrome pivot, a counterweight behind, and a headshell
         # with finger lift and a black cartridge over the needle
         pivot = self._pivot()

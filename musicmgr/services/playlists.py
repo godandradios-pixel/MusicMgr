@@ -53,9 +53,8 @@ ORDERINGS = {
 }
 
 #: how many days back each playback window looks; None = no lower bound.
-#: Moved here from services/charts.py (2026-08-30) along with the built-in
-#: "Most Played" playlists that use it - see the "playback playlists" section
-#: below.
+#: Used by the built-in "Most Played" playlists - see the "playback
+#: playlists" section below.
 PLAYBACK_WINDOWS = {
     "today": 1,
     "week": 7,
@@ -213,7 +212,7 @@ def folder_counts(session: Session, folder_id: int) -> tuple[int, int]:
 
 
 # --------------------------------------------------------------------------
-# tile artwork (2026-09-26 - the Playlists page's drill-down tile grid)
+# tile artwork (the Playlists page's drill-down tile grid)
 # --------------------------------------------------------------------------
 
 #: how many different album covers a playlist/folder tile's mosaic uses
@@ -222,8 +221,8 @@ MOSAIC_COVERS = 4
 
 def cover_paths_for_tracks(tracks: Iterable[Track], limit: int = MOSAIC_COVERS) -> list[str]:
     """The first `limit` *different* album covers among `tracks`, in
-    playlist order - what a playlist tile's 2x2 mosaic is built from
-    (James: "Maybe have a folder allow an image to press"). One cover per
+    playlist order - what a playlist tile's 2x2 mosaic is built from.
+    One cover per
     release, so a playlist that opens with three songs from one album
     doesn't show that album three times."""
     seen_releases: set[int] = set()
@@ -244,7 +243,7 @@ def cover_paths_for_tracks(tracks: Iterable[Track], limit: int = MOSAIC_COVERS) 
 
 
 def _store_tile_image(file_path: str) -> str:
-    """Copies an image James picked into the artwork folder under a name
+    """Copies an image the user picked into the artwork folder under a name
     derived from its bytes (so picking the same file twice reuses one
     copy) and returns the stored path. Raises ValueError for anything that
     isn't a readable, non-empty image file."""
@@ -349,9 +348,7 @@ def search_tracks(
     limit: int = 50,
 ) -> list[dict]:
     """Artist + title search for the playlist "Add songs…" / "Replace
-    song…" picker (2026-09-27 - James: "how can I edit a playlist by
-    replacing a song with a search for another song", then "please build
-    both"). Feeds the same `JukeboxPickerDialog` the Jukebox uses, so it
+    song…" picker. Feeds the same `JukeboxPickerDialog` the Jukebox uses, so it
     returns the same dict shape as `services/jukebox.py:
     search_addable_tracks` and matches the same way (`artist_display
     ilike`, `title_key like`, ANDed, both blank -> nothing).
@@ -398,7 +395,7 @@ def replace_track_at(
     session: Session, playlist_id: int, index: int, old_track_id: int, new_track_id: int
 ) -> bool:
     """Swap the song at 0-based `index` of a manual playlist for
-    `new_track_id`, keeping its position (2026-09-27 "Replace song…").
+    `new_track_id`, keeping its position ("Replace song…").
     `old_track_id` guards against the list having changed underneath the
     view: if the item at `index` isn't that track, the first item that is
     gets replaced instead. Returns False if nothing matched."""
@@ -458,12 +455,9 @@ def _rule_clause(field: str, op: str, value: Any):
         "title": Track.title_key,
         "artist": Track.artist_display,
         "album": Release.title_key,
-        #: 2026-09-17 (James: matching MusicBee's own "Comment contains
-        #: [Billboard]" auto-playlist rules) - Track.comment already
-        #: exists and gets populated from the file's own tag on scan (see
-        #: services/scanner.py's `track.comment = tags.comment or None`);
-        #: it just had no smart-playlist field to reach it through until
-        #: now.
+        #: for MusicBee-style "Comment contains [Billboard]" rules;
+        #: Track.comment is filled from the file's tag on scan
+        #: (services/scanner.py)
         "comment": Track.comment,
     }
 
@@ -531,10 +525,9 @@ def _rule_clause(field: str, op: str, value: Any):
 
 def _comment_rank_patterns(hint: Optional[str], year: Optional[str]) -> list[str]:
     """Regex source strings matching a chart rank tagged into `Track.comment`
-    for the "chart_rank" smart-playlist ordering - see resolve_smart's own
-    docstring for why this reads the comment text directly rather than
-    joining through `ChartEntry`. James's library uses (at least) two
-    conventions for this, both observed directly in his own data:
+    for the "chart_rank" smart-playlist ordering - see the comment in
+    resolve_smart for why this reads the comment text rather than joining
+    through `ChartEntry`. Two tagging conventions are in use:
 
         "[Billboard] #002# [2020]"      - hint, then rank, then year
         "[Hot Country][2023] #096#"     - hint and year together, then rank
@@ -569,66 +562,28 @@ def resolve_smart(session: Session, rules_json: str) -> list[Track]:
     if clauses:
         stmt = stmt.where(combiner(*clauses))
     order_by = spec.get("order_by", "title")
-    # 2026-09-17 follow-up - the new form-based SmartPlaylistDialog
-    # (ui/views/playlists.py) has an unchecked-by-default "limit to N
-    # tracks" checkbox, same as MusicBee's own Auto-Playlist editor - so
-    # omitting "limit" now means genuinely unlimited rather than the old
-    # silent 500 cap, which nothing that already sets an explicit limit
-    # (the three built-in smart playlists, and any spec saved through the
-    # old JSON box) ever relied on.
+    # no "limit" means unlimited - SmartPlaylistDialog (ui/views/playlists.py)
+    # has an unchecked-by-default "limit to N tracks" box, like MusicBee's
+    # Auto-Playlist editor
     limit = spec.get("limit")
     if order_by == "chart_rank":
-        # 2026-09-17 (James: "I need an option where it can be manual so
-        # that I can sort them by ranking of the chart") - for a smart
-        # playlist built around a chart-tagged Comment (e.g. "Comment
-        # contains [Billboard]" + "Comment contains [2020]"), James wants
-        # the list to read in the chart's own countdown order, not by
-        # title/date/play count.
+        # For a smart playlist built around a chart-tagged Comment (e.g.
+        # "Comment contains [Billboard]" + "Comment contains [2020]"), list
+        # the songs in the chart's own countdown order.
         #
-        # 2026-09-17 same-day follow-up #1 (James: "the Playlist is out
-        # of order") - the first version of this took MIN(rank) across
-        # *every* `ChartEntry` a track has anywhere, with no notion of
-        # "which chart, which edition" - so a track's *weekly* Hot 100
-        # peak (which most Billboard #1s reach eventually) beat its
-        # actual year-end position, and ties beyond that had no tiebreak
-        # at all.
-        #
-        # 2026-09-17 same-day follow-up #2, chasing #1's fix - narrowing
-        # to "the YE edition of a chart named like the rules' own
-        # `[Billboard]` hint" ran straight into two more problems that
-        # make `ChartEntry` fundamentally the wrong table for this:
-        #   1. James's `charts` table has *three* separate chart rows all
-        #      literally named "Billboard YE" (Hot 100, Country, and
-        #      Christian, distinguished only by `Chart.slug` - a detail
-        #      the smart-playlist rules have no way to reference), so
-        #      "name the chart, then find its YE issue" still can't tell
-        #      the Hot 100 list apart from the Country one; "The Bones"
-        #      (a country song) was outranking Circles because its
-        #      Country-chart YE rank of 2 was getting merged in.
-        #   2. Worse: the *same song* sometimes exists as two separate
-        #      `Track` rows (two different files/imports - confirmed for
-        #      Circles: track 26171 with an unrelated 2019 tag, track
-        #      26268 with the real `[Billboard] #002# [2020]` one), and
-        #      `ChartEntry.track_id` - populated by the Charts page's own
-        #      independent title/artist fuzzy-matcher ("Re-match
-        #      library") - had linked to the *other* one. No amount of
-        #      narrowing which chart/issue to look at fixes a rank stored
-        #      against a different row than the one this query is
-        #      actually sorting.
-        #
-        # The comment text itself sidesteps both: it's the exact same
-        # field the rules already matched on, already carries the rank
-        # number, and needs no cross-referencing to any other table at
-        # all. `[Billboard] #002# [2020]` and `[Hot Country][2023] #096#`
-        # are the two tagging conventions actually seen in James's
-        # library - hint-then-rank-then-year, and hint-and-year-then-rank
-        # - so both are tried. A non-numeric rule value like "[Billboard]"
-        # or "[Hot Country]" is a chart-name hint; a 4-digit one like
-        # "[2020]" is a year. A track whose comment doesn't actually
-        # contain a matching "#rank#" for any hint/year combination (or a
-        # playlist with no such rules at all) sorts after every ranked
-        # one instead of raising or vanishing; `Track.title` breaks any
-        # remaining tie deterministically.
+        # The rank is read from the comment text, not `ChartEntry`:
+        #   1. several charts share a name ("Billboard YE" is Hot 100,
+        #      Country and Christian, told apart only by `Chart.slug`, which
+        #      the rules can't reference), so a weekly peak or another
+        #      chart's rank would get merged in;
+        #   2. the same song can exist as two `Track` rows, and
+        #      `ChartEntry.track_id` (the Charts page's fuzzy matcher) may
+        #      point at the other one.
+        # The comment is the field the rules already matched on and carries
+        # the rank itself. Both conventions (_comment_rank_patterns) are
+        # tried. A non-numeric rule value ("[Billboard]") is a chart-name
+        # hint; a 4-digit one ("[2020]") is a year. A track with no matching
+        # "#rank#" sorts after every ranked one; `Track.title` breaks ties.
         comment_values = [
             r.get("value", "")
             for r in spec.get("rules", [])
@@ -728,12 +683,9 @@ DEFAULT_SMART_PLAYLISTS = [
     ),
 ]
 
-#: Renamed 2026-09-17 (James: "remove any british english words. For
-#: example, Forgotten Favourites") - anyone who already has the old
-#: spelling gets it renamed in place the next time this runs, rather than
-#: the exists-check loop below (which only matches by exact name, so it
-#: has no way to know the old and new spellings are the same playlist)
-#: leaving that old row orphaned next to a freshly created duplicate.
+#: built-in playlists renamed to US spelling: an existing old-spelling row
+#: is renamed in place, since the exists-check below matches by exact name
+#: and would otherwise create a duplicate next to it
 _RENAMED_DEFAULTS = {"Forgotten Favourites": "Forgotten Favorites"}
 
 
@@ -750,8 +702,7 @@ def ensure_default_playlists(session: Session) -> None:
 
 
 # --------------------------------------------------------------------------
-# playback playlists (derived from play history; moved from
-# services/charts.py on 2026-08-30 - see Playlist.KIND_PLAYBACK)
+# playback playlists (derived from play history - see Playlist.KIND_PLAYBACK)
 # --------------------------------------------------------------------------
 
 
@@ -865,13 +816,11 @@ def ensure_builtin_playback_playlists(session: Session) -> None:
 
 
 # --------------------------------------------------------------------------
-# sort by album, then side / track (2026-09-30)
+# sort by album, then side / track
 # --------------------------------------------------------------------------
-# James, on his 78 Records playlists: "These are physical records I have in
-# my collection. The track number is important in the playlist because I
-# indicate Side A and Side B. I want the playlist to have the granularity
-# of Album and then Track #." - so each record's A side is followed by its
-# B side, records in catalogue order. Album titles like "Bluebird - B-6873"
+# For playlists of physical 78s, where the track number marks Side A / Side
+# B: each record's A side is followed by its B side, records in catalogue
+# order. Album titles like "Bluebird - B-6873"
 # sort naturally (B-6873 before B-10096), not as text.
 
 _NATURAL = re.compile(r"(\d+)")

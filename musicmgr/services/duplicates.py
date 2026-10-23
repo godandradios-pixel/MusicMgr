@@ -1,14 +1,11 @@
-"""Duplicate finder (2026-10-13).
+"""Duplicate finder.
 
-James: "Let's work on Duplicate finder. More from an identical file
-standpoint. Playlist should point to songs in albums not chart folders in
-the music. For example, all playlists that point to billboard should try to
-point to the album songs." Then, asked: the chart folders are Billboard,
-Hot Country and Oldies; a playlist song moves to an album copy holding the
-identical recording first, otherwise to the same song by the same artist
-whose length is within 2 seconds.
+Playlists should point at album songs, not the copies in the chart folders
+(Billboard, Hot Country, Oldies). A playlist song moves to an album copy
+holding the identical recording first, otherwise to the same song by the
+same artist whose length is within 2 seconds.
 
-Two results, from one run (Settings > Duplicates):
+Results from one run (Settings > Duplicates):
 
 * **Playlist songs to switch** - every playlist entry that points at a song
   in a chart folder (D:\\Music\\Billboard\\1965\\..., Hot Country, Oldies)
@@ -16,7 +13,9 @@ Two results, from one run (Settings > Duplicates):
   moves those entries to the album song, in place.
 * **Identical files** - groups of files holding exactly the same recording,
   whatever they're called or tagged. Nothing is deleted; the list is for
-  James to act on.
+  the user to act on.
+* **Chart rows to switch** - the Charts page's matches on chart-folder
+  songs (see ChartSwitch / switch_charts).
 
 "Identical" is judged by the audio itself, tags ignored:
 
@@ -57,10 +56,9 @@ log = logging.getLogger(__name__)
 #: songs (D:\Music\Billboard\1960-69\1965\Them - Here Comes The Night.mp3)
 CHART_FOLDERS = ("billboard", "hot country", "oldies")
 #: "the same song" when it isn't the identical recording: same title, same
-#: artist, and playing times this close. James chose 2 seconds; the
-#: results dialog can widen it to the larger steps to show what that would
-#: add (on PC1 ~500 more entries within 5 s are mostly the same recording
-#: with a longer fade; beyond that it's mostly single edits vs album cuts).
+#: artist, and playing times this close. The results dialog can widen it to
+#: the larger steps (within 5 s is mostly the same recording with a longer
+#: fade; beyond that mostly single edits vs album cuts).
 SAME_SONG_MAX_DIFF_MS = 2000
 LENGTH_STEPS_MS = (2000, 5000, 15000)
 _SAMPLE = 128 * 1024
@@ -214,9 +212,8 @@ class Switch:
 @dataclass
 class ChartSwitch:
     """A chart-folder song the Charts page's entries point at, and the
-    album copy they'd move to (2026-10-13 follow-up - James: "proceed with
-    option 1": the Charts page's matches too). One per song, however many
-    weekly rows it has."""
+    album copy they'd move to. One per song, however many weekly rows it
+    has."""
     old: FileInfo
     new: FileInfo
     how: str
@@ -602,8 +599,8 @@ def switch_playlists(session: Session, switches: Iterable[Switch]) -> int:
 
 def switch_charts(session: Session, switches: Iterable[ChartSwitch]) -> int:
     """Point every chart row on each chart-folder song at its album copy.
-    A match James fixed by hand keeps its lock - it's still the song he
-    chose, just the album copy of it. Returns how many rows changed."""
+    A match fixed by hand keeps its lock - it's still the chosen song, just
+    the album copy of it. Returns how many rows changed."""
     changed = 0
     for s in switches:
         result = session.execute(
@@ -652,7 +649,7 @@ def album_copy_for(session: Session, track_id: int) -> Optional[int]:
     """When `track_id` is a song in a chart folder (Billboard, Hot Country,
     Oldies), the track id of its album copy - same title and artist, length
     within 2 seconds - or None (not a chart copy, or no album copy). Used by
-    chart matching so the Charts page prefers album songs (2026-10-13).
+    chart matching so the Charts page prefers album songs.
     Cached per session: a re-match asks about the same songs many times."""
     cache = session.info.setdefault("album_copy_for", {})
     if track_id in cache:

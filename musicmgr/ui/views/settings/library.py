@@ -1,4 +1,4 @@
-"""Settings › Library (watched folders and scans) (split out of settings.py, 2026-10-22)."""
+"""Settings › Library (watched folders and scans)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class LibrarySection:
     methods share the view's state."""
 
     def _build_library(self, section) -> None:
-        """Build the Library group (moved out of __init__, 2026-10-22)."""
+        """Build the Library group."""
         # ---- folders ----
         body = section("Library", "library")
         folder_head = QHBoxLayout()
@@ -43,10 +43,9 @@ class LibrarySection:
         folder_head.addWidget(label)
         folder_head.addStretch(1)
         add_btn = TouchButton("Add folder…", primary=True)
-        # Settings page's own brown pallet rather than the app-wide red-
-        # orange #Primary - see theme.py's #PrimaryWarm/#BigNumber/
-        # #ProgressWarm comments (James: "change all that bright orange/red
-        # color on this settings page to the brown pallet").
+        # Settings page's own brown pallet rather than the app-wide
+        # #Primary - see theme.py's #PrimaryWarm/#BigNumber/#ProgressWarm
+        # comments
         add_btn.setObjectName("PrimaryWarm")
         add_btn.clicked.connect(self.add_folder)
         remove_btn = TouchButton("Remove")
@@ -59,16 +58,11 @@ class LibrarySection:
             folder_head.addWidget(b)
         body.addLayout(folder_head)
 
-        # 2026-09-17 follow-up (James: "still blank after a rescan", after
-        # a Comment-tag reading fix landed in services/scanner.py) - an
-        # ordinary scan only reads tags from a file whose mtime/size on
-        # disk actually changed, so fixing a tag-reading bug does nothing
-        # for a library that's already been scanned; every file in it
-        # still looks "unchanged" to the scanner. This checkbox is the
-        # escape hatch: checked, "Scan selected"/"Scan now" re-read every
-        # file's tags regardless (see scanner.py's `import_file` `force`
-        # docstring) - slower on a big library, so it defaults off and
-        # stays off after each scan rather than becoming the new normal.
+        # an ordinary scan only re-reads tags from files whose mtime/size
+        # changed, so a tag-reading fix doesn't reach an already-scanned
+        # library. Checked, "Scan selected"/"Scan now" re-read every file's
+        # tags (see scanner.py's `import_file` `force` docstring) - slow, so
+        # it defaults off.
         self.force_rescan_cb = QCheckBox("Force full re-read (slow)")
         self.force_rescan_cb.setToolTip(
             "Re-reads every file's tags even if it hasn't changed on disk.\n"
@@ -82,33 +76,23 @@ class LibrarySection:
         self.folder_list = TouchList()
         body.addWidget(self.folder_list, 1)
 
-        # 2026-09-08 follow-up - James: "have the progress bar appear on the
-        # line with the folder." A scan's progress now paints directly into
-        # the relevant row of self.folder_list above (see _on_progress and
-        # ui/widgets/common.py's TouchList.update_row/RowDelegate), so this
-        # page-wide bar is left for "Move data location…" only - that copy
-        # targets one destination folder, not a folder in this list, so it
-        # has no row of its own to report progress into.
+        # a scan's progress paints into its row of self.folder_list (see
+        # _on_progress and ui/widgets/common.py's TouchList.update_row/
+        # RowDelegate); this page-wide bar is for jobs with no row of their
+        # own (Move data location…, the Maintenance tools)
         self.progress = QProgressBar()
         self.progress.setObjectName("ProgressWarm")  # this page's brown pallet - see theme.py
         self.progress.setVisible(False)
-        # pinned below the scrolling groups (2026-10-01), so a running job's
+        # pinned below the scrolling groups, so a running job's
         # progress and Cancel stay in view whichever groups are open
         self.body().addWidget(self.progress)
 
-        # 2026-09-22 - James: "add a real cancel button that stops any
-        # process running within Settings" (asked right after being told
-        # "Download Artist Profiles" had no way to stop it short of closing
-        # the whole app). One button, not one per bulk action - see
-        # `_busy_with`, which this reuses the same "which of the nine
-        # threads is running" enumeration from (minus MigrationThread - see
-        # `_active_cancellable_thread`'s own docstring for why a data move
-        # can't safely take a mid-flight stop). Sits right next to
-        # `progress_label` rather than in the Maintenance table below,
-        # since that's the one line every bulk action already updates
-        # (ScanThread is the one exception - see its own row-progress
-        # notes - but still shows/hides this same button via
-        # `_show_cancel`/`_hide_cancel`).
+        # one Cancel button for every Settings job, not one per action -
+        # it reuses `_busy_with`'s enumeration of running threads (minus
+        # MigrationThread - see `_active_cancellable_thread` for why a data
+        # move can't take a mid-flight stop). It sits beside
+        # `progress_label`, the line every bulk action updates; ScanThread
+        # reports per row but still uses `_show_cancel`/`_hide_cancel`.
         self.progress_label = dim_label("")
         progress_row = QHBoxLayout()
         progress_row.addWidget(self.progress_label, 1)
@@ -156,8 +140,7 @@ class LibrarySection:
 
     def purge_missing_files(self) -> None:
         """Permanently delete both missing tracks and missing videos in one
-        action (2026-09-15 follow-up - James: audio-only video purging
-        wasn't enough, this should cover "any file both audio and video").
+        action.
 
         The two sides keep their own, already-established safety rules
         rather than being forced to match each other: `purge_orphaned_tracks`
@@ -168,12 +151,10 @@ class LibrarySection:
         and "N removed" can legitimately differ for audio; the confirmation
         text below says so rather than that reading as a bug.
 
-        2026-10-18 - James: Verify said 0 missing while this offered to
-        remove "133 tracks" - 130 of them stray copies from GoodSync's
-        _gsdata_ folder on songs that still play. The dialog now spells out
-        what a purge will do (scanner.missing_summary), and the purge also
-        clears missing extra copies of still-playable songs
-        (scanner.purge_stale_copies), which it never used to touch.
+        Missing file rows aren't the same as missing tracks (a song can
+        still play from another copy), so the dialog spells out what a purge
+        will do (scanner.missing_summary), and the purge also clears missing
+        extra copies of still-playable songs (scanner.purge_stale_copies).
 
         Re-checks `is_missing` against disk right before purging (via
         mark_missing_files/mark_missing_videos) rather than trusting
@@ -197,9 +178,8 @@ class LibrarySection:
         if not summary.files and not missing_videos:
             self.ctx.notify("No missing files to remove")
             return
-        # 2026-10-18 - James: Verify said 0 missing but this offered to
-        # remove "133 tracks". That 133 was missing *file rows*; say what
-        # a purge will actually do instead, track by track.
+        # say what a purge will actually do, track by track, rather than
+        # counting missing *file rows*
         if not summary.removable and not summary.stale_copies and not missing_videos:
             self.ctx.notify(
                 f"{_plural(summary.files, 'missing file')} found, but nothing to "
@@ -377,9 +357,7 @@ class LibrarySection:
                 "Charts are re-matching — wait for it to finish before scanning"
             )
             return
-        # 2026-09-08 follow-up - James: "have the progress bar appear on
-        # the line with the folder." Give every folder about to be scanned
-        # an immediate row-level state rather than leaving its stale "last
+        # give every folder about to be scanned an immediate row-level state rather than leaving its stale "last
         # scan: …" text sitting there until the first progress tick - see
         # _on_progress for the live updates once scanning actually starts.
         for path in paths:
@@ -407,7 +385,7 @@ class LibrarySection:
         self.ctx.notify(summary)
         self.ctx.libraryChanged.emit()
         self.ctx.videosChanged.emit()
-        # 2026-10-22: thumbnails and years for new or changed videos
+        # thumbnails and years for new or changed videos
         from ... import video_details_worker
 
         video_details_worker.start(self.ctx, only_if_pending=True)

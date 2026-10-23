@@ -1,7 +1,7 @@
-"""Old-time radio shows (2026-10-01) - the tuner's show bands
+"""Old-time radio shows - the tuner's show bands
 (POLICE, SW1, SW2 and LW).
 
-James keeps his old-time radio programs in one folder (D:\\Radio), one
+Old-time radio programs live in one folder (D:\\Radio), one
 sub-folder per show: The Shadow, The Whistler, Lone Ranger, Commercials,
 WWII News and Sounds, ... about 4,900 MP3s. Each top-level folder becomes a
 `RadioShow`; every audio file under it (sub-folders included) a
@@ -18,7 +18,7 @@ drop the speaker - "in Monte Cassino" vs "BBC Godfrey Talbot in Monte
 Cassino") or the tag is just the file name again ("430905  620 Axford
 Rises to Shine").
 
-**Resume** (James's choice): each show remembers its current episode and
+**Resume**: each show remembers its current episode and
 the position in it; tuning to a show picks up there, and a finished episode
 moves the show on to the next broadcast.
 
@@ -252,11 +252,8 @@ _SPEECH_WORDS = (
     "rest of the story", "inaugural", "address",
 )
 
-#: bands that hold shows and bands that hold internet stations (James,
-#: 2026-10-01: "Let's leave FM to allow enter on URL streams, Then use the
-#: AM for the same URL streams. For the Police band, let's do the WWII NEWS
-#: & SOUNDS with ON THE AIR and AMERICAN HISTORY. On the SW1 we can move
-#: what was in the AM band, On SW2 we can move what was on the POLICE band")
+#: bands that hold shows and bands that hold internet stations (FM and AM
+#: are for URL streams; see guess_band for what goes on each show band)
 STATION_BANDS = ("fm", "am")
 SHOW_BANDS = ("police", "sw1", "sw2", "lw")
 DEFAULT_SHOW_BAND = "sw1"
@@ -288,7 +285,7 @@ def guess_band(show_name: str, kind: str) -> str:
 
 def migrate_band_layout(session: Session) -> int:
     """Move shows scanned under the first band layout to the second, once.
-    Shows keep their place relative to each other, so a show James moved by
+    Shows keep their place relative to each other, so a show moved by
     hand moves along with its old band: AM -> SW1, POLICE -> SW2, SW1 (war
     news) -> POLICE; SW2 and LW are re-guessed from the name (American
     History -> POLICE, speeches and commercials -> LW). Returns how many

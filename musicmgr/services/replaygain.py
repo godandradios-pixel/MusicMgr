@@ -1,10 +1,8 @@
-"""Volume levelling (ReplayGain) - 2026-10-01.
+"""Volume levelling (ReplayGain).
 
-James picked "volume levelling" and "gapless/crossfade" as the first two
-items off the feature list ("proceed with 1 and 2 together"). His library
-runs from 78 rpm transfers to modern chart masters, so track-to-track
-loudness swings are large. This module supplies the numbers; the player
-(`services/player.py`) applies them.
+The library runs from 78 rpm transfers to modern chart masters, so
+track-to-track loudness swings are large. This module supplies the numbers;
+the player (`services/player.py`) applies them.
 
 Where a track's gain comes from, in order:
 
@@ -17,8 +15,8 @@ Where a track's gain comes from, in order:
    no ffmpeg binary is needed on either PC) and computes ITU-R BS.1770
    integrated loudness with numpy. Stored with `rg_source = "scan"`.
 
-Decision (James, 2026-10-01): measured gains go **only into the library
-database - the music files are never written to**. Writing tags would
+Measured gains go **only into the library database - the music files are
+never written to**. Writing tags would
 change thousands of files' mtimes, and USB sync would then want to copy
 every one of them.
 
@@ -514,7 +512,7 @@ def files_needing_analysis(session) -> list[tuple[int, str]]:
 
 
 def measuring_available() -> bool:
-    """Measuring needs numpy (added to requirements.txt 2026-10-01). A
+    """Measuring needs numpy (in requirements.txt). A
     from-source install that hasn't re-run `pip install -r requirements.txt`
     can still read ReplayGain tags, just not measure."""
     return _numpy is not None
@@ -592,7 +590,7 @@ def analyze_library(
     measure: Optional[Callable[[str], Optional[Measurement]]] = None,
 ) -> AnalyzeResult:
     """Give every file still missing a level one: its ReplayGain tags if it
-    has them (a library scanned before 2026-10-01 never read them), else a
+    has them (an older scan may not have read them), else a
     measurement. Then fill album gains. Commits per file, so a cancelled run
     keeps what it finished."""
     import os

@@ -1,5 +1,5 @@
-"""Video thumbnails and years (2026-10-22 - James picked the deferred
-"Video.thumbnail_path and Video.year: nothing populates them").
+"""Video thumbnails and years (populating Video.thumbnail_path and
+Video.year).
 
 **Year**, first that answers:
 
@@ -267,8 +267,9 @@ def fill_video_details(
     """Fill in years and thumbnails for every video still missing them.
     Returns (years found, thumbnails found). Each video is written and
     committed on its own, after its slow file work, so the app's own
-    writes never wait behind this; a stop keeps what's done. A grabber that reports itself stuck (None) ends
-    the frame grabs for this run; those videos are tried again next time."""
+    writes never wait behind this; a stop keeps what's done. A grabber
+    that reports itself stuck (None) ends the frame grabs for this run;
+    those videos are tried again next time."""
     ids = list(session.scalars(
         select(Video.id).where(
             Video.is_missing.is_(False),
@@ -289,9 +290,9 @@ def fill_video_details(
         duration, tag_year, cover, suffix = (
             read_file_details(path) if path.is_file() else (None, None, None, ".jpg"))
         new_year = find_year(session, video, tag_year) if video.year is None else None
-        # 2026-10-22: no write is pending while a frame is grabbed - the
-        # first run held its write transaction through up to 25 grabs, and a
-        # chart match James saved meanwhile timed out ("database is locked")
+        # no write is pending while a frame is grabbed - holding the write
+        # transaction through many grabs makes the app's own writes time out
+        # ("database is locked")
         session.rollback()
         new_thumb: Optional[str] = None
         if needs_thumb and path.is_file():

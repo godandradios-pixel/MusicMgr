@@ -1,43 +1,34 @@
 """Search Discogs for an album cover and save it as `Release.cover_path`.
 
-2026-09-18 - James: "Ability to search for album artwork" - the same
-deliberate, requested exception to the rest of the app's "read from local
-files, no network calls" stance that lyrics_downloader.py (LRCLIB),
-artist_bio_downloader.py (Wikipedia) and lastfm_popularity.py (Last.fm)
-already carved out, for the same reason: there is no local source for
-cover art beyond whatever a file's own embedded tag already had (see
-services/scanner.py's `_save_cover`, which this module's own `_save_cover`
-below deliberately mirrors byte-for-byte in naming scheme).
+A deliberate exception to the app's "local files, no network calls" stance,
+like lyrics_downloader.py (LRCLIB), artist_bio_downloader.py (Wikipedia) and
+lastfm_popularity.py (Last.fm): there is no local source for cover art
+beyond a file's embedded tag (see services/scanner.py's `_save_cover`).
 
 Source: the Discogs database search API (`/database/search`,
-`type=release`), chosen over the iTunes Search API and MusicBrainz/Cover
-Art Archive for the same reason the Discogs data model already backs this
-whole app (`Master` -> `Release` -> `Track`, see architecture.md): far
-better coverage of vinyl, obscure, and out-of-print releases than iTunes,
-and no separate MusicBrainz-ID resolution step first. Needs a free
-personal access token from discogs.com/settings/developers - see
-`DiscogsCredentialsDialog` in ui/views/settings/, the same "Setting
-key/value table" pattern `lastfm_popularity.py` already used for its own
-API key (`API_KEY_KEY`/`get_api_key`/`set_api_key` there, mirrored here as
-`TOKEN_KEY`/`get_api_token`/`set_api_token`).
+`type=release`), chosen over iTunes and MusicBrainz/Cover Art Archive for
+better coverage of vinyl, obscure and out-of-print releases, with no
+MusicBrainz-ID resolution step (the app's data model is Discogs-shaped too,
+see architecture.md). Needs a free personal access token from
+discogs.com/settings/developers - see `DiscogsCredentialsDialog` in
+ui/views/settings/; stored like `lastfm_popularity.py`'s API key
+(`TOKEN_KEY`/`get_api_token`/`set_api_token`).
 
 Two ways in, both ending up here:
 
 - Per-release, on demand: the release page's "Search artwork" button
   (`ArtworkSearchThread` in ui/widgets/common.py) fetches candidates *and*
-  their thumbnails, then `ArtworkPickerDialog` lets James pick one before
-  anything is saved - deliberately not auto-applied, given how much a
-  wrong cover would stand out on a release he's looking at right now.
+  their thumbnails, then `ArtworkPickerDialog` lets the user pick one
+  before anything is saved - not auto-applied, since a wrong cover would
+  stand out on the release being looked at.
 - Bulk, from Settings ("Search for missing album artwork…"): every
   release still on the placeholder gets the single best (first, since
   Discogs' own search already ranks by relevance) matching result applied
-  automatically, no per-release review - the same auto-apply-and-report
-  shape `download_bios_for_artists`/`update_popularity_for_artists`
-  already use for their own bulk actions, chosen for the same reason: a
-  review step for potentially thousands of releases isn't actually a bulk
-  action any more. `releases_missing_cover` is the equivalent of
-  `artist_bio_downloader.artists_missing_bio` - only ever targets releases
-  with no cover yet, never a "redo everything" mode.
+  automatically, no per-release review (the same auto-apply-and-report
+  shape as `download_bios_for_artists`/`update_popularity_for_artists`;
+  reviewing thousands of releases isn't a bulk action).
+  `releases_missing_cover`, like `artist_bio_downloader.artists_missing_bio`,
+  only targets releases with no cover yet.
 
 A Discogs search result's `cover_image` occasionally points at Discogs'
 own "no image" placeholder (a `spacer.gif`) rather than a real photo -
@@ -286,13 +277,13 @@ def search_artwork_candidates(
 def _save_cover(data: bytes, release: Release, ext_hint: Optional[str] = None) -> Optional[str]:
     """Save a downloaded or hand-picked cover under the release's
     name-based file (`artwork\\<Album Artist> - <Title>.jpg` - see
-    services/artwork_names.py, 2026-09-24), replacing whatever picture was
+    services/artwork_names.py), replacing whatever picture was
     there - that's the point of choosing one. The replaced file keeps its
     name, so the next USB sync carries the new picture to the other PCs.
 
-    `ext_hint` (added for `apply_local_image_to_release` - a file James
-    picked from his own disk) preserves the source file's own real
-    extension when it's a recognised image type."""
+    `ext_hint` (for `apply_local_image_to_release`, a file picked from
+    disk) preserves the source file's extension when it's a recognised
+    image type."""
     if not data:
         return None
     from . import artwork_names
@@ -353,7 +344,7 @@ def search_and_fetch_thumbnails(release_id: int, limit: int = DEFAULT_LIMIT) -> 
 
 
 def apply_artwork_to_release(release_id: int, candidate: ArtworkCandidate) -> ArtworkOutcome:
-    """Save whichever candidate James picked in ArtworkPickerDialog -
+    """Save whichever candidate the user picked in ArtworkPickerDialog -
     opens its own short-lived session/commit, the same "just this one
     write" shape lyrics_downloader-adjacent single-item calls use."""
     http = requests.Session()
@@ -370,14 +361,11 @@ def apply_artwork_to_release(release_id: int, candidate: ArtworkCandidate) -> Ar
 
 
 def apply_local_image_to_release(release_id: int, file_path: str) -> ArtworkOutcome:
-    """Save an image James picked from his own filesystem as this
-    release's cover - the manual counterpart to apply_artwork_to_release,
-    for a release Discogs has nothing for (or one he'd rather point at his
-    own scan/photo than accept an online match for). Same "open a short-
-    lived session, save, commit" shape as the Discogs picker's own apply
-    step; the only real difference is the bytes come from disk instead of
-    a download, and `_save_cover` gets the file's own extension as a hint
-    so a webp/bmp/gif James picks isn't silently forced into a .jpg."""
+    """Save an image picked from the filesystem as this release's cover -
+    the manual counterpart to apply_artwork_to_release, for a release
+    Discogs has nothing for (or a preferred own scan/photo). The bytes come
+    from disk, and `_save_cover` gets the file's extension as a hint so a
+    webp/bmp/gif isn't forced into a .jpg."""
     src = Path(file_path)
     try:
         data = src.read_bytes()
@@ -413,13 +401,10 @@ def search_artwork_for_releases(
     (first, already relevance-ranked by Discogs) candidate for each one
     rather than prompting per release, the same auto-apply-and-report
     shape download_bios_for_artists/update_popularity_for_artists use for
-    their own bulk actions (see module docstring for why a per-release
-    review step doesn't scale to a real library).
+    their own bulk actions (see module docstring).
 
-    2026-09-22 - James: "add a real cancel button that stops any process
-    running within Settings". `should_stop`, checked once per release
-    before that release's own search starts - same safe-to-interrupt shape
-    the other two bulk downloaders above just adopted."""
+    `should_stop` (Settings' Cancel button) is checked once per release,
+    before that release's search starts."""
     result = ArtworkSearchResult()
     total = len(release_ids)
 

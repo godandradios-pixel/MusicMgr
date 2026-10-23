@@ -1,7 +1,6 @@
-"""Look an album up on MusicBrainz (2026-10-06, part of the tag editor).
+"""Look an album up on MusicBrainz (the tag editor's "look up this album").
 
-James: "Tag editor with MusicBrainz lookup ... plus a 'look up this album'
-button." MusicBrainz is the open music database MusicBrainz Picard tags
+MusicBrainz is the open music database MusicBrainz Picard tags
 from: no account or key needed. Another of the app's deliberate network
 exceptions, like LRCLIB (lyrics), Wikipedia (bios), Last.fm and Discogs.
 
@@ -16,7 +15,7 @@ The flow (ui/widgets/tag_editor.py drives it):
    tracks (by title, then position and length), so an album missing a
    song or holding a bonus track still lines up.
 4. `values_for(...)` - the tags for one song from its matched track.
-   Nothing is written here: the editor fills its boxes with these, James
+   Nothing is written here: the editor fills its boxes with these, the user
    looks them over, and Save writes them (services/tag_editor.py).
 5. `fetch_front_cover(id)` - the release's front cover from the Cover Art
    Archive, if it has one.
@@ -54,7 +53,7 @@ _last_call = 0.0
 
 
 class MusicBrainzError(Exception):
-    """A lookup failed. `str()` is a sentence fit to show James."""
+    """A lookup failed. `str()` is a sentence fit to show the user."""
 
 
 def _user_agent() -> str:

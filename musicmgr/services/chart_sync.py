@@ -1,6 +1,4 @@
-"""Charts through the USB drive (2026-09-30, USB sync step 3's fifth box).
-
-James: "I would like to have Charts be added to the SETTINGS Sync to USB".
+"""Charts through the USB drive (USB sync step 3's "Charts" box).
 
 Rides on library_state.sync_library_state as the "Charts" checkbox, but
 keeps its own files, because a chart can be big (the Billboard Hot 100
@@ -24,24 +22,16 @@ A chart moved to another folder or renamed shows up as one key gone and
 another new with the same ``sig``; the chart is then moved here rather
 than deleted and rebuilt.
 
-The first sync after the Source > Genre > Type reorganization
-(tools/organize_charts_by_source.py) is the awkward case: one PC has
-``Billboard/Pop/Year End``, the other still ``Pop/Billboard YE``, and with
-no base yet neither looks deleted. A chart this PC has never synced whose
-contents match one the drive has under a different name, which this PC
-has never synced either, is therefore taken to be the same chart: it's
-moved and renamed to match instead of both copies being kept.
-
-2026-10-19 - James: "how did these duplicate chart folders get into my
-Charts (Billboard YE)?" That match needed the rows to be identical, and
-they rarely are: PC1 had fixed matches by hand and imported newer
-editions, so the other PC's never-synced ``Pop/Billboard YE`` didn't
-match PC1's ``Billboard/Pop/Year End`` and both were kept (Oct 17). Now a
-chart that isn't identical is still the same chart when its place says so
-- old ``<Genre>/<Source> YE|Weekly`` against new ``<Source>/<Genre>/Year
-End|Weekly`` (see ``chart_identity``). Its editions are then combined:
-the drive's editions, plus any this PC has that the drive lacks, keeping
-this PC's hand-fixed match on a row the drive has left unfixed.
+Charts neither side has synced before may be filed differently - one PC
+on the Source > Genre > Type layout (tools/organize_charts_by_source.py,
+``Billboard/Pop/Year End``), the other still on the old one
+(``Pop/Billboard YE``) - and with no base neither looks deleted. Such a
+pair is taken to be the same chart (`_match_moves`) when its place says so
+(``chart_identity``) or its rows are identical; it's moved and renamed to
+match instead of both copies being kept. If the rows differ, the editions
+are combined (`combine_contents`): the drive's editions, plus any this PC
+has that the drive lacks, keeping this PC's hand-fixed match on a row the
+drive left unfixed.
 
 What travels per row: rank, title, artist, last week, peak, weeks on
 chart, and a match fixed by hand ("Fix match…", ``match_locked``) as the
@@ -363,8 +353,8 @@ def _fingerprints_one(db: Session, chart_id: int) -> str:
 
 
 def mark_edited(db: Session, chart_id: int) -> None:
-    """A position was added, edited or removed by hand (2026-10-03, the
-    Charts page's Add/Edit/Remove song buttons). The fingerprint above is
+    """A position was added, edited or removed by hand (the Charts page's
+    Add/Edit/Remove song buttons). The fingerprint above is
     cheap but not exact - retyping a title to one of the same length
     leaves it unchanged - so forget this chart's cached fingerprint. The
     next sync then re-hashes it, sees the new ``sig`` and stamps it

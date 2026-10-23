@@ -73,12 +73,9 @@ ROLE_NODE = Qt.UserRole + 4
 #: with the same play/pause states). ⏸ (U+23F8) sits in the "Miscellaneous
 #: Technical" block Windows hands off to the color emoji font, showing up as
 #: a small blue square instead of a flat glyph regardless of the app's own
-#: font stack - two plain ASCII "|" (U+007C) bars avoid that fallback the
-#: same way the single "‖" (U+2016) glyph used to, but being two separate
-#: characters means the gap between them is a real, adjustable space rather
-#: than baked into one fixed glyph. James: "make that ... more space between
-#: them" (2026-09-05) - a bare single space read as too tight to clearly be
-#: two bars at this button's 24px size, so it's two.
+#: font stack. Two plain ASCII "|" (U+007C) bars avoid that fallback, and
+#: the gap between them is adjustable: two spaces, since one reads as too
+#: tight at this button's 24px size.
 PAUSE_GLYPH = "|  |"
 
 #: shared with track_details_table.py's RatingDelegate (Title Details' Rating
@@ -93,10 +90,7 @@ STAR_EMPTY = "☆"
 #: indicator) - a filled vs. outline circle, continuing this codebase's
 #: plain-monochrome-Unicode icon convention rather than emoji, and echoing
 #: `services/jukebox.py`'s own "physical record behind the glass" metaphor
-#: - a filled record is on the board, an empty ring is off it (2026-09-07
-#: follow-up). Also used by track_details_table.py's `JukeboxDelegate`
-#: (Title Details' own Jukebox column) from 2026-09-07 until that column's
-#: 2026-09-13 removal - see that file's module docstring.
+#: - a filled record is on the board, an empty ring is off it.
 JUKEBOX_ON = "●"  # ●  BLACK CIRCLE
 JUKEBOX_OFF = "○"  # ○  WHITE CIRCLE
 
@@ -107,11 +101,7 @@ JUKEBOX_OFF = "○"  # ○  WHITE CIRCLE
 
 
 class WheelGuard(QObject):
-    """Keeps the mouse wheel from changing a setting while scrolling a page
-    (James, 2026-10-01: "when I scroll down the page, it gets into the
-    Crossfade block and starts scrolling the crossfade seconds instead of
-    the page. We need to make sure I don't accidently change a setting
-    while scrolling down").
+    """Keeps the mouse wheel from changing a setting while scrolling a page.
 
     A guarded drop-down, spin box or slider only takes the wheel after it's
     been clicked (has keyboard focus); until then the wheel scrolls the page
@@ -150,9 +140,7 @@ def guard_wheel(scroll: QAbstractScrollArea, root: Optional[QWidget] = None) -> 
 
 
 class CollapsibleSection(QWidget):
-    """A titled group that folds away to a single header line (James,
-    2026-10-01: "The Settings page is now way to 'busy' how can we better
-    organize the settings? Maybe collapsable groups").
+    """A titled group that folds away to a single header line.
 
     The header shows a chevron, the group's title and - while folded - a
     one-line summary of what's inside (e.g. the crossfade setting, or which
@@ -272,23 +260,14 @@ class ChipButton(QPushButton):
 
 
 class _CrumbLink(QLabel):
-    """One tappable ancestor crumb in a `Breadcrumb` trail - a `QLabel`
-    rather than a `QPushButton`, unlike an earlier version of this widget.
+    """One tappable ancestor crumb in a `Breadcrumb` trail - a `QLabel`,
+    not a `QPushButton`.
 
-    2026-09-07 follow-up - James: "can you make it so my artist breadcrumb
-    doesn't shrink." A flat, borderless `QPushButton` still picks up the
-    native platform style's own button-chrome font metrics for whatever the
-    stylesheet doesn't fully override (a well-known Qt gotcha: partially
-    styling a native widget falls back to native sizing for the rest), which
-    was rendering "Artists" visibly smaller than the plain-QLabel current
-    crumb right next to it even though both declared the exact same
-    font-size - guessing at more QSS overrides to fight that chrome would
-    only be papering over it, not removing it. A `QLabel` has no button
-    chrome to fight in the first place, so it renders at the same size as
-    `#Crumb`/`#CrumbCurrent` (this same trail's
-    separator and current-page text) by construction rather than by tuning -
-    click handling is done by hand (`mousePressEvent`), the same "clickable
-    label" idiom `StarRating` already uses elsewhere in this file.
+    A flat `QPushButton` keeps the native style's button font metrics for
+    whatever the stylesheet doesn't override, so it renders smaller than
+    the QLabel crumbs beside it at the same font-size. A `QLabel` matches
+    `#Crumb`/`#CrumbCurrent` by construction; clicks are handled by hand
+    (`mousePressEvent`), the same "clickable label" idiom as `StarRating`.
     """
 
     clicked = Signal()
@@ -372,11 +351,8 @@ class Breadcrumb(QWidget):
 class NeighborArrows(QWidget):
     """A ‹ › pair that sits right after a `Breadcrumb` and steps to the
     previous/next item at the same level - the artist page's previous/next
-    artist (2026-10-17, James: "I would like a way to click a right arrow
-    for next artist and < for a previous artist") and, the same day, the
-    album page's previous/next album ("should we do the same on the Album
-    < and >"). Same small round `#RowPageArrow` style as the cover rows'
-    own page buttons.
+    artist and the album page's previous/next album. Same small round
+    `#RowPageArrow` style as the cover rows' own page buttons.
 
     The owner decides what "previous"/"next" means and reports back
     through `set_neighbors()`; a None name greys that arrow out (first or
@@ -441,13 +417,9 @@ def placeholder_pixmap(size: int, seed_text: str = "") -> QPixmap:
 #: Grids re-render constantly while scrolling; decoding the same JPEG each
 #: time is the difference between smooth and not.
 #:
-#: 2026-10-19 - James: "when I try to replace album art it doesn't save my
-#: selection. I hit OK and nothing. Even when I select from a file, no
-#: change". It did save: a cover is stored under the album's own name, so
-#: the new picture overwrote the old file at the same path, and this cache -
-#: keyed by path - kept handing back the old picture until a restart. Each
-#: entry now remembers its file's modified time, and a changed file is
-#: loaded again (one stat per lookup).
+#: A replaced cover is written over the old file at the same path, so each
+#: entry remembers its file's modified time and a changed file is loaded
+#: again (one stat per lookup).
 _ART_CACHE: dict[tuple, tuple[QPixmap, Optional[str], Optional[int]]] = {}
 
 
@@ -465,14 +437,10 @@ def _resolve_art_path(path: Optional[str]) -> Optional[str]:
 
     `cover_path`/`image_path` are absolute paths baked in at scan/import
     time (see scanner.py's `_save_cover` and artist_images.py's `_store`),
-    computed from wherever ART_DIR/ARTIST_IMG_DIR pointed on that machine
-    at that moment. Portable mode's whole point is that you can later copy
-    the entire `data/` folder next to the exe on a different PC or drive
-    letter - when you do, those old absolute paths stop resolving even
-    though the actual file is sitting right there under the *current*
-    data folder, because only the drive/parent directory changed, not the
-    filename. Fall back to the current ART_DIR/ARTIST_IMG_DIR by filename
-    before giving up and showing a placeholder.
+    computed from wherever ART_DIR/ARTIST_IMG_DIR pointed then. A portable
+    `data/` folder copied to another PC or drive letter breaks those paths
+    though the file is still there, so fall back to the current
+    ART_DIR/ARTIST_IMG_DIR by filename before showing a placeholder.
     """
     if not path:
         return None
@@ -586,10 +554,8 @@ class CoverArt(QLabel):
 class StarRating(QWidget):
     """A row of tappable stars, mirroring Title Details' Rating column
     (`track_details_table.py`'s `RatingDelegate`) but as a standalone widget
-    rather than an item-view delegate - built for Now Playing's rating stars
-    (James: "having the same stars under the track title on Now Playing
-    would let you rate what you're hearing in the moment", 2026-09-06),
-    which sit under a track title rather than inside a table cell.
+    rather than an item-view delegate - Now Playing's rating stars, under
+    the track title.
 
     Tapping the star matching the *current* rating clears it to 0, the same
     toggle-off behavior the Rating column uses - the only way to unrate a
@@ -633,9 +599,7 @@ class StarRating(QWidget):
         return self._rating
 
     def _refresh(self) -> None:
-        # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for this
-        # whole cleanup) - filled stars, walnut brown now instead of
-        # red-orange.
+        # filled stars, walnut brown (see ui/theme.py's #Primary comment)
         for position, lbl in enumerate(self._labels, start=1):
             filled = position <= self._rating
             lbl.setText(STAR_FULL if filled else STAR_EMPTY)
@@ -647,14 +611,8 @@ class StarRating(QWidget):
 class JukeboxToggle(QWidget):
     """A tappable jukebox on/off indicator, the same "clickable label" idiom
     `StarRating` uses just above but for a single toggle glyph rather than a
-    1-5 scale. James, 2026-09-07 follow-up: "I also want to be able to
-    click to add a jukebox entry from the track detail page" - originally
-    Now Playing's counterpart to Title Details' own Jukebox column
-    (`track_details_table.py`'s `JukeboxDelegate`), reached from wherever a
-    track is actually playing instead of from the table. That column was
-    removed 2026-09-13 (see track_details_table.py's module docstring);
-    this toggle is unaffected and is now, along with the Jukebox page's own
-    "+ Add to jukebox" picker, one of only two remaining ways to add a
+    1-5 scale - on Now Playing, for the track that's playing. With the
+    Jukebox page's "+ Add to jukebox" picker, one of the two ways to add a
     track to the jukebox board.
 
     Unlike `StarRating`, which can compute and display its new value the
@@ -702,9 +660,7 @@ class JukeboxToggle(QWidget):
 
     def _refresh(self) -> None:
         self._glyph.setText(JUKEBOX_ON if self._on else JUKEBOX_OFF)
-        # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for this
-        # whole cleanup) - "on" state, walnut brown now instead of
-        # red-orange (and a better fit for a jukebox-themed toggle besides).
+        # "on" state, walnut brown (see ui/theme.py's #Primary comment)
         color = COLORS["jukebox_key_hi"] if self._on else COLORS["text_dim"]
         self._glyph.setStyleSheet(f"color: {color};")
         self._label.setStyleSheet(f"color: {color};")
@@ -730,13 +686,10 @@ class RowDelegate(QStyledItemDelegate):
         rect = option.rect
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        # 2026-09-08 follow-up - James: "have the progress bar appear on the
-        # line with the folder" (Settings' watched-folders list, while a
-        # scan is running - see SettingsView._on_progress/TouchList.
-        # update_row). A payload carrying "progress" is a live progress
-        # readout, not a selectable/hoverable row in the normal sense, so
-        # this paints instead of the ordinary selection background rather
-        # than under it - the two never made sense stacked together.
+        # A payload carrying "progress" is a live progress readout (e.g.
+        # Settings' watched-folders list during a scan - see
+        # SettingsView._on_progress/TouchList.update_row), so it paints
+        # instead of the selection background, not under it.
         progress = payload.get("progress")
         if progress is not None:
             self._paint_progress_fill(painter, rect, progress)
@@ -777,7 +730,7 @@ class RowDelegate(QStyledItemDelegate):
         """Draw one payload's [lead] Primary / Secondary ... [trail] content
         into `rect`. Split out from `paint()` so TwoColumnRowDelegate can
         reuse it twice per row - once per half - for the release page's
-        two-column track list (2026-09-06)."""
+        two-column track list."""
         pad = 16
         x = rect.left() + pad
         right = rect.right() - pad
@@ -806,15 +759,11 @@ class RowDelegate(QStyledItemDelegate):
 
         # trailing text (duration, play count) - or, when `trail2` is set,
         # a two-line trailing label mirroring the primary/secondary layout
-        # on the left (added for Charts' file-location column, 2026-09-17 -
-        # James: "list the file location in that space" - the matched
-        # file's own name on top, its full path underneath in smaller,
-        # dimmer text). Capped and elided from the left (rather than the
-        # unbounded exact-fit the single-line case always used) so a long
-        # absolute path can't blow out this column and crush the primary/
-        # secondary text down to its 60px floor - short trailing text (a
-        # duration, a play count) never reaches that cap, so this is a
-        # strict superset of the old behaviour for every existing caller.
+        # on the left (Charts' file-location column: the file's name on
+        # top, its full path underneath, smaller and dimmer). Capped and
+        # elided from the left so a long path can't crush the primary/
+        # secondary text down to its 60px floor; short trailing text never
+        # reaches the cap.
         trail = payload.get("trail")
         trail2 = payload.get("trail2")
         trail_w = 0
@@ -887,9 +836,8 @@ class RowDelegate(QStyledItemDelegate):
 class TwoColumnRowDelegate(RowDelegate):
     """Paints two payloads side by side in one row - a left track and an
     optional right track - reusing RowDelegate's own `_paint_payload()` for
-    each half. Added 2026-09-06, James: "Can we have 2 columns of track
-    listings when you select an album release. Like this image" (a 15-track
-    tracklist split 8/7 into left/right columns, aligned row-by-row). Each
+    each half - the release page's tracklist in two columns (15 tracks
+    split 8/7, aligned row-by-row). Each
     QListWidgetItem holds a `(left_payload, right_payload_or_None)` tuple in
     ROLE_PAYLOAD instead of a single payload dict; the trailing row of an
     odd-length list simply leaves its right half blank."""
@@ -996,9 +944,7 @@ class TouchList(QListWidget):
         """Patch fields into the payload of whichever row's `match_field`
         equals `match_value`, in place - no clear()/rebuild.
 
-        2026-09-08 follow-up - James: "have the progress bar appear on the
-        line with the folder" (Settings' watched-folders list). Built for
-        SettingsView's per-file scan progress, which fires every few files
+        For SettingsView's per-folder scan progress, which fires every few files
         per folder (see services/scanner.py's `idx % 5 == 0` throttling) -
         set_rows() rebuilding the whole list that often would be wasteful
         and would drop the list's own transient state (scroll position,
@@ -1052,41 +998,16 @@ class TouchTree(QTreeWidget):
         # (the count) is the last column - so without turning it off here,
         # Qt keeps forcing that column to eat up the header's leftover
         # space regardless of the Fixed resize mode/setColumnWidth call
-        # right below, which is exactly the "still way too much space
-        # given to the 4-digit count" James saw even after that call was
-        # already sizing it down: the call was having no effect at all,
-        # overridden by this default on every relayout.
+        # right below, overriding it on every relayout.
         self.header().setStretchLastSection(False)
-        # 2026-09-17 follow-up (James, on the Playlists sidebar: "trim the
-        # fixed-width count column ... it currently reserves more space
-        # than a 3-digit number needs") - this column only ever holds a
-        # plain right-aligned integer (playlist track counts, see
-        # ui/views/playlists.py's `meta=str(track_counts...)`; always
-        # empty in FolderPickerDialog's use of this same tree below, so
-        # trimming it there costs nothing). Built as an explicit
-        # QFont(family, size) from theme.py's own constants rather than
-        # read off self.font(): this runs in __init__, before the app's
-        # QSS (theme.stylesheet(), which is what actually sets this size
-        # - see its own `* { font-size: ...}` rule) has ever been
-        # polished onto this specific widget, so self.font() here would
-        # just be Qt's platform default, not the size that's actually
-        # going to render.
-        #
-        # Same-day follow-up - the first cut of this (+12px over the raw
-        # glyph width) clipped ordinary 3-digit counts ("100" -> "1...")
-        # once `setStretchLastSection(False)` above started actually
-        # honoring this width for the first time (see that flag's own
-        # comment - before it was added, no fixed width here had ever
-        # really been in effect, which is also why plain 56px used to
-        # read as "fine"). The +12 was only ever covering the glyph
-        # itself; it left out this column's OWN chrome from theme.py's
-        # shared QTreeWidget::item rules - `padding: 0 6px` (12px) plus
-        # `margin: 2px 4px` (8px), 20px of horizontal space per item that
-        # was never available for text to begin with - so the real
-        # minimum is glyph width + that 20px, plus a few px of slack for
-        # whatever this sandbox's lack of a real Qt/font backend still
-        # can't measure (font substitution among the "Inter"/"Segoe UI"/
-        # "Helvetica Neue" stack, subpixel rounding, ...).
+        # The count column only holds a right-aligned integer (playlist
+        # track counts; empty in FolderPickerDialog), so it's sized to the
+        # digits. The font is built from theme constants rather than read
+        # off self.font(): in __init__ the app's QSS (theme.stylesheet()'s
+        # `* { font-size: ...}`) hasn't been polished onto this widget yet.
+        # Width = glyphs + 20px of item chrome (theme.py's QTreeWidget::item
+        # `padding: 0 6px` + `margin: 2px 4px`) + a few px of slack for font
+        # substitution and rounding.
         count_font = QFont("Segoe UI", -1)
         count_font.setPixelSize(TOUCH["font_base"])
         glyph_w = QFontMetrics(count_font).horizontalAdvance("9999")
@@ -1218,7 +1139,7 @@ class EmptyState(QWidget):
     and left unused by this widget's two other callers (jukebox.py,
     bio_panel.py), which still only pass headline/detail.
 
-    `extra_widget` is likewise optional (2026-09-20) - added so LyricsPanel
+    `extra_widget` is likewise optional - added so LyricsPanel
     can sit its "Synced lyrics only" checkbox right under the download
     button without this widget needing to know anything about lyrics."""
 
@@ -1282,7 +1203,7 @@ class LyricsDownloadThread(QThread):
         super().__init__(parent)
         self.tracks = tracks
         self.overwrite = overwrite
-        #: False = synced-only (2026-09-20) - see lyrics_downloader.py's
+        #: False = synced-only - see lyrics_downloader.py's
         #: download_lyrics_for_track docstring for the plain_only outcome
         #: this produces instead of a silent plain-text save.
         self.save_plain = save_plain
@@ -1302,13 +1223,9 @@ class BioDownloadThread(QThread):
     the UI thread - shared by the artist page's per-artist "Fetch bio"
     button and Settings' bulk "Download artist profiles…" button (a single
     artist is just a batch of one) - the same shape as LyricsDownloadThread
-    just above, for the same reason.
-
-    2026-09-16 follow-up (James: "Add a new menu option called artist
-    profile...collect a brief writeup of the artist" - see
-    artist_bio_downloader.py's own docstring for the full story and why a
+    just above, for the same reason. See artist_bio_downloader.py for why a
     fetched bio, unlike a downloaded lyric, is a database write rather than
-    a standalone sidecar file."""
+    a sidecar file."""
 
     progress = Signal(int, int, str)
     finished_with = Signal(object)  # BioDownloadResult
@@ -1333,14 +1250,8 @@ class PopularityDownloadThread(QThread):
     the UI thread - shared by the artist page's per-artist "Fetch
     popularity" button and Settings' bulk "Update track popularity from
     Last.fm…" button (a single artist is just a batch of one) - the same
-    shape as BioDownloadThread just above, for the same reason.
-
-    2026-09-16 same-day follow-up (James, asked where "Top Tracks" ranking
-    came from and offered a choice of authoritative outside sources: "I was
-    thinking more like youtube playlist count or some authoritative
-    source" → picked Last.fm's artist top-tracks endpoint, after a first
-    pass at Spotify's equivalent hit a dead end - see
-    lastfm_popularity.py's own docstring for the full story)."""
+    shape as BioDownloadThread just above, for the same reason. See
+    lastfm_popularity.py for why the ranking comes from Last.fm."""
 
     progress = Signal(int, int, str)
     finished_with = Signal(object)  # PopularityResult
@@ -1364,11 +1275,9 @@ class ArtworkSearchThread(QThread):
     button (ui/widgets/release_panel.py). Unlike BioDownloadThread/
     PopularityDownloadThread, this never writes to the database itself:
     it only fetches candidates and their thumbnails for ArtworkPickerDialog
-    to show, so nothing is saved until James actually picks one (see
+    to show, so nothing is saved until the user picks one (see
     artwork_downloader.py's module docstring for why the per-release flow
-    is deliberately a review-then-apply step rather than an auto-apply).
-
-    2026-09-18 - James: "Ability to search for album artwork"."""
+    is deliberately a review-then-apply step rather than an auto-apply)."""
 
     finished_with = Signal(object)  # artwork_dl.ArtworkSearchOutcome
 
@@ -1413,14 +1322,9 @@ class MetadataScanThread(QThread):
     """Runs `services.metadata_health.scan_missing_metadata` off the UI
     thread - Settings' "Missing metadata" dashboard button
     (MissingMetadataDialog below). All four of that dashboard's queries run
-    in here now, not just the slow lyrics one - James, 2026-09-22, on the
-    first version of this: "I click the option and it looks like nothing is
-    happening", because the other three (fast, but not free) ran
-    synchronously in the button's own click handler before this thread -
-    and this progress bar - ever appeared. `progress` fires a `(0, 0,
-    "<phase>")` tick at the start of each of the three fast phases (nothing
-    meaningful to show a fraction of, but the phase name alone is enough to
-    prove something's happening) and real `(done, total, "")` ticks
+    in here, so progress shows from the first click. `progress` fires a
+    `(0, 0, "<phase>")` tick at the start of each of the three fast phases
+    (the phase name shows something's happening) and real `(done, total, "")` ticks
     throughout the slow lyrics phase, the same shape
     BioDownloadThread/PopularityDownloadThread above already use."""
 
@@ -1437,10 +1341,8 @@ class MetadataScanThread(QThread):
 
 class ArtistImagesImportThread(QThread):
     """Runs `services.artist_images.import_artist_images` off the UI
-    thread - Settings' "Artist images" ("Import…") button. 2026-09-22 -
-    James: "does the progress bar also work on the import of artist
-    images" (it didn't - this used to run entirely synchronously in the
-    button's own click handler). Opens its own session, same reason
+    thread, with progress - Settings' "Artist images" ("Import…") button.
+    Opens its own session, same reason
     MetadataScanThread's underlying scan does - a session isn't safe to
     share across threads (see conftest.py's own docstring on this)."""
 
@@ -1465,9 +1367,8 @@ class ArtistImagesImportThread(QThread):
 
 class VerifyFilesThread(QThread):
     """Runs "Verify files" (scanner.mark_missing_files then
-    video_scanner.mark_missing_videos) off the UI thread. 2026-09-22 -
-    James: "does the progress bar also work on ... verify files" (it
-    didn't). Two phases, same `(0, 0, "<phase>")`-then-real-progress shape
+    video_scanner.mark_missing_videos) off the UI thread, with progress.
+    Two phases, same `(0, 0, "<phase>")`-then-real-progress shape
     MetadataScanThread's own scan uses for its own multi-phase run."""
 
     progress = Signal(int, int, str)
@@ -1490,9 +1391,7 @@ class VerifyFilesThread(QThread):
 
 class RematchChartsThread(QThread):
     """Runs `services.charts.rematch_all_charts` off the UI thread -
-    Settings' "Charts" ("Re-match…") button. 2026-09-22 - James: "does the
-    progress bar also work on ... charts" (it didn't - this used to be a
-    plain loop inline in SettingsView.rematch_all)."""
+    Settings' "Charts" ("Re-match…") button, with progress."""
 
     progress = Signal(int, int, str)
     finished_with = Signal(int)  # total chart entries newly matched
@@ -1506,7 +1405,7 @@ class RematchChartsThread(QThread):
 
 
 class ArtworkPickerDialog(QDialog):
-    """Lets James pick one Discogs search result as a release's cover -
+    """Pick one Discogs search result as a release's cover -
     a touch-friendly icon grid (QListWidget in IconMode, large tiles
     rather than a text list) rather than FolderPickerDialog's TouchTree
     above, since the whole point here is judging images by eye.
@@ -1574,49 +1473,32 @@ class ArtworkPickerDialog(QDialog):
 
 
 class MissingMetadataDialog(QDialog):
-    """Settings' "Missing metadata" dashboard (James, 2026-09-22: "one
-    screen listing releases missing cover art, bio, lyrics, or popularity
-    data, instead of only surfacing that per-item") - one tab per
-    enrichment source, each a `TouchList` of what's still missing there.
+    """Settings' "Missing metadata" dashboard - one screen listing what's
+    missing cover art, bio, lyrics or popularity data, one tab per
+    enrichment source, each a `TouchList`.
 
     Takes the four already-computed row lists (see
     `services.metadata_health`) rather than querying anything itself - the
-    same "widget just renders what it's handed" convention
-    ArtworkPickerDialog/FolderPickerDialog above already follow, and the
-    reason the lyrics scan's own slow filesystem walk
-    (MetadataScanThread) happens before this dialog is even constructed,
-    not inside it.
+    same "widget just renders what it's handed" convention as
+    ArtworkPickerDialog/FolderPickerDialog, which is why the slow lyrics
+    scan (MetadataScanThread) runs before this dialog is constructed.
 
-    Deliberately browse-and-jump only, no "fix all" button of its own
-    (James, 2026-09-22: asked for and chose that scope explicitly) -
-    tapping a row closes this dialog and hands the caller a `(kind, id)`
-    pair via `picked()`, the same request/response shape
-    `FolderPickerDialog.selected_folder_id()` uses. What happens with that
-    pick - `ctx.navigateRequested`/`openArtistRequested`/
-    `openReleaseRequested`, exactly Now Playing's own tappable-artist/
-    tappable-album pattern (ui/views/nowplaying.py) - is Settings' job, not
-    this dialog's; it has no `AppContext` of its own to do that with.
+    Deliberately browse-and-jump only, no "fix all" button: tapping a row
+    closes the dialog and hands the caller a `(kind, id)` pair via
+    `picked()`, like `FolderPickerDialog.selected_folder_id()`. Navigating
+    there (`ctx.navigateRequested`/`openArtistRequested`/
+    `openReleaseRequested`) is Settings' job; this dialog has no
+    `AppContext`.
 
-    2026-09-22 same-day follow-up (James: "is there any way ... I can go
-    back and forth to fix them. Right now it's a one time click and then
-    back to running the missing metadata query again") - two additions to
-    make working through this list an actual back-and-forth loop instead
-    of a one-shot detour:
+    To make fixing items a back-and-forth loop:
 
     - `visited`, an optional `{(kind, id), ...}` set - rows already tapped
-      once (Settings remembers this across dialog reopens, see
-      SettingsView._metadata_visited) get a small "visited" trailing
-      marker, so returning here after fixing one item shows at a glance
-      which one to pick next instead of re-reading titles to recall it.
-    - A "Rescan" button alongside Close, distinct from a row pick or a
-      close by the `int` `exec()` returns - `REFRESH` below - since
-      Settings itself decides whether reopening this dialog needs fresh
-      data or can just replay whatever it already has in memory
-      (SettingsView._last_metadata_scan): tapping a row and coming back
-      shouldn't cost another full rescan (the lyrics half in particular -
-      see MetadataScanThread), but James fixing a batch of items and
-      wanting the list to reflect that needs an explicit way to ask for
-      one anyway.
+      (Settings remembers them across reopens, see
+      SettingsView._metadata_visited) get a small "visited" marker.
+    - A "Rescan" button alongside Close, reported by `exec()` returning
+      `REFRESH` below. Settings otherwise reopens the dialog from its
+      cached scan (SettingsView._last_metadata_scan), so coming back from
+      a row costs no rescan.
     """
 
     #: `exec()` return value for "Rescan" - QDialog's own Accepted/Rejected
@@ -1786,10 +1668,8 @@ class SearchBar(QWidget):
         self.edit.setPlaceholderText(placeholder)
         self.edit.setClearButtonEnabled(True)
         if password:
-            # 2026-09-16 follow-up - reused for the Last.fm credentials
-            # dialog's API-key field (ui/views/settings/); a credential
-            # typed once during setup is still worth masking on a shared
-            # touch panel the way a password field always is.
+            # also the Last.fm credentials dialog's API-key field
+            # (ui/views/settings/) - worth masking on a shared touch panel.
             self.edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.edit.textChanged.connect(self.textChanged.emit)
         self.edit.returnPressed.connect(lambda: self.submitted.emit(self.edit.text()))

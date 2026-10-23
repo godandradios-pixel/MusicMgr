@@ -101,22 +101,20 @@ class Artist(Base):
     )
     #: music videos filed under this artist - see Video.artist_id.
     videos: Mapped[list["Video"]] = relationship(back_populates="artist")
-    #: Last.fm's own ranked "top tracks" for this artist, independent of
-    #: what James owns - see ArtistTopTrack's own docstring.
+    #: Last.fm's ranked "top tracks" for this artist, independent of what
+    #: the library owns - see ArtistTopTrack.
     lastfm_top_tracks: Mapped[list["ArtistTopTrack"]] = relationship(
         back_populates="artist", cascade="all, delete-orphan"
     )
-    #: 2026-10-01 radio - when Last.fm's similar-artists list was last
+    #: radio - when Last.fm's similar-artists list was last
     #: fetched for this artist (rows in ArtistSimilar; none = Last.fm knew
     #: no similar artists). NULL = never fetched. See services/radio.py.
     similar_fetched_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
-    #: 2026-10-17 - when a Wikipedia biography lookup last *finished* for
-    #: this artist (found or not; a network error doesn't count). NULL =
-    #: never looked up. Lets Settings' "Download artist profiles…" offer a
-    #: "New artists only" run that skips everyone already tried (James:
-    #: "Is there a way I can decide to completely skip an artist profile if
-    #: one exists vs. always checking. This option takes way too long") -
-    #: see services/artist_bio_downloader.artists_missing_bio.
+    #: when a Wikipedia biography lookup last *finished* for this artist
+    #: (found or not; a network error doesn't count). NULL = never looked
+    #: up. Lets Settings' "Download artist profiles…" offer a "New artists
+    #: only" run that skips everyone already tried - see
+    #: services/artist_bio_downloader.artists_missing_bio.
     profile_checked_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
 
     __table_args__ = (UniqueConstraint("name_key", name="uq_artist_name_key"),)
@@ -161,33 +159,16 @@ class ArtistMembership(Base):
 
 class ArtistTopTrack(Base):
     """The full ranked list Last.fm returned for one `artist.getTopTracks`
-    call (see services/lastfm_popularity.py) - stored independently of
-    whether James actually owns any of these songs.
+    call (see services/lastfm_popularity.py) - stored whether or not the
+    library owns these songs, so the artist page shows the artist's real top
+    songs, including missing ones.
 
-    2026-09-16 follow-up #4 (James: "I don't want the list to be
-    constrained by only copies I own, I want the top songs to be their top
-    songs whether they are in the library or not") - replaces an earlier
-    same-day approach that stamped a popularity score onto individual
-    owned `Track` rows (a since-removed `Track.lastfm_popularity` column;
-    a database that already picked it up just keeps that column sitting
-    there unused, same as every other already-shipped column this project
-    has never bothered dropping - see db.session._ensure_columns' own
-    docstring). That approach could only ever rank songs James already
-    owned, which fell apart the moment he wanted the artist page to read
-    like YouTube Music's "Top songs" - a real chart, including songs
-    missing from the library.
-
-    Whether a given row is something James owns is worked out at *display*
-    time by matching `title` against his library
-    (ui/widgets/artist_panel.py:_refresh_top_tracks), not stored here - so
-    adding a missing top song to the library later is picked up immediately,
-    without needing another fetch.
+    Ownership is worked out at *display* time by matching `title` against
+    the library (ui/widgets/artist_panel.py:_refresh_top_tracks), so adding
+    a missing song later is picked up without another fetch.
 
     Replaced wholesale (delete this artist's rows, then reinsert) on every
-    fetch, rather than merged/diffed against whatever was there before -
-    "this is what the last fetch said", the same as the one-shot,
-    replace-everything shape `Artist.spotify_id`/`Track.spotify_popularity`
-    used for their one day of existence.
+    fetch: "this is what the last fetch said".
     """
 
     __tablename__ = "artist_top_tracks"
@@ -210,9 +191,8 @@ class ArtistTopTrack(Base):
 
 
 class ArtistTopPick(Base):
-    """One of the songs James chose to show as an artist's top songs, in
-    order (2026-10-13 - James: "I would like the ability to change most
-    popular songs. Some are repeated and I want 5 different songs"). When an
+    """One of the songs the user chose to show as an artist's top songs, in
+    order (e.g. to replace repeated entries in Last.fm's chart). When an
     artist has picks, the artist page shows them instead of Last.fm's
     chart; a Last.fm fetch never touches them (see services/top_songs.py).
     Matched to the library by title at display time, like ArtistTopTrack."""
@@ -235,8 +215,8 @@ class ArtistTopPick(Base):
 
 class ArtistSimilar(Base):
     """One entry of Last.fm's `artist.getSimilar` list for an artist in the
-    library (2026-10-01, "radio from this song" - services/radio.py). Like
-    ArtistTopTrack, stored whether or not James owns anything by the similar
+    library ("radio from this song" - services/radio.py). Like
+    ArtistTopTrack, stored whether or not the library has anything by the similar
     artist; `name_key` (matching.normalize) is matched against
     Artist.name_key when a radio batch is built, so adding that artist to
     the library later is picked up without a new fetch. Replaced wholesale
@@ -434,18 +414,9 @@ class Track(Base):
     musical_key: Mapped[Optional[str]] = mapped_column(String(20))
     comment: Mapped[Optional[str]] = mapped_column(Text)
     rating: Mapped[Optional[int]] = mapped_column(Integer)  # 0-5, user set
-    #
-    # 2026-09-16 follow-up #2 then #4 - this used to be where a Last.fm
-    # (briefly, a Spotify) popularity score got stamped per owned pressing.
-    # Removed same-day, once James wanted Top Tracks to show an artist's
-    # real top songs whether he owns them or not: a per-Track score can
-    # only ever rank what's already in the library. See ArtistTopTrack
-    # (this artist's full Last.fm chart, matched against ownership at
-    # display time instead) for what replaced it. A database that already
-    # picked up this column (or the `spotify_popularity` one before it)
-    # just keeps it sitting there unused, same as every other
-    # already-shipped column this project has never bothered dropping -
-    # see db/session.py's _ensure_columns' own docstring.
+    # popularity lives in ArtistTopTrack, not per Track. Older databases may
+    # still carry unused `lastfm_popularity`/`spotify_popularity` columns -
+    # columns are never dropped (see db/session.py's _ensure_columns).
 
     # denormalised playback counters, kept in sync by PlayHistory writes
     play_count: Mapped[int] = mapped_column(Integer, default=0, index=True)
@@ -518,8 +489,8 @@ class MediaFile(Base):
     __tablename__ = "media_files"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    #: indexed 2026-10-13 - every "this song's files" lookup used to scan
-    #: all ~100k rows (see session._ensure_indexes for existing libraries)
+    #: indexed - "this song's files" lookups are frequent on ~100k rows
+    #: (see session._ensure_indexes for existing libraries)
     track_id: Mapped[int] = mapped_column(
         ForeignKey("tracks.id", ondelete="CASCADE"), index=True
     )
@@ -533,7 +504,7 @@ class MediaFile(Base):
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
     is_missing: Mapped[bool] = mapped_column(Boolean, default=False)
     last_seen_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
-    #: 2026-10-01 volume levelling - ReplayGain values in dB relative to
+    #: volume levelling - ReplayGain values in dB relative to
     #: -18 LUFS, and sample peaks (1.0 = full scale). Read from the file's
     #: own tags by the scanner, or measured by MusicMgr and stored only here
     #: (the file is never written). `rg_source`: "tag" | "scan" | "failed".
@@ -568,7 +539,7 @@ class PlaylistFolder(Base):
     parent_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("playlist_folders.id", ondelete="SET NULL"), index=True
     )
-    #: 2026-09-26 - an image James picked for this folder's tile on the
+    #: an image the user picked for this folder's tile on the
     #: Playlists page (services/playlists.py:set_folder_image). NULL = show
     #: a mosaic built from the covers of the playlists inside it instead.
     cover_path: Mapped[Optional[str]] = mapped_column(Text)
@@ -593,10 +564,8 @@ class Playlist(Base):
     KIND_SMART = "smart"
     KIND_CHART = "chart"  # frozen snapshot built from a ChartIssue
     KIND_PLAYBACK = "playback"  # derived from this library's play history -
-    # the built-in "Most Played" playlists (added 2026-08-30, moved here from
-    # the Charts domain: a most-played list is something you queue up and
-    # play, which is what a playlist is for, rather than a ranked-with-
-    # editions leaderboard like an imported Billboard chart)
+    # the built-in "Most Played" playlists (a playlist, not a Chart: it's
+    # something you queue and play, not a ranked-with-editions leaderboard)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(300), index=True)
@@ -608,7 +577,7 @@ class Playlist(Base):
     rules: Mapped[Optional[str]] = mapped_column(Text)
     #: stable identifier for the built-in playback playlists, same purpose
     #: and shape as Chart.slug - lets `ensure_builtin_playback_playlists`
-    #: find/re-seed them by identity even if James renames one, and lets the
+    #: find/re-seed them by identity even if the user renames one, and lets the
     #: UI refuse to delete one outright (it would just reappear). NULL for
     #: every manual/smart/chart-snapshot playlist.
     slug: Mapped[Optional[str]] = mapped_column(String(120), unique=True, index=True)
@@ -648,16 +617,12 @@ class PlaylistItem(Base):
 
 
 # --------------------------------------------------------------------------
-# jukebox - the physical 45-selector favorites board (2026-09-06). James:
-# "I would like the user to be able to select an artist and add 2 songs per
-# title strip. This becomes a favorites capability. Any record with 5 star
-# rating gets added to a title strip." One JukeboxSlot is one numbered
-# physical "record" behind the glass, holding up to two tracks - the A side
+# jukebox - the physical 45-selector favorites board. One JukeboxSlot is one
+# numbered "record" behind the glass, holding up to two tracks - the A side
 # and the B side - by a single artist. See services/jukebox.py for how slots
-# get filled (both the automatic 5-star rule and the manual artist/song
-# picker funnel through the same `place_track`, which is why every slot's
-# two sides always share one `artist_id`) and ui/widgets/jukebox_strip.py for
-# how a slot is drawn and played.
+# get filled (every path funnels through `place_track`, which is why a
+# slot's two sides always share one `artist_id`) and
+# ui/widgets/jukebox_strip.py for how a slot is drawn and played.
 # --------------------------------------------------------------------------
 
 
@@ -667,9 +632,7 @@ class JukeboxSlot(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     #: the printed number on the title strip - "A7"/"B7" both refer to this
     #: same slot, just its two sides. Assigned once at creation and never
-    #: reused or renumbered, even after the slot empties out and is deleted -
-    #: exactly like a real jukebox operator not bothering to renumber the
-    #: whole machine just because record #7 got pulled.
+    #: reused or renumbered, even after the slot empties out and is deleted.
     slot_number: Mapped[int] = mapped_column(Integer, unique=True, index=True)
     #: both sides of one physical 45 are by the same act, same as a real
     #: record - see `place_track`'s "same artist" matching.
@@ -682,25 +645,14 @@ class JukeboxSlot(Base):
     side_b_track_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("tracks.id", ondelete="SET NULL")
     )
-    #: which board chip this card is filed under (2026-09-07 follow-up,
-    #: James: "I would like the jukebox page to have a chip of 5 genres:
-    #: Classic Rock, Country, Pop, Hairbands, Rock. Then have the pages of
-    #: the cards where you can select the location and what genre page a
-    #: track will be organized by"). Purely a board-organization tag, not
-    #: derived from the track's own tagged Genre(s) - "Hairbands" doesn't
-    #: correspond to real genre metadata any file actually carries. No
-    #: longer a fixed set of five (then ten) - as of a 2026-09-22
-    #: follow-up (James: "Ability to add, delete and rename a genre"), the
-    #: valid chip names themselves are a per-install, user-editable,
-    #: persisted list (`services/jukebox.py:get_jukebox_genres`); this
-    #: column just holds whichever one a given card is tagged with, same
-    #: as always. The default literal here must stay in sync with
-    #: services/jukebox.py:DEFAULT_JUKEBOX_GENRE - this module can't import
-    #: that constant without a circular import (services already imports from
-    #: db.models). If "Rock" itself is ever renamed or deleted, this default
-    #: is still a harmless starting label for a slot created with no explicit
-    #: genre - see `delete_genre`'s own reassignment fallback for what
-    #: happens to a *card* left pointing at a genre that no longer exists.
+    #: which board chip this card is filed under - a board-organization tag,
+    #: not derived from the track's tagged Genre(s) ("Hairbands" isn't real
+    #: genre metadata). Valid names are a user-editable, persisted list
+    #: (`services/jukebox.py:get_jukebox_genres`). The default literal must
+    #: stay in sync with services/jukebox.py:DEFAULT_JUKEBOX_GENRE - this
+    #: module can't import it without a circular import. If "Rock" is renamed
+    #: or deleted, see `delete_genre`'s reassignment fallback for cards left
+    #: pointing at a missing genre.
     genre: Mapped[str] = mapped_column(String(40), default="Rock", server_default="Rock")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 
@@ -746,13 +698,9 @@ class ChartFolder(Base):
 
 class Chart(Base):
     """A named chart series, e.g. 'Billboard Hot 100' - a ranked, dated
-    leaderboard imported from CSV. The built-in "Most Played" lists used to
-    live here as a KIND_PLAYBACK chart (added 2026-08-30) but moved to
-    Playlist.KIND_PLAYBACK the same day: they're something you queue up and
-    play, not a ranked-with-editions leaderboard, so Playlists fits the
-    concept better than Charts does. `kind` is kept as a column (rather than
-    dropped back to a single implicit kind) in case a second external-vs-
-    derived distinction shows up here again."""
+    leaderboard imported from CSV. (The built-in "Most Played" lists are
+    Playlist.KIND_PLAYBACK, not charts.) `kind` is kept as a column in case
+    an external-vs-derived distinction is needed again."""
 
     __tablename__ = "charts"
 
@@ -859,26 +807,16 @@ class PlayEvent(Base):
 
 class WatchedFolder(Base):
     """A folder MusicMgr watches for media - scanned for *both* music and
-    videos whenever "Scan now" runs (2026-09-07 follow-up, James: "I really
-    don't need a different block for audio and video. Just one block to add
-    folders and then one option to scan all those folders").
+    videos whenever "Scan now" runs.
 
-    Replaces the earlier `LibraryFolder`/`VideoFolder` split, which kept
-    audio and video watch-lists as two separate tables scanned by two
-    separate buttons - James found that split itself to be the problem, not
-    something worth preserving. Every `WatchedFolder` is now scanned by
-    *both* `services.scanner.scan_folder` and `services.video_scanner.
-    scan_video_folder`; each simply finds whatever files it understands and
-    ignores the rest (an audio-only folder yields nothing to the video
-    scanner, and vice versa), which costs one extra directory walk for the
-    file type that isn't there but buys one unified list instead of two.
+    Every `WatchedFolder` is scanned by both `services.scanner.scan_folder`
+    and `services.video_scanner.scan_video_folder`; each finds the files it
+    understands and ignores the rest. That costs an extra directory walk but
+    gives one unified folder list.
 
-    A one-time migration (`db.session._migrate_watched_folders`) copies any
-    `library_folders`/`video_folders` rows an upgraded database already has
-    into this table the first time it's opened after upgrading; those two
-    old tables are left in place afterward, unused, rather than dropped -
-    consistent with this project's "no Alembic, additive-only" migration
-    approach (see db/session.py)."""
+    A one-time migration (`db.session._migrate_watched_folders`) copies rows
+    from the old `library_folders`/`video_folders` tables, which are left in
+    place unused - migrations are additive-only (see db/session.py)."""
 
     __tablename__ = "watched_folders"
 
@@ -929,7 +867,7 @@ class Video(Base):
     mtime: Mapped[Optional[float]] = mapped_column(Float)
     codec: Mapped[Optional[str]] = mapped_column(String(40))
     #: a picture beside the video, its embedded cover, or a grabbed frame -
-    #: see services/video_details.py (2026-10-22). NULL = not tried yet,
+    #: see services/video_details.py. NULL = not tried yet,
     #: "" = tried, nothing found. A video without one falls back to its
     #: artist's picture / the generated placeholder tile.
     thumbnail_path: Mapped[Optional[str]] = mapped_column(Text)
@@ -946,7 +884,7 @@ class Video(Base):
 
 
 # --------------------------------------------------------------------------
-# radio tuner (2026-10-01) - old-time radio shows and internet stations.
+# radio tuner - old-time radio shows and internet stations.
 # Deliberately separate from the music library: an episode of The Shadow is
 # not a Track, never shows up in artists/albums/charts/radio, and plays
 # through the same PlayerController as a QueueItem of kind "episode".
@@ -1036,7 +974,7 @@ class RadioStation(Base):
     #: band of the dial: FM or AM (the station bands), as RadioShow.band
     band: Mapped[str] = mapped_column(String(10), default="fm")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
-    #: 2026-10-03: set when the stream stopped answering (after one retry),
+    #: set when the stream stopped answering (after one retry),
     #: cleared when it plays again - the dial fades the name and the Radio
     #: page offers to look up a new link. This PC only, not USB-synced.
     off_air_since: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
@@ -1050,7 +988,7 @@ class Setting(Base):
 
 
 # --------------------------------------------------------------------------
-# USB sync (2026-09-23)
+# USB sync
 # --------------------------------------------------------------------------
 
 

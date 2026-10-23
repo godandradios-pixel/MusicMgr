@@ -1,8 +1,6 @@
-"""Skins and finishes (2026-10-13).
-
-James: "I would like the ability for the users to change 'skins'. Right
-now it's the brown pallete" - then: "apply at restart. and the jukebox,
-radio and turntable can also get their own finish choice."
+"""Skins and finishes - user-selectable colour schemes, applied at
+restart. The jukebox, radio and turntable each get their own finish
+choice.
 
 Two kinds of choice, both saved per PC in `data/appearance.json` and read
 once, when ui/theme.py is first imported - before any screen is built or
@@ -42,8 +40,8 @@ log = logging.getLogger(__name__)
 # `accent` / `accent_hi` / `accent_pressed` are the skin's highlight colour
 # in three strengths: the fill of a primary button, a brighter tone for
 # small text and outlines on the dark background, and the pressed state.
-# (The app has used the names jukebox_key / _hi / _pressed for these since
-# the brown retint of 2026-09-13; theme.py keeps those as the same values.)
+# (The app also calls these jukebox_key / _hi / _pressed; theme.py keeps
+# those as the same values.)
 
 SKINS: dict[str, dict] = {
     "walnut": {

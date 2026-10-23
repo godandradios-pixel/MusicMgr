@@ -1,12 +1,9 @@
 """Chart import (Billboard-style CSV).
 
-The built-in "Most Played" playback charts that used to live in this module
-(Chart.KIND_PLAYBACK, `playback_chart`/`playback_movers`/
-`ensure_builtin_playback_charts`) moved to services/playlists.py on
-2026-08-30 as Playlist.KIND_PLAYBACK - a most-played list is something you
-queue up and play, which fits the Playlists domain's shape better than an
-imported, dated, ranked chart. See playlists.py's "playback playlists"
-section for the current home of that logic.
+The built-in "Most Played" playback charts live in services/playlists.py
+as Playlist.KIND_PLAYBACK (see its "playback playlists" section) - a
+most-played list is something you queue and play, not an imported, dated,
+ranked chart.
 
 CSV import is deliberately forgiving about column names, because chart data
 scraped from different places never agrees on headers:
@@ -73,7 +70,7 @@ _DATE_FORMATS = ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d", "%b %d, %Y", "%
 @dataclass
 class ImportResult:
     chart_name: str = ""
-    chart_id: Optional[int] = None  # added 2026-08-30, so the caller can
+    chart_id: Optional[int] = None  # so the caller can
     # auto-expand this chart in the Charts table right after import
     issues: int = 0
     entries: int = 0
@@ -100,11 +97,9 @@ def parse_date(value: str) -> Optional[dt.date]:
         return None
     if re.fullmatch(r"\d{4}", value):
         # a bare year, not a full date - the "year" alias exists for
-        # Billboard-style Year-End charts (one row per year+rank rather than
-        # per week+rank). Filed as December 31st of that year so each year
-        # still gets its own distinct, correctly-ordered ChartIssue - see
-        # test_year_end_charts_get_one_issue_per_year for the bug this fixes
-        # (every row used to collapse into a single issue dated "today").
+        # Billboard-style Year-End charts (one row per year+rank). Filed as
+        # December 31st so each year gets its own correctly-ordered
+        # ChartIssue (see test_year_end_charts_get_one_issue_per_year).
         year = int(value)
         return dt.date(year, 12, 31)
     for fmt in _DATE_FORMATS:
@@ -146,14 +141,11 @@ def _int_or_none(value) -> Optional[int]:
 def _read_csv_text(path: Path) -> str:
     """Billboard-style chart CSVs come from all over. Most are clean UTF-8,
     but some (Kaggle-style Windows exports, for one) carry stray
-    Windows-1252 bytes - a curly quote, an accented letter in a title like
-    "Mas" - that aren't valid UTF-8 at all. Try UTF-8 first, since it's the
-    common case and rejects cleanly on anything that isn't; fall back to
-    cp1252, which accepts any byte, rather than the previous plain
-    `errors="replace"` silently turning a real character into a U+FFFD
-    replacement mark. That matters here specifically because a mangled
-    character in a title can be the difference between match_entry finding
-    the track in the library and not."""
+    Windows-1252 bytes that aren't valid UTF-8. Try UTF-8 first, since it
+    rejects cleanly on anything that isn't; fall back to cp1252, which
+    accepts any byte, rather than `errors="replace"` turning a real
+    character into U+FFFD - a mangled title character can stop match_entry
+    finding the track."""
     raw = path.read_bytes()
     try:
         return raw.decode("utf-8-sig")
@@ -170,10 +162,10 @@ def _candidate_tracks(session: Session, title_key: str) -> list[tuple[int, str, 
     """Cheap prefilter: tracks with exactly this title, then tracks sharing
     a leading token with it.
 
-    2026-10-01 - the exact-title tracks come first and always: the token
-    search is capped at 400 rows, and a common first word ("baby" is in
-    over a thousand of James's titles) could crowd out the very record the
-    chart entry is about."""
+    The exact-title tracks always come first: the token search is capped
+    at 400 rows, and a common first word ("baby" is in over a thousand
+    titles in a real library) could crowd out the very record the chart
+    entry is about."""
     cols = select(Track.id, Track.title, Track.artist_display)
     rows: dict[int, tuple[int, str, str]] = {}
     if title_key:
@@ -196,10 +188,9 @@ def match_entry(session: Session, entry: ChartEntry, threshold: float = 0.72) ->
     candidates = _candidate_tracks(session, entry.title_key)
     hit = best_match(entry.title, entry.artist_name, candidates, threshold)
     if hit:
-        # 2026-10-13 - James: playlists and charts should "point to the
-        # album songs" rather than the Billboard/Hot Country/Oldies chart
-        # folders: when the match is a chart-folder copy and the library
-        # has the same song on an album, use that (services/duplicates.py)
+        # playlists and charts point to the album copy of a song rather
+        # than a chart-folder copy (Billboard/Hot Country/Oldies) when the
+        # library has both (services/duplicates.py)
         from .duplicates import album_copy_for
 
         entry.track_id, entry.match_score = album_copy_for(session, hit[0]) or hit[0], hit[1]
@@ -217,20 +208,15 @@ def rematch_chart(
 ) -> int:
     """Re-run matching for a whole chart, e.g. after adding music.
 
-    `progress` (2026-09-22, part of rematch_all_charts below) is called
-    `(done, total, "")` per entry - fuzzy title/artist matching
-    (`matching.best_match`) against every candidate track is real CPU work
-    per entry, not a cheap lookup, so a chart with a few thousand entries
-    is worth reporting progress through rather than leaving Settings
-    looking frozen for however long that takes.
+    `progress` is called `(done, total, "")` per entry - fuzzy matching
+    (`matching.best_match`) is real CPU work per entry, so a chart with
+    thousands of entries reports progress rather than leaving Settings
+    looking frozen.
 
-    2026-09-22 same-day follow-up (James: "add a real cancel button that
-    stops any process running within Settings") - `should_stop`, checked
-    once per entry, `break`s rather than raising. Nothing here commits at
-    all (the whole multi-chart run shares rematch_all_charts' one
-    session_scope, committed once at the very end), so a break just means
-    fewer entries get re-matched this run - never a rollback, since there
-    was never anything to roll back mid-loop in the first place."""
+    `should_stop`, checked once per entry, `break`s rather than raising.
+    Nothing here commits (rematch_all_charts' one session_scope commits at
+    the end), so a break just means fewer entries get re-matched this run -
+    there's nothing to roll back."""
     stmt = (
         select(ChartEntry)
         .join(ChartIssue, ChartEntry.issue_id == ChartIssue.id)
@@ -242,10 +228,8 @@ def rematch_chart(
 
 def rematch_issue(session: Session, issue_id: int, threshold: float = 0.72) -> tuple[int, int]:
     """Re-match just one edition's rows - what the Charts page's "Re-match
-    library" button does since 2026-09-30 (James: "I'm on a specific
-    [edition], what [does] Re-match Library do on this page? It's taking a
-    very long time" - it was re-matching all ~355,000 rows of the whole
-    Weekly chart, on the UI thread). Returns (matched, rows)."""
+    library" button does (re-matching a whole weekly chart's ~355,000 rows
+    on the UI thread took far too long). Returns (matched, rows)."""
     entries = session.scalars(select(ChartEntry).where(ChartEntry.issue_id == issue_id)).all()
     return _rematch_entries(session, entries, threshold), len(entries)
 
@@ -257,10 +241,10 @@ def _rematch_entries(
     progress: Optional[Callable[[int, int, str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
-    """Match each row, but each distinct title + artist only once
-    (2026-09-30): a weekly chart repeats the same song for weeks - the
-    Hot 100 has ~30,000 distinct songs across ~355,000 rows - so a whole-
-    chart re-match does roughly a tenth of the fuzzy lookups it used to."""
+    """Match each row, but each distinct title + artist only once: a weekly
+    chart repeats the same song for weeks - the Hot 100 has ~30,000
+    distinct songs across ~355,000 rows - so this does roughly a tenth of
+    the fuzzy lookups."""
     matched = 0
     seen: dict[tuple[str, str], tuple[Optional[int], Optional[float]]] = {}
     total = len(entries)
@@ -288,24 +272,19 @@ def rematch_all_charts(
     progress: Optional[Callable[[int, int, str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
-    """Settings' bulk "Re-match" button (2026-09-22, part of "does the
-    progress bar also work on ... the other settings options that scan" -
-    this used to be a plain loop inline in SettingsView.rematch_all,
-    entirely on the UI thread with no feedback at all). Opens its own
-    session, same as every other bulk action's service-level entry point
-    (download_bios_for_artists/update_popularity_for_artists/
-    search_artwork_for_releases) - this one just needed pulling out of
-    SettingsView to have a session of its own to give a background thread.
+    """Settings' bulk "Re-match" button, run on a background thread. Opens
+    its own session, same as every other bulk action's service-level entry
+    point (download_bios_for_artists/update_popularity_for_artists/
+    search_artwork_for_releases).
 
     `progress` gets one `(0, 0, "<chart name>")` tick per chart (mirroring
-    metadata_health.scan_missing_metadata's own phase-announcement shape),
-    then rematch_chart's own real per-entry ticks for that chart.
+    metadata_health.scan_missing_metadata's phase-announcement shape),
+    then rematch_chart's own per-entry ticks for that chart.
 
-    2026-09-22 same-day follow-up ("add a real cancel button...") -
     `should_stop` is threaded into every rematch_chart call (so a stop
     lands within a few dozen entries even mid-chart) and re-checked here
-    between charts too, so a chart not yet started when Cancel is pressed
-    is never begun at all."""
+    between charts, so a chart not yet started when Cancel is pressed is
+    never begun."""
     with session_scope() as session:
         chart_ids_and_names = [
             (chart.id, chart.name)
@@ -328,22 +307,16 @@ def rematch_all_charts(
 def search_tracks_for_match(
     session: Session, artist_query: str = "", track_query: str = "", limit: int = 50
 ) -> list[dict]:
-    """Search-by-artist-and-track for the "Fix match..." dialog
+    """Search by artist and track for the "Fix match..." dialog
     (ui/views/charts.py:MatchTrackDialog) - manually picking which library
-    track a chart entry matches, for the fraction `match_entry`'s fuzzy
-    title/artist matching gets wrong or leaves unmatched entirely. Same
-    two-box ANDed search `services/jukebox.py:search_addable_tracks`
-    established for its own picker dialog (either box can be blank on its
-    own, both blank returns nothing), but plain library search rather than
-    that function's jukebox-specific one: no album-artist resolution and no
-    exclusion of anything, since a chart legitimately charts
-    various-artists compilation tracks and the same track can already be
-    matched elsewhere (on another chart, or another entry being fixed) -
-    every track in the library is a valid pick here.
+    track a chart entry matches. Same two-box ANDed search as
+    `services/jukebox.py:search_addable_tracks` (either box can be blank,
+    both blank returns nothing), but a plain library search: no
+    album-artist resolution and no exclusions, since a chart legitimately
+    includes compilation tracks and a track can be matched elsewhere too.
 
     Returns plain dicts (`track_id`, `title`, `artist_name`, `album`), not
-    ORM rows, same reasoning as `search_addable_tracks`: the dialog only
-    ever reads these fields, and the session may close before it does."""
+    ORM rows, since the session may close before the dialog does."""
     artist_query = artist_query.strip()
     track_query = track_query.strip()
     if not artist_query and not track_query:
@@ -372,14 +345,11 @@ def search_tracks_for_match(
 def set_entry_track(session: Session, entry_id: int, track_id: Optional[int]) -> ChartEntry:
     """Manually assign (or clear) which library track a chart entry
     matches - the "Fix match..." dialog's write side. Assigning a track
-    locks the match (`match_locked = True`, `match_score = 1.0`, per the
-    model's own "1.0 when confirmed by hand" comment on that column) so a
-    later "Re-match library" pass never silently overwrites a manual pick -
-    `match_entry` (and therefore `rematch_chart`) already skips any entry
-    with `match_locked` set. Clearing it (`track_id=None`) unlocks the entry
-    rather than leaving it permanently stuck unmatched: the person is
-    saying "not this one," not "never try again," so it goes back into the
-    pool the next automatic re-match considers."""
+    locks the match (`match_locked = True`, `match_score = 1.0`) so a later
+    "Re-match library" never overwrites a manual pick (`match_entry` skips
+    locked entries). Clearing it (`track_id=None`) unlocks the entry - "not
+    this one", not "never try again" - so automatic re-matching considers
+    it again."""
     entry = session.get(ChartEntry, entry_id)
     if entry is None:
         raise ValueError(f"no chart entry {entry_id}")
@@ -394,11 +364,9 @@ def set_entry_track(session: Session, entry_id: int, track_id: Optional[int]) ->
 # editing positions by hand
 # --------------------------------------------------------------------------
 #
-# 2026-10-03, James: "I would like to be able to edit my Chart songs. For
-# example, the 2003 Billboard Top Country chart is missing #40 Trace Adkins
-# - Then They Do." Imported CSVs are sometimes short a row or carry a typo;
-# these let the Charts page fix one edition in place instead of editing the
-# CSV and re-importing it.
+# Imported CSVs are sometimes short a row or carry a typo; these let the
+# Charts page fix one edition in place instead of editing the CSV and
+# re-importing it.
 
 
 class RankTaken(ValueError):
@@ -551,13 +519,10 @@ def delete_entry(session: Session, entry_id: int) -> None:
     _after_edit(session, issue_id)
 
 
-#: Setting.key row this module owns - see db.models.Setting and
-#: services/lastfm_popularity.py's API_KEY_KEY for the pattern this follows
-#: (a generic key/value table, not QSettings - this app has no config file
-#: outside the library database). Remembers where "Browse for file..." in
-#: MatchTrackDialog last found something, so re-opening it for the next
-#: unmatched entry doesn't always dump James back at his home folder when
-#: he's clearly working through one album/box-set folder at a time.
+#: Setting.key row this module owns (the generic key/value table - see
+#: db.models.Setting; this app has no config file outside the library
+#: database). Remembers where "Browse for file..." in MatchTrackDialog last
+#: found something, so the next unmatched entry starts in the same folder.
 LAST_BROWSE_DIR_KEY = "charts_last_browse_dir"
 
 
@@ -601,9 +566,9 @@ def get_or_create_chart(
 
 def create_chart(session: Session, name: str, folder_id: Optional[int] = None) -> Chart:
     """A brand-new chart, always - never an existing one that happens to
-    share the name's slug (2026-09-30: importing "Billboard Hot 100" weekly
-    rows landed in the Pop Year End chart, whose slug was
-    `billboard-hot-100`). The slug gets -2, -3... when taken."""
+    share the name's slug (e.g. weekly "Billboard Hot 100" rows must not
+    land in a Year End chart slugged `billboard-hot-100`). The slug gets
+    -2, -3... when taken."""
     base = slugify(name)[:110] or "chart"
     slug, n = base, 2
     while session.scalar(select(Chart.id).where(Chart.slug == slug)) is not None:
@@ -627,9 +592,9 @@ def import_chart_csv(
 ) -> ImportResult:
     """Import one CSV file. Rows are grouped into issues by their date column.
 
-    `chart_id` (2026-09-30) adds the rows to that exact chart - what the
-    Charts page's "Import chart CSV…" now does with the selected chart -
-    instead of finding a chart by `chart_name`'s slug.
+    `chart_id` adds the rows to that exact chart - what the Charts page's
+    "Import chart CSV…" does with the selected chart - instead of finding a
+    chart by `chart_name`'s slug.
 
     `folder_id` only matters the first time a chart with this name is seen -
     re-importing into an existing chart never moves it out of wherever it was
@@ -743,17 +708,12 @@ def list_charts(session: Session) -> list[Chart]:
 
 
 def remove_orphaned_playback_charts(session: Session) -> int:
-    """One-time cleanup for a database that predates this feature's move to
-    Playlists (2026-08-30): the built-in "Most Played" charts used to live
-    here as Chart rows with kind "playback" (the constant they were seeded
-    under, Chart.KIND_PLAYBACK, no longer exists on this model). Those rows
-    never had real ChartIssue/ChartEntry data behind them - playback charts
-    were computed on the fly, not stored - so an existing database is left
-    with three empty, pointless entries in the Charts tree ("0 editions",
-    nothing to show) once nothing in this module knows how to render them
-    specially any more. Deletes any chart still carrying that old kind
-    string; a no-op once run, so it's cheap to leave on every startup next
-    to backfill_album_artists/merge_compilation_duplicates."""
+    """One-time cleanup for databases from before the "Most Played" charts
+    moved to Playlists: deletes any Chart row still carrying the old
+    "playback" kind. Those rows never had ChartIssue/ChartEntry data behind
+    them (they were computed on the fly), so they'd show as empty entries
+    in the Charts tree. A no-op once run, so it's cheap to leave on every
+    startup next to backfill_album_artists/merge_compilation_duplicates."""
     stale = list(session.scalars(select(Chart).where(Chart.kind == "playback")))
     for chart in stale:
         session.delete(chart)
@@ -786,11 +746,9 @@ def delete_chart(session: Session, chart_id: int) -> None:
 
 def delete_issue(session: Session, issue_id: int) -> None:
     """Deletes one edition of a chart (and its entries, cascade) without
-    touching the rest of the chart's history - the fix for a single
-    mis-dated or mis-imported edition (see parse_date's bare-year handling
-    for a case that used to produce exactly one of these) without having to
-    delete and re-import the whole chart. Owned tracks are untouched, same
-    as delete_chart."""
+    touching the rest of the chart's history - for a single mis-dated or
+    mis-imported edition. Owned tracks are untouched, same as
+    delete_chart."""
     issue = session.get(ChartIssue, issue_id)
     if issue is not None:
         session.delete(issue)
@@ -908,17 +866,11 @@ def issue_entries(session: Session, issue_id: int) -> list[ChartEntry]:
             select(ChartEntry)
             .options(
                 selectinload(ChartEntry.track).selectinload(Track.files),
-                # 2026-09-17 fix - missing here (unlike
-                # services/playlists.py:playlist_tracks, which already
-                # loads both) meant `entry.track.release` was never
-                # fetched while the session was still open. ChartsView
-                # keeps its matched tracks around in `self._tracks` past
-                # the `with self.ctx.session()` block that loaded them
-                # (for "Play owned"/"Queue"/"Save as playlist"), and by
-                # then the session is closed - so `QueueItem.from_track`'s
-                # `track.release` access blew up with
-                # sqlalchemy.orm.exc.DetachedInstanceError the moment
-                # anyone actually tried to play a chart.
+                # also load each track's release while the session is
+                # open: ChartsView keeps matched tracks past its session
+                # block (for "Play owned"/"Queue"/"Save as playlist"), and
+                # `QueueItem.from_track` reads `track.release` -
+                # otherwise DetachedInstanceError.
                 selectinload(ChartEntry.track).selectinload(Track.release),
             )
             .where(ChartEntry.issue_id == issue_id)
@@ -929,17 +881,12 @@ def issue_entries(session: Session, issue_id: int) -> list[ChartEntry]:
 
 def chart_shape(chart: Chart) -> str:
     """"Year End" for a chart whose editions are one-per-calendar-year (the
-    shape a bare-year import produces - see parse_date's bare-year handling),
-    "Weekly" for anything with more than one edition in some year (an
-    ordinary dated CSV), "—" for a chart with no editions imported yet.
-    Purely a display label for the Charts table (added 2026-08-30) - it
-    drives no matching logic of its own; match_by_comment_tag.py's own
-    year-to-issue lookup already assumes one issue per year regardless of
-    what this returns. Written without the hyphen ("Year End", not
-    "Year-End") since 2026-08-30 - James named it that way asking for the
-    Type column to stop truncating it, and the two spellings measure to the
-    same pixel width in the app's font, so there was no reason to keep the
-    hyphen once the truncation itself was fixed (see ChartTable.COL_TYPE)."""
+    shape a bare-year import produces - see parse_date), "Weekly" for
+    anything with more than one edition in some year, "—" for a chart with
+    no editions yet. Purely a display label for the Charts table's Type
+    column (see ChartTable.COL_TYPE); it drives no matching logic -
+    match_by_comment_tag.py's year-to-issue lookup assumes one issue per
+    year regardless."""
     issues = chart.issues
     if not issues:
         return "—"
@@ -952,7 +899,7 @@ def chart_shape(chart: Chart) -> str:
 def chart_coverage(session: Session, chart_id: int) -> tuple[int, int]:
     """(owned, total) aggregated across every edition of a chart - the
     all-editions counterpart to issue_coverage's single-edition figure.
-    Backs the Charts table's Coverage column (added 2026-08-30)."""
+    Backs the Charts table's Coverage column."""
     total = (
         session.scalar(
             select(func.count(ChartEntry.id))
@@ -992,12 +939,10 @@ def issue_coverage(session: Session, issue_id: int) -> tuple[int, int]:
 
 
 def chart_edition_count(session: Session, chart_id: int) -> int:
-    """A cheap COUNT of a chart's editions - added 2026-08-30 alongside the
-    Charts table nesting editions as tree children (see chart_table.py):
-    used only to decide whether a chart gets an expand chevron, so it's
-    worth a real COUNT query rather than `len(chart.issues)`, which would
-    load every ChartIssue row just to measure the collection - James's real
-    Billboard Hot 100 Weekly chart alone has 3,393 of them."""
+    """A cheap COUNT of a chart's editions, used only to decide whether a
+    chart gets an expand chevron in the Charts table (see chart_table.py).
+    A real COUNT query rather than `len(chart.issues)`, which would load
+    every ChartIssue row - a Hot 100 Weekly chart has thousands."""
     return (
         session.scalar(
             select(func.count(ChartIssue.id)).where(ChartIssue.chart_id == chart_id)
@@ -1008,13 +953,11 @@ def chart_edition_count(session: Session, chart_id: int) -> int:
 
 def issue_coverage_by_chart(session: Session, chart_id: int) -> dict[int, tuple[int, int]]:
     """(owned, total) per issue_id, for every issue under one chart, each in
-    a single grouped query - the batch counterpart to issue_coverage's
-    one-issue-at-a-time version. Added 2026-08-30 so expanding a chart in
-    the Charts table (which nests editions as tree children, populated only
-    on demand - see chart_table.py's ChartTable `issues_provider`) costs two
-    queries regardless of how many editions that chart has, rather than one
-    issue_coverage call per edition: James's real Billboard Hot 100 Weekly
-    chart has 3,393 of them, so the per-issue version was never viable here."""
+    a single grouped query - the batch counterpart to issue_coverage. So
+    expanding a chart in the Charts table (editions populated on demand -
+    see chart_table.py's ChartTable `issues_provider`) costs two queries
+    regardless of how many editions it has (thousands, for a Hot 100
+    Weekly chart)."""
     totals: dict[int, int] = {
         issue_id: total
         for issue_id, total in session.execute(
@@ -1060,10 +1003,10 @@ def snapshot_to_playlist(
 ) -> Playlist:
     """Freeze a chart week as a real playlist you can queue.
 
-    `folder_id` (2026-10-01) files the playlist in that playlist folder
-    (None = top level) - the Charts page's "Save as playlist" asks James
-    where to put it. Left out, a new playlist lands at the top level and an
-    existing one stays where it is."""
+    `folder_id` files the playlist in that playlist folder (None = top
+    level) - the Charts page's "Save as playlist" asks where to put it.
+    Left out, a new playlist lands at the top level and an existing one
+    stays where it is."""
     issue = session.get(ChartIssue, issue_id)
     if issue is None:
         raise ValueError(f"no chart issue {issue_id}")

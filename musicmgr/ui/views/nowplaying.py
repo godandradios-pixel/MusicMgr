@@ -1,45 +1,22 @@
 """Full-screen Now Playing: big artwork, track metadata/chart history, synced
 lyrics, and the live queue. Transport (play/pause, prev/next, skip) and the
-seek bar both live solely on the persistent PlayerBar at the bottom of the
-window now - see ui/widgets/player_bar.py. The decorative pulse visualizer
-that used to sit under the artwork here moved there too (2026-09-06, James:
-"I don't like that visualizer anymore. I was thinking more of a full one
-across the bottom" - see ui/widgets/visualizer.py's module docstring), so
-this view no longer builds or drives one of its own.
+seek bar live only on the persistent PlayerBar at the bottom of the window
+(ui/widgets/player_bar.py), as does the pulse visualizer.
 
-2026-09-06 follow-up (James: Title Details double-click-to-play going
-"Not Responding"/"basically unusable"): `_refresh_queue()` used to rebuild
-this view's queue `TouchList` - a real widget item per queued track - on
-every single `PlayerController.trackChanged`/`queueChanged` signal, with
-no regard for whether Now Playing was even the page on screen. Title
-Details' "queue what's on screen" rule (LibraryView._play_from_details)
-can hand the player a queue of the *entire* library - tens of thousands of
-tracks - so that rebuild ran and froze the whole app even while sitting on
-a completely different screen. Profiling a 98,044-item queue found this
-rebuild alone cost ~2.5 seconds of synchronous UI-thread work. Fixed with
-`_is_current_page()`, which checks `QStackedWidget.currentWidget()` rather
-than `QWidget.isVisible()` (isVisible() needs the whole top-level window
-shown, which this project's headless tests never do) and gates
-`_refresh_queue()`'s expensive body behind it; `refresh()` (called by
-MainWindow.navigate() the moment the person actually arrives here) still
-rebuilds it correctly on arrival.
+The queue `TouchList` holds a real widget item per queued track, and Title
+Details' "queue what's on screen" rule (LibraryView._play_from_details) can
+queue the entire library - so `_refresh_queue()` only does its expensive
+rebuild while this is the current page (`_is_current_page()`); `refresh()`,
+called by MainWindow.navigate() on arrival, rebuilds it then.
 
-2026-09-07 follow-up (James: "I also want to be able to click to add a
-jukebox entry from the track detail page"): a `JukeboxToggle` sits right
-next to the rating stars now (mirroring Title Details' own Jukebox column,
-which existed from 2026-09-07 to 2026-09-13 - see track_details_table.py's
-module docstring for that column's whole arc, including its removal) so
-the track that's actually playing can be loaded onto or pulled off the
-board without leaving this page - see `_on_jukebox_toggled` and
-`JukeboxToggle`'s own docstring in widgets/common.py. This toggle is
-unaffected by that column's removal; Now Playing is now one of only two
-remaining places to add a track to the jukebox board (the other being the
-Jukebox page's own "+ Add to jukebox" picker).
+A `JukeboxToggle` next to the rating stars loads the playing track onto
+(or off) the jukebox board without leaving this page - see
+`_on_jukebox_toggled`. This and the Jukebox page's "+ Add to jukebox"
+picker are the two places a track is added to the board.
 
-2026-09-28 (James: "a lyric editor ... where it can determine the
-timestamps and place in the LRC file"): the Lyrics pane's "Edit lyrics" /
-"Sync lyrics myself" buttons open `LyricsEditorDialog` for the playing
-track - see `_open_lyrics_editor` and ui/widgets/lyrics_editor.py."""
+The Lyrics pane's "Edit lyrics" / "Sync lyrics myself" buttons open
+`LyricsEditorDialog` for the playing track - see `_open_lyrics_editor` and
+ui/widgets/lyrics_editor.py."""
 
 from __future__ import annotations
 
@@ -105,15 +82,11 @@ class NowPlayingView(BaseView):
         self._current_artist_id: Optional[int] = None
         self._current_release_id: Optional[int] = None
 
-        # Now Playing is a top-level nav destination like Library/Videos/
-        # Charts/Playlists, but unlike those it's usually reached mid-browse
-        # (tapping the persistent bar's "Now Playing"/Queue button) rather
-        # than as somewhere you meant to go - so, unlike its siblings, it
-        # needs a way back to whatever you were actually doing.
-        # ctx.nowPlayingBackRequested is a generic request rather than this
-        # view choosing a target itself: it doesn't know what was on screen
-        # before it, only MainWindow does (see MainWindow.navigate/
-        # _go_back_from_nowplaying).
+        # Now Playing is usually reached mid-browse (the persistent bar's
+        # "Now Playing"/Queue button), so unlike its sibling nav pages it
+        # needs a way back. ctx.nowPlayingBackRequested is a generic request:
+        # only MainWindow knows what was on screen before (see
+        # MainWindow.navigate/_go_back_from_nowplaying).
         back = self.back_button = TouchButton("‹ Back")
         back.clicked.connect(ctx.nowPlayingBackRequested.emit)
         self.header.insertWidget(0, back)
@@ -126,25 +99,22 @@ class NowPlayingView(BaseView):
         left.setSpacing(14)
         left.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         # tappable, jumping to the album's page - the same mousePressEvent-
-        # override trick player_bar.py's own cover thumbnail already uses to
-        # reach Now Playing (James: "tapping 'Arrival' could jump to the
-        # album - quick way to browse from what's playing", 2026-09-06)
+        # override trick player_bar.py's own cover thumbnail uses to reach
+        # Now Playing
         self.cover = CoverArt(340)
         self.cover.setCursor(Qt.PointingHandCursor)
         self.cover.mousePressEvent = lambda e: (
             self._open_current_release() if e.button() == Qt.LeftButton else None)
-        # 2026-09-30 - James: "any way we can incorporate a visual that shows
-        # the album cover, spinning as if on a record player from the top
-        # view?" The turntable (ui/widgets/turntable.py) is shown instead of
+        # The turntable (ui/widgets/turntable.py) - the album cover spinning
+        # on a record player - is shown instead of
         # the flat cover by default; right-click or hold either one to
         # switch, remembered per PC. A tap still opens the album.
         self.turntable = Turntable(340)
         self.turntable.setCursor(Qt.PointingHandCursor)
         self.turntable.mousePressEvent = lambda e: (
             self._open_current_release() if e.button() == Qt.LeftButton else None)
-        # 2026-10-19 - James: "when I'm listening to a radio station, it
-        # doesn't make sense that a record spins. It's a station not an
-        # album." A station or an old-time radio show shows a tabletop radio
+        # A spinning record makes no sense for a station, so a station or
+        # an old-time radio show shows a tabletop radio
         # instead (ui/widgets/table_radio.py); tapping it opens the Radio
         # page. The same right-click switches it to the flat logo.
         self.table_radio = TableRadio(340)
@@ -171,9 +141,8 @@ class NowPlayingView(BaseView):
         self.track_title.setStyleSheet("font-size: 26px; font-weight: 700;")
         self.track_title.setAlignment(Qt.AlignCenter)
         self.track_title.setWordWrap(True)
-        # tappable - jumps to the artist's page (James: "tapping the artist
-        # name could jump to their page", 2026-09-06). Same trick as
-        # self.cover above.
+        # tappable - jumps to the artist's page. Same trick as self.cover
+        # above.
         self.track_artist = QLabel("")
         self.track_artist.setStyleSheet(f"font-size: 17px; color: {COLORS['text_dim']};")
         self.track_artist.setAlignment(Qt.AlignCenter)
@@ -190,26 +159,19 @@ class NowPlayingView(BaseView):
         for w in (self.track_title, self.track_artist, self.track_album):
             left.addWidget(w)
 
-        # rating stars for the track that's actually playing - Title Details
-        # already has a tappable Rating column (track_details_table.py's
-        # RatingDelegate); James asked for "the same stars under the track
-        # title on Now Playing" so a track can be rated in the moment
-        # without going to find it in the library (2026-09-06).
+        # rating stars for the playing track - the same stars as Title
+        # Details' Rating column (track_details_table.py's RatingDelegate),
+        # so a track can be rated in the moment.
         self.rating_stars = StarRating(star_size=26)
         self.rating_stars.ratingChanged.connect(self._on_rating_changed)
-        # jukebox toggle alongside the stars (2026-09-07 follow-up, James:
-        # "I also want to be able to click to add a jukebox entry from the
-        # track detail page") - Title Details' own Jukebox column's
-        # counterpart here, so the track that's actually playing can be
+        # jukebox toggle alongside the stars, so the playing track can be
         # loaded onto (or pulled off) the board without leaving this page.
         self.jukebox_toggle = JukeboxToggle()
         self.jukebox_toggle.toggled.connect(self._on_jukebox_toggled)
-        # a plain QWidget container (not addLayout directly) so the whole
-        # row can be centered as one unit the same way `self.rating_stars`
-        # alone used to be (`addWidget(..., 0, Qt.AlignHCenter)`) - both
-        # StarRating and JukeboxToggle size to their own content, and
-        # centering the container keeps them hugging each other in the
-        # middle rather than spreading across left's full column width.
+        # a plain QWidget container (not addLayout directly) so the row is
+        # centered as one unit: StarRating and JukeboxToggle size to their
+        # content, and centering the container keeps them together in the
+        # middle rather than spread across the column.
         rating_container = QWidget()
         rating_row = QHBoxLayout(rating_container)
         rating_row.setContentsMargins(0, 0, 0, 0)
@@ -224,15 +186,10 @@ class NowPlayingView(BaseView):
         self.chart_note.setWordWrap(True)
         left.addWidget(self.chart_note)
 
-        # Transport (play/pause, prev/next, -15s/+30s) and the seek bar both
-        # live only on the persistent PlayerBar at the bottom of the window
-        # now - having a second copy of either here just duplicated it on
-        # screen.
-        # the artwork column doesn't need as much width as the queue/lyrics
-        # column - its content (a 340px cover, centered text) stays the same
-        # size regardless of how wide its column is, so giving it the bigger
-        # share just left a lot of dead margin on either side of it while the
-        # lyrics/queue list was squeezed narrower than it needed
+        # no transport here - it lives only on the PlayerBar.
+        # the artwork column's content (a 340px cover, centered text) is a
+        # fixed size, so it gets the smaller share and the queue/lyrics
+        # column the larger
         row.addLayout(left, 2)
 
         # ---- right: queue / lyrics ----
@@ -245,7 +202,7 @@ class NowPlayingView(BaseView):
         queue_chip = ChipButton("Up next")
         queue_chip.setChecked(True)
         lyrics_chip = ChipButton("Lyrics")
-        # 2026-10-19: while a station plays, the only tab - what it's played
+        # while a station plays, the only tab - what it's played
         # since it was tuned in (services/heard.py)
         heard_chip = ChipButton("Heard on this station")
         heard_chip.setVisible(False)
@@ -255,14 +212,10 @@ class NowPlayingView(BaseView):
             qhead.addWidget(chip)
         qhead.addStretch(1)
 
-        # the tab row's right end is context-sensitive (2026-09-29, James:
-        # "Make the right side of the tab row context-sensitive and move
-        # Clear queue into same context slot") - "Edit lyrics" used to take
-        # a whole row of its own above the lyric list, and "Clear queue"
-        # sat up in the page header, both only meaningful for one tab. A
-        # stack swapped by the same chips as `right_panes` below shows the
-        # queue's track count/duration and "Clear queue" on Up next, and
-        # "Edit lyrics" on Lyrics.
+        # the tab row's right end is context-sensitive: a stack swapped by
+        # the same chips as `right_panes` below shows the queue's track
+        # count/duration and "Clear queue" on Up next, and "Edit lyrics" on
+        # Lyrics.
         self.right_actions = QStackedWidget()
 
         queue_actions = QWidget()
@@ -271,7 +224,7 @@ class NowPlayingView(BaseView):
         qa_layout.setSpacing(12)
         self.queue_meta = dim_label("")
         qa_layout.addWidget(self.queue_meta)
-        # 2026-10-01 radio (services/radio.py): an endless mix seeded by
+        # radio (services/radio.py): an endless mix seeded by
         # whatever's playing; the same button stops it
         self.radio_button = make_compact(TouchButton("Start radio"))
         self.radio_button.setToolTip("Keep playing songs like this one")
@@ -304,12 +257,10 @@ class NowPlayingView(BaseView):
 
         qhead.addWidget(self.right_actions)
 
-        # 2026-10-03 - James: "Can Up next, Lyrics and Edit lyrics pills be
-        # moved up to give us more space for the lyrics?" The chip row sits
-        # in the page header now, beside "‹ Back" / "Now Playing", instead
-        # of taking a row of its own above the queue/lyrics. The header is
-        # rebuilt as two columns with the same 2:3 split and 28px gap as
-        # `row` below, so the chips still line up over the right column.
+        # The chip row sits in the page header, beside "‹ Back" / "Now
+        # Playing", leaving more room for the lyrics. The header is two
+        # columns with the same 2:3 split and 28px gap as `row` below, so
+        # the chips line up over the right column.
         self.right_head = QWidget()
         self.right_head.setLayout(qhead)
         qhead.setContentsMargins(0, 0, 0, 0)
@@ -431,8 +382,8 @@ class NowPlayingView(BaseView):
         self.jukebox_toggle.setVisible(item.is_track)
         self._set_radio_mode(not item.is_track, item)
         if not item.is_track:
-            # an old-time radio episode or an internet station (2026-10-01
-            # tuner): no chart history, rating, jukebox, lyrics or library
+            # an old-time radio episode or an internet station: no chart
+            # history, rating, jukebox, lyrics or library
             # pages behind it
             self.chart_note.setText(self._now_on_air())
             self._current_artist_id = None
@@ -459,12 +410,10 @@ class NowPlayingView(BaseView):
         self, track_id: int
     ) -> tuple[str, int, bool, Optional[int], Optional[int]]:
         """One query for everything `_on_track_changed` needs beyond what
-        `QueueItem` already carries: the chart-history note (formerly
-        `_chart_history`), the track's rating (mirroring Title Details'
-        Rating column - see `StarRating`), whether it's currently on the
-        jukebox board (mirroring Title Details' Jukebox column - see
-        `JukeboxToggle`, 2026-09-07 follow-up), and the artist/release ids
-        the tappable artist name/album art jump to (2026-09-06). Returns
+        `QueueItem` already carries: the chart-history note, the track's
+        rating (see `StarRating`), whether it's on the jukebox board (see
+        `JukeboxToggle`), and the artist/release ids the tappable artist
+        name/album art jump to. Returns
         `(chart_note, rating, on_jukebox, artist_id, release_id)`; rating is
         0, on_jukebox is False, and the ids are None wherever there's
         nothing to show/jump to."""
@@ -501,7 +450,7 @@ class NowPlayingView(BaseView):
 
     def _open_current_artist(self) -> None:
         """The tappable artist name/portrait - jumps straight to that
-        artist's Library page (James, 2026-09-06). A no-op when nothing's
+        artist's Library page. A no-op when nothing's
         playing or the release has no artist on file (album_artist_id can be
         NULL - see db/models.py:Release.album_artist_id)."""
         if self._current_artist_id is None:
@@ -511,7 +460,7 @@ class NowPlayingView(BaseView):
 
     def _open_current_release(self) -> None:
         """The tappable album art/title - jumps straight to that release's
-        Library page (James, 2026-09-06). A no-op when nothing's playing."""
+        Library page. A no-op when nothing's playing."""
         if self._current_release_id is None:
             return
         self.ctx.navigateRequested.emit("library")
@@ -531,14 +480,10 @@ class NowPlayingView(BaseView):
         """`self.jukebox_toggle` tapped - mirrors Title Details' own
         Jukebox column (`LibraryView._on_jukebox_toggle_requested`) so a
         track toggled from here or there always agrees. Unlike
-        `_on_rating_changed`, this can't be fire-and-forget.
-
-        2026-09-13 follow-up (see `LibraryView._on_jukebox_toggle_requested`'s
-        own docstring for the full story): turning OFF is still an
-        immediate flip, but turning ON now opens the standard
+        `_on_rating_changed`, this can't be fire-and-forget: turning OFF is
+        an immediate flip, but turning ON opens the standard
         `JukeboxPickerDialog` pre-filled and pre-checked for the current
-        track, instead of silently filing it under the default genre via
-        `services/library.py:toggle_jukebox_membership`."""
+        track (see `LibraryView._on_jukebox_toggle_requested`)."""
         if self._current_track_id is None:
             return
         track_id = self._current_track_id
@@ -558,11 +503,9 @@ class NowPlayingView(BaseView):
                 if artist_id is not None and release is not None and release.album_artist is not None
                 else ""
             )
-            # fetched inside this same session (2026-09-22 follow-up - see
-            # services/jukebox.py's module docstring) since the genre list
-            # is now a persisted, user-editable `Setting` row rather than
-            # a static import-time constant, and the session above is
-            # already closed by the time the dialog below is constructed.
+            # fetched inside this session: the genre list is a user-editable
+            # `Setting` row (see services/jukebox.py), and the session is
+            # closed by the time the dialog below is constructed.
             genres = jukebox_svc.get_jukebox_genres(session)
         if artist_id is None:
             self.ctx.notify("This track has no album artist to file a jukebox slot under")
@@ -657,7 +600,7 @@ class NowPlayingView(BaseView):
         self.turntable.set_playing(playing)
         self.table_radio.set_playing(playing and self._on_radio_item)
 
-    # -- radio stations and shows (2026-10-19) ------------------------------
+    # -- radio stations and shows -------------------------------------------
 
     def _set_radio_mode(self, on: bool, item: Optional[QueueItem]) -> None:
         """A station or show is playing (on) or not: the radio in place of
@@ -762,17 +705,10 @@ class NowPlayingView(BaseView):
 
     def _refresh_queue(self) -> None:
         if not self._is_current_page():
-            # 2026-09-06 follow-up (James: Title Details going "Not
-            # Responding"/"basically unusable" double-clicking a track):
-            # this ran unconditionally on every trackChanged/queueChanged,
-            # rebuilding a real QListWidgetItem per queued track - fine at
-            # a few dozen, but Title Details' own "queue what's on screen"
-            # rule (see LibraryView._play_from_details) can hand the
-            # player a queue of the *entire* library, tens of thousands of
-            # items, and this view doesn't even need to be the one on
-            # screen for that rebuild to run and freeze the whole app.
-            # refresh() (called by MainWindow.navigate() the moment the
-            # person actually arrives here) rebuilds it properly then.
+            # off-screen: skip the rebuild (a QListWidgetItem per queued
+            # track, and the queue can be the whole library - see the
+            # module docstring). refresh(), called by MainWindow.navigate()
+            # on arrival, rebuilds it then.
             return
         player = self.ctx.player
         current_index = player.current_index
@@ -783,9 +719,8 @@ class NowPlayingView(BaseView):
             playing = idx == current_index
             rows.append({
                 "lead": "♪" if playing else str(idx + 1),
-                # 2026-09-13 follow-up (see ui/theme.py's #Primary comment
-                # for this whole cleanup) - the currently-playing row's
-                # highlight, walnut brown now instead of red-orange.
+                # the currently-playing row's highlight, walnut brown (see
+                # ui/theme.py's #Primary comment).
                 "lead_color": COLORS["jukebox_key_hi"] if playing else COLORS["text_dim"],
                 "primary": item.title,
                 "secondary": " · ".join(
@@ -809,7 +744,7 @@ class NowPlayingView(BaseView):
             self.queue_list.setCurrentRow(current_index)
             self.queue_list.scrollToItem(self.queue_list.item(current_index))
 
-    # -- radio (2026-10-01) -------------------------------------------------
+    # -- radio ---------------------------------------------------------------
 
     def _toggle_radio(self) -> None:
         radio = self.ctx.radio

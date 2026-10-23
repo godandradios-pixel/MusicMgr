@@ -45,55 +45,32 @@ from ..theme import make_compact
 #: how many of an artist's most-played tracks the Top Tracks list shows -
 #: a taste, not a full sortable browse (Title Details already does that,
 #: with its own Artist/Album group-by - see track_details_table.py).
-#: 2026-10-22 - James: "Expand to include a top 8 instead of just 5".
 TOP_TRACKS_COUNT = 8
 
-#: 2026-09-16 same-day follow-up #6 (James, looking at the list on an
-#: ultrawide window: "too much blank space tween the song title on the
-#: left and the number of plays to the far right") - RowDelegate always
-#: right-anchors its "trail" text (see common.py's _paint_payload) to
-#: whatever width the row itself is, and with the Profile toggle gone
-#: (follow-up #5) this list's container now stretches to the page's full
-#: width like everything else here - on a wide window that left a huge gap
-#: between a short title and the playcount. Capping the whole section's
-#: width keeps the row's own text close to its trail regardless of how
-#: wide the window is, the same fix in spirit as TwoColumnRowDelegate's
-#: (release page's own two-column tracklist) reason for existing, just a
-#: plain width cap rather than a second column - this is a top-5 taste
-#: list, not a full tracklist with enough rows to fill two columns.
+#: RowDelegate right-anchors its "trail" text (see common.py's
+#: _paint_payload) to the row's full width, so on a wide window a short
+#: title sits far from its playcount. Capping the section's width keeps
+#: them close - a plain cap rather than TwoColumnRowDelegate's second
+#: column, since this is a short taste list.
 TOP_TRACKS_MAX_WIDTH = 780
 
 
 def _normalize_title(text: str) -> str:
-    """Same qualifier-stripping shape as lastfm_popularity._normalize
-    (duplicated rather than imported - see that module's own note on
-    lyrics_downloader._normalize/artist_bio_downloader._clean_extract for
-    why every one of these keeps its own copy) - deliberately identical so
-    "the same song" always groups the same way here as it did when
-    Track.lastfm_popularity got stamped onto every pressing that matched
-    one Last.fm title (see services/lastfm_popularity.py). Used by
-    _refresh_top_tracks below to collapse every pressing of one song (the
-    studio cut, a live recording, a remaster, an anniversary reissue) into
-    a single Top Tracks row - 2026-09-16 follow-up #3, James: "the same
-    song shows up as the most popular with a different release", after
-    Rush's "Tom Sawyer" filled 4 of the 5 Top Tracks slots (studio,
-    40th-anniversary remaster, a live recording, and a compilation cut all
-    separately "matched" the same Last.fm entry and all carried the same
-    score)."""
-    # 2026-10-13 - now services/top_songs.song_key, which also folds
-    # " - Remastered 2011" / "[Live at ...]" / "(Single Version)" style
-    # versions together (James: "Some are repeated and I want 5 different
-    # songs, even if that song has a variation")
+    """Same qualifier-stripping shape as lastfm_popularity._normalize, so
+    "the same song" groups the same way here as when Track.lastfm_popularity
+    was stamped onto every matching pressing. Used by _refresh_top_tracks to
+    collapse every pressing of one song (studio cut, live recording,
+    remaster, reissue) into a single Top Tracks row. Delegates to
+    services/top_songs.song_key, which also folds " - Remastered 2011" /
+    "[Live at ...]" / "(Single Version)" style versions together."""
     return top_songs.song_key(text)
 
 
 @dataclass
 class _TopTrackRow:
-    """One row of the Top Tracks list - 2026-09-16 follow-up #4 (James: "I
-    don't want the list to be constrained by only copies I own, I want the
-    top songs to be their top songs whether they are in the library or
-    not"). A plain `Track` couldn't represent this list on its own anymore
-    once it could include a song James doesn't have a file for at all."""
+    """One row of the Top Tracks list. The list shows the artist's top
+    songs whether or not they're in the library, so a row may have no
+    `Track` at all."""
 
     title: str
     #: the owned pressing chosen to represent this song (see
@@ -108,9 +85,8 @@ class _TopTrackRow:
 
 
 def _format_playcount(n: Optional[int]) -> str:
-    """"177M plays" - the same shorthand YouTube Music's own "Top songs"
-    uses (the screenshot James pointed to when asking for this), rather
-    than a bare "177000000"."""
+    """"177M plays" - the same shorthand YouTube Music's "Top songs" uses,
+    rather than a bare "177000000"."""
     if not n:
         return ""
     if n >= 1_000_000_000:
@@ -123,152 +99,32 @@ def _format_playcount(n: Optional[int]) -> str:
 
 
 class ArtistDetailPanel(QWidget):
-    """One artist: their discography as a folding cover row, plus
-    play-everything actions.
+    """One artist: header card (portrait, breadcrumb, name, stats, play
+    actions), biography, Top Tracks, and their discography as a folding
+    cover row. Music videos live in their own "Videos" section (NAV_ITEMS in
+    ui/app.py), not here.
 
-    Used to also list the artist's music videos underneath the release row
-    (Video.artist_id - see services/video_scanner.py); removed 2026-09-15
-    (James: "Remove the video list...introduce a Video sidebar menu
-    option") in favor of a real "Videos" section of its own (see
-    NAV_ITEMS in ui/app.py) rather than duplicating a per-artist listing
-    here.
+    Layout: a two-column top section - header card over the biography on
+    the left, Top Tracks on the right - then the release coverflow, full
+    width. The whole page sits in a vertical QScrollArea. See the comments
+    in __init__ for the details.
 
-    2026-09-16 follow-up - James, looking at a mocked-up "artist profile"
-    page (photo + a short writeup + a top-tracks list): "Add a new menu
-    option called artist profile. Display the artist image, collect a
-    brief writeup of the artist and include a list of their top tracks in
-    order of popularity." Asked where this should live, James chose here
-    (this existing page already has the artist's photo and name) over a
-    new sidebar section, so this class grew two more sections below the
-    release row rather than a new one being built: the biography
-    (`BioPanel`, see its own docstring for where the writeup comes from)
-    and a short Top Tracks list, below.
-
-    Same-day follow-up - James: "Don't automatically show the profile in
-    the scroll window. Force a click on a [Profile] button similar to the
-    Play Everything, Shuffle, add to Queue." The first cut always showed
-    both new sections, which just made an already-tall page taller by
-    default; `self.profile_section` (biography + top tracks together)
-    started hidden and only opened once a "Profile" button next to Play
-    everything/Shuffle/Add to queue was tapped. Undone by same-day
-    follow-up #5 below - both the button and the hidden-by-default section
-    are gone now.
-
-    Same-day follow-up #2 - James, asked where "Top Tracks" popularity came
-    from: "I was thinking more like youtube playlist count or some
-    authoritative source" → first picked Spotify's own artist top-tracks
-    endpoint, then switched to Last.fm's equivalent that same day once
-    Spotify's Developer Mode turned out to need a Premium subscription and
-    (worse) had dropped that endpoint entirely for a personal app's tier -
-    see services/lastfm_popularity.py's module docstring for the full
-    story. `_refresh_top_tracks` now ranks by `Track.lastfm_popularity`
-    (see services/lastfm_popularity.py) when at least one of this
-    artist's tracks has it set, falling back to the original play_count-
-    based ranking otherwise - so a library with no Last.fm API key
-    configured (or one Last.fm simply doesn't recognize) behaves exactly
-    as before. A "Fetch popularity" button next to the Top Tracks label
-    runs the same lookup as Settings' bulk "Update track popularity from
-    Last.fm…", just for this one artist - mirrors BioPanel's own per-
-    artist "Fetch bio" button sitting alongside Settings' bulk profile
-    download.
-
-    Same-day follow-up #3 - James, on Rush's Top Tracks: "the same song
-    shows up as the most popular with a different release. Can't we do
-    something like Youtube music has" (a screenshot of YouTube Music's
-    "Top songs" showed one row per song, not one per pressing). Every
-    pressing of "Tom Sawyer" James owns (the studio cut, a 40th-anniversary
-    remaster, a live recording, a compilation cut) matched the same
-    Last.fm entry and so carried the same lastfm_popularity, and the old
-    ranking treated all four as separate contenders - four of the five Top
-    Tracks slots went to one song. `_refresh_top_tracks` now groups every
-    pressing of the same song together first (see _normalize_title above)
-    and ranks one representative per song, so the list reads as five
-    different songs, the way YouTube Music's does - not five rows that
-    might repeat.
-
-    Same-day follow-up #4 - James: "I don't want the list to be
-    constrained by only copies I own, I want the top songs to be their top
-    songs whether they are in the library or not." Until now, Last.fm's
-    top tracks only ever got used to *rank* songs James already owned -
-    the artist page could never show a song missing from his library at
-    all. `services.lastfm_popularity.update_popularity_for_artist` now
-    stores the whole fetched chart as `ArtistTopTrack` rows (see that
-    model's docstring), independent of ownership; `_refresh_top_tracks`
-    shows that chart directly once it exists, matching each entry against
-    the library at *display* time (`_owned_by_title`) rather than at fetch
-    time, so a song bought later is recognized the next time this page
-    opens, no new fetch needed. A row for a song James doesn't own reads
-    "Not in your library" and can't be tapped to play (see
-    _play_top_track) - everything else about it (rank, title, Last.fm's
-    own playcount) still shows.
-
-    Same-day follow-up #5 - James: "I really don't like that Profile
-    button and hide profile. If you remove that profile button can you
-    display their bio to the right of what's there on the left (picture,
-    name, Play Everything, Shuffle, etc." Removes the "Profile"/"Hide
-    profile" toggle button and the `self.profile_section` it showed/hid
-    entirely - the biography (`self.bio`) no longer has any open/closed
-    state of its own. It's now laid out directly inside the header card,
-    to the right of the portrait/name/stats/actions column, taking
-    whatever width that column doesn't use - always visible, the same as
-    the release row below it. Top Tracks, which used to share
-    `profile_section` with the biography, keeps its own always-visible
-    section below the release row (it never had a hide/show state to give
-    up - only the biography did, via the button this follow-up removes).
-    Superseded by follow-up #7 below - the biography didn't stay in the
-    header card for long.
-
-    Same-day follow-up #6 - James, looking at the Top Tracks list on an
-    ultrawide window: "too much blank space tween the song title on the
-    left and the number of plays to the far right." With the Profile
-    toggle gone (follow-up #5), Top Tracks' own section stretched to the
-    page's full width like everything else here, and RowDelegate always
-    right-anchors its "trail" text (the playcount) to wherever that row's
-    own right edge lands - so a short title on a wide window left a huge
-    gap before the playcount. `TOP_TRACKS_MAX_WIDTH` (above) caps that
-    section's width so the row's own text stays close to its trail
-    regardless of window width - the same fix in spirit as
-    TwoColumnRowDelegate's reason for existing (release_panel.py's own
-    two-column tracklist), just a plain width cap rather than a second
-    column, since this is a top-5 taste list, not a full tracklist with
-    enough rows to fill two columns of its own.
-
-    Same-day follow-up #7 - James, still not happy with follow-up #5's
-    header-card biography: "create a two column bottom with artist profile
-    in first column and then the top songs in a 2nd column to the right of
-    the profile." This is also what fixed a real layout bug follow-up #5
-    had introduced: crammed into the header card's QHBoxLayout alongside
-    the portrait/name/stats/actions, the biography's height was capped to
-    whatever that row's *sizeHint* negotiated (driven by the short
-    name/stats/actions column, since BioPanel's own internal QScrollArea
-    always reports a small sizeHint regardless of how much text is inside
-    it) - so a real multi-line biography simply overflowed past the
-    header card's bottom edge and drew on top of the release row
-    underneath instead of pushing it down. `profile_row` below - a plain
-    QHBoxLayout of its own, given a full row below the releases the same
-    way Top Tracks already had one - gives the biography column room to be
-    exactly as tall as `self.bio.setFixedHeight()` says (matching Top
-    Tracks' own fixed height, so the two columns read as a matched pair)
-    without fighting the header card for space. The header card itself is
-    back to hugging its own content width (portrait + name/stats/actions
-    only, `Qt.AlignLeft`) rather than stretching to fill the page - exactly
-    what it was before follow-up #5, since the biography that used to
-    justify stretching it now lives in its own row instead.
-
-    2026-09-26 - James: "there is just too much wasted space" on this page.
-    Reworked into a two-column top section: header card (with the
-    breadcrumb folded into it) over the biography on the left, Popular on
-    Last.fm / Top Tracks on the right, then the release coverflow, shrunk
-    ~25% with its caption painted onto the open cover. The separate
-    breadcrumb row, its duplicate "N releases" counter, and follow-up #7's
-    `profile_row` below the releases are all gone - see the comments in
-    __init__ for the details.
+    Top Tracks (`_refresh_top_tracks`) shows, in priority order: the songs
+    James picked (services/top_songs.py, "Choose…"); this artist's stored
+    Last.fm chart (`ArtistTopTrack`, fetched by "Fetch popularity" - the
+    same lookup as Settings' bulk Last.fm update, for one artist); or, with
+    no chart, owned tracks ranked by play_count, so a library with no
+    Last.fm key still works. Chart entries are matched against the library
+    at display time (`_owned_by_title`), so a song bought later is picked up
+    with no new fetch; an unowned entry reads "Not in your library" and
+    can't be played. Every pressing/version of one song collapses into a
+    single row (see _normalize_title), so one song can't fill several slots.
     """
 
     releaseActivated = Signal(int)
-    #: the ‹ / › arrows beside the breadcrumb (2026-10-17) - LibraryView
-    #: decides which artist is "previous"/"next" (see _artist_neighbors)
-    #: and hands the answer back through set_neighbors()
+    #: the ‹ / › arrows beside the breadcrumb - LibraryView decides which
+    #: artist is "previous"/"next" (see _artist_neighbors) and hands the
+    #: answer back through set_neighbors()
     previousArtistRequested = Signal()
     nextArtistRequested = Signal()
 
@@ -280,12 +136,11 @@ class ArtistDetailPanel(QWidget):
         self._tracks: list = []
         self._release_ids: list[int] = []
         #: this artist's Last.fm chart (see ArtistTopTrack's docstring),
-        #: rank-ordered, exactly as last fetched - empty until a fetch has
-        #: ever run for this artist, in which case _refresh_top_tracks
-        #: falls back to ranking locally-owned tracks by play_count alone.
+        #: sorted by playcount - empty until a fetch has run for this artist,
+        #: in which case _refresh_top_tracks ranks owned tracks by play_count.
         self._lastfm_top_tracks: list[ArtistTopTrack] = []
-        #: the songs James chose for this artist (services/top_songs.py,
-        #: 2026-10-13) - shown instead of Last.fm's chart when there are any
+        #: the songs James chose for this artist (services/top_songs.py) -
+        #: shown instead of Last.fm's chart when there are any
         self._picks: list[str] = []
         #: the TOP_TRACKS_COUNT rows the Top Tracks list is currently
         #: showing (some may have no owned pressing at all - see
@@ -297,21 +152,12 @@ class ArtistDetailPanel(QWidget):
         #: owned pressing has nothing to queue.
         self._playable_top_tracks: list = []
         #: the running "Fetch popularity" thread for *this* artist, if any -
-        #: same one-thread-attribute-per-page-of-work shape as BioPanel's
-        #: own _fetch_thread, reset on every set_artist (see there)
+        #: same shape as BioPanel's _fetch_thread, reset on every set_artist
         self._popularity_thread: Optional[PopularityDownloadThread] = None
 
-        # 2026-09-16 follow-up - adding the biography and top-tracks
-        # sections below the release row made this page taller than it
-        # used to be, and (unlike the release row's own horizontal
-        # scroll/drag) there was no vertical scrolling anywhere on this
-        # page before - it was built assuming everything always fit a
-        # fixed touch-panel screen. Wrapping the whole thing in a
-        # QScrollArea now means a long biography or a small screen just
-        # scrolls instead of clipping silently off the bottom; the release
-        # row's own left/right drag-to-browse (GatefoldCoverflow) is a
-        # separate, horizontal gesture on its own viewport and doesn't
-        # fight with this outer vertical one.
+        # the whole page scrolls vertically so a long biography or a small
+        # screen doesn't clip; the coverflow's horizontal drag-to-browse is a
+        # separate gesture on its own viewport and doesn't conflict.
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -321,25 +167,16 @@ class ArtistDetailPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        # -- top section: header card + biography (left), Popular on
-        # Last.fm / Top Tracks (right) - 2026-09-26 (James, on the artist
-        # page: "there is just too much wasted space"). The header card used
-        # to sit alone on its own row, hugging its content width, with the
-        # entire right half of the page next to it empty; the breadcrumb had
-        # a row of its own above it (sharing it only with a second copy of
-        # the "N releases" count the card's own stats line already shows);
-        # and the biography + top tracks - the page's actual content - sat
-        # below the release row, mostly under the fold. Now:
-        #   * the breadcrumb lives inside the header card, above the name,
-        #     and the duplicate "N releases" counter is gone entirely - one
-        #     whole row saved;
-        #   * Popular on Last.fm / Top Tracks moved up into the empty right
-        #     half, beside Play/Shuffle, so the most actionable list on the
-        #     page is above the fold;
+        # -- top section: header card + biography (left), Top Tracks
+        # (right), so the page's main content is above the fold:
+        #   * the breadcrumb lives inside the header card, above the name
+        #     (the card's stats line already gives the release count);
+        #   * Top Tracks sits in the right half, beside Play/Shuffle;
         #   * the biography fills the left column under the header card,
-        #     stretching to whatever height the Top Tracks column sets -
-        #     it's a plain VBox child here (not squeezed into the header
-        #     card's own row), so follow-up #7's overflow bug can't return.
+        #     stretching to the Top Tracks column's height. It's a plain VBox
+        #     child, not inside the header card's row - there, BioPanel's
+        #     small sizeHint capped its height and long text overflowed onto
+        #     the release row.
         # The release coverflow follows underneath, full width.
         top_section = QHBoxLayout()
         top_section.setSpacing(24)
@@ -359,17 +196,12 @@ class ArtistDetailPanel(QWidget):
         meta = QVBoxLayout()
         meta.setSpacing(4)
 
-        # replaces a lone "‹ Artists" pill - see release_panel.py's
-        # Breadcrumb for why (LibraryView wires the one click target this
-        # page needs: back to the Artists grid, or wherever _open_artist's
-        # `root` says). Folded into the header card 2026-09-26 (see above).
+        # see release_panel.py's Breadcrumb (LibraryView wires the click
+        # target: back to the Artists grid, or wherever _open_artist's
+        # `root` says).
         self.breadcrumb = Breadcrumb()
-        # 2026-10-17 - James: "When I'm on an artist page, I see the
-        # breadcrumb Artist > Big Country. I would like a way to click a
-        # right arrow for next artist and < for a previous artist." The two
-        # arrows (common.NeighborArrows) sit right after the trail, not
-        # pushed to the card's far edge - the trailing stretch keeps them
-        # hugging the crumbs.
+        # the ‹ › arrows (common.NeighborArrows) sit right after the trail;
+        # the trailing stretch keeps them hugging it.
         crumb_row = QHBoxLayout()
         crumb_row.setSpacing(0)
         crumb_row.addWidget(self.breadcrumb, 0)
@@ -385,12 +217,9 @@ class ArtistDetailPanel(QWidget):
         self.name = QLabel("")
         self.name.setStyleSheet("font-size: 26px; font-weight: 700;")
         self.name.setWordWrap(True)
-        # a wrapped QLabel inside this many nested layouts (VBox in HBox in a
-        # Card frame) can occasionally negotiate a wildly inflated height on
-        # first layout, reserving far more vertical space than the actual
-        # text needs and leaving a tall blank gap above it - two lines of a
-        # 26px name is already a very long artist name, so cap it there as a
-        # hard ceiling regardless of what the layout negotiation computes
+        # a wrapped QLabel this deep in nested layouts can negotiate an
+        # inflated height on first layout, leaving a tall blank gap - two
+        # lines of a 26px name is already very long, so cap it there
         self.name.setMaximumHeight(72)
         meta.addWidget(self.name)
 
@@ -399,15 +228,14 @@ class ArtistDetailPanel(QWidget):
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
-        # compact (40px, was 52px) - 2026-09-26, James: "Play Everything
-        # button is too big" - see theme.make_compact.
+        # compact (40px) buttons - see theme.make_compact
         play = make_compact(TouchButton("Play everything", primary=True))
         play.clicked.connect(lambda: self.play(shuffle=False))
         shuffle = make_compact(TouchButton("Shuffle"))
         shuffle.clicked.connect(lambda: self.play(shuffle=True))
         queue = make_compact(TouchButton("Add to queue"))
         queue.clicked.connect(lambda: self.ctx.enqueue_tracks(self._tracks))
-        # 2026-10-01 artist radio - services/radio.py
+        # artist radio - services/radio.py
         radio = make_compact(TouchButton("Radio"))
         radio.setToolTip("An endless mix of this artist and similar ones")
         radio.clicked.connect(self.start_radio)
@@ -417,14 +245,13 @@ class ArtistDetailPanel(QWidget):
         actions.addStretch(1)
         meta.addLayout(actions)
         hl.addLayout(meta, 0)
-        # the card itself still hugs its own content width (follow-up #7) -
-        # the biography below is what fills out the rest of this column.
+        # the card hugs its own content width - the biography below is
+        # what fills out the rest of this column.
         left_column.addWidget(header, 0, Qt.AlignLeft)
 
-        # "Edit bio" shares the heading's line instead of taking a row of
-        # its own inside BioPanel (2026-09-26, James: "we are taking an
-        # entire row with the Edit Bio button") - same heading + compact
-        # button shape as the Top Tracks column's "Fetch popularity".
+        # "Edit bio" shares the heading's line rather than taking a row
+        # inside BioPanel - same heading + compact button shape as the Top
+        # Tracks column's "Fetch popularity".
         self.bio = BioPanel(ctx, inline_edit=False)
         bio_row = QHBoxLayout()
         bio_row.setSpacing(8)
@@ -434,11 +261,9 @@ class ArtistDetailPanel(QWidget):
         bio_row.addStretch(1)
         bio_row.addWidget(self.bio.edit_button)
         left_column.addLayout(bio_row)
-        # no fixed height anymore - stretches to fill whatever the Top
-        # Tracks column beside it makes this row tall, less the header card
-        # above. BioPanel's own internal QScrollArea still handles a
-        # biography longer than the space it gets; the minimum just keeps a
-        # few lines readable if the window is unusually short.
+        # stretches to the height the Top Tracks column sets, less the
+        # header card; BioPanel's own QScrollArea handles longer text, and
+        # the minimum keeps a few lines readable on a short window.
         self.bio.setMinimumHeight(TOUCH["row_height"] * 2)
         left_column.addWidget(self.bio, 1)
 
@@ -463,8 +288,7 @@ class ArtistDetailPanel(QWidget):
         # content to show, so there's no empty state to hang this button on.
         self.fetch_popularity_btn = make_compact(TouchButton("Fetch popularity"))
         self.fetch_popularity_btn.clicked.connect(self._on_fetch_popularity_clicked)
-        # 2026-10-13 - James: "I would like the ability to change most
-        # popular songs" - see TopSongsDialog below
+        # see TopSongsDialog below
         self.choose_top_btn = make_compact(TouchButton("Choose…"))
         self.choose_top_btn.setToolTip("Pick the songs shown here yourself")
         self.choose_top_btn.clicked.connect(self.choose_top_songs)
@@ -498,17 +322,10 @@ class ArtistDetailPanel(QWidget):
         # a scroll/drag-driven "gatefold" row rather than a page-filling
         # grid - an artist can have anywhere from one release to several
         # hundred, and this is one section on a page. See
-        # gatefold_coverflow.py for the fold itself; sorted by title, same
-        # as the top-level Library grids.
-        #
-        # panel_size 190 -> 142 (2026-09-26, James: "too much wasted
-        # space") - about 25% smaller, with the open release's title/year
-        # now painted over the bottom of its own cover rather than on a
-        # caption line underneath (see GatefoldCoverflow's docstring), so
-        # the whole row gives back well over 60px of height. The
-        # "N releases" counter (`self.releases.count_label`) used to share
-        # the breadcrumb row; it's no longer placed anywhere - the header
-        # card's stats line already says the same thing.
+        # gatefold_coverflow.py for the fold itself (the open release's
+        # title/year is painted over its cover); sorted by title, same as
+        # the top-level Library grids. The coverflow's own "N releases"
+        # counter isn't placed - the header card's stats line says it.
         self.releases = GatefoldCoverflow(noun="release", panel_size=142)
         self.releases.tileActivated.connect(self.releaseActivated.emit)
         layout.addWidget(self.releases, 0)
@@ -559,10 +376,9 @@ class ArtistDetailPanel(QWidget):
         self._picks = []
         self._top_tracks = []
         self._playable_top_tracks = []
-        # a "Fetch popularity" started for the *previous* artist page has
-        # nothing useful to land on this one - the thread itself (if still
-        # running) is left alone rather than killed - only the button's
-        # re-entrancy guard is reset, matching BioPanel.set_artist.
+        # a "Fetch popularity" started for the previous artist has nothing
+        # to land on this one - the thread is left running, only the
+        # button's re-entrancy guard is reset, matching BioPanel.set_artist.
         self._popularity_thread = None
         self.fetch_popularity_btn.setEnabled(True)
         self.fetch_popularity_btn.setText("Fetch popularity")
@@ -617,32 +433,17 @@ class ArtistDetailPanel(QWidget):
 
             self._tracks = list(lib.list_tracks_for_album_artist(session, artist_id))
             # Last.fm's chart for this artist, if a fetch has ever run for
-            # them - see class docstring's follow-up #4 and
-            # ArtistTopTrack's own docstring.
+            # them - see ArtistTopTrack's docstring.
             self._lastfm_top_tracks = list(
                 session.scalars(
                     select(ArtistTopTrack)
                     .where(ArtistTopTrack.artist_id == artist_id)
-                    # 2026-09-16 same-day follow-up #5 (James, looking at a
-                    # real chart: "why does it seem like after you fetch
-                    # popularity, the songs are in order of most popular. For
-                    # example, Winner Takes All has 14M plays and the song
-                    # above it Mamma Mia has 10M") - Last.fm's own returned
-                    # order (ArtistTopTrack.rank, see that model's docstring)
-                    # isn't always strictly descending by the playcount
-                    # number it also returns for each track - whatever
-                    # internal weighting produces Last.fm's chart position
-                    # can rank two close tracks in an order that doesn't
-                    # match their displayed playcounts. Sorting by playcount
-                    # itself here instead means the list James sees is
-                    # always in the order of the numbers actually printed on
-                    # it. `func.coalesce(..., -1)` pushes a track with no
-                    # playcount at all (Last.fm returned nothing usable -
-                    # see _fetch_top_tracks) to the bottom rather than the
-                    # top, and `.rank` is still the tiebreaker for equal/
-                    # missing playcounts, so the order stays fully
-                    # deterministic rather than however sqlite happens to
-                    # return ties.
+                    # sorted by playcount rather than Last.fm's chart
+                    # position (ArtistTopTrack.rank), which isn't always
+                    # descending by the playcount it reports - so the list
+                    # reads in the order of the numbers printed on it.
+                    # coalesce(..., -1) puts a missing playcount last, and
+                    # rank breaks ties deterministically.
                     .order_by(func.coalesce(ArtistTopTrack.playcount, -1).desc(), ArtistTopTrack.rank)
                 )
             )
@@ -706,11 +507,8 @@ class ArtistDetailPanel(QWidget):
         self.fetch_popularity_btn.setEnabled(True)
         self.fetch_popularity_btn.setText("Fetch popularity")
         self.ctx.notify(result.summary())
-        # only worth re-pulling this artist's chart (and therefore
-        # re-ranking Top Tracks) if this fetch's result still applies to
-        # whatever artist is currently on screen - a slow fetch finishing
-        # after James has already moved on to a different artist page
-        # shouldn't repaint it out from under him.
+        # only re-rank if this artist is still on screen - a slow fetch
+        # finishing after James moved on shouldn't repaint the page.
         if self._artist_id is not None:
             with self.ctx.session() as session:
                 self._tracks = list(lib.list_tracks_for_album_artist(session, self._artist_id))
@@ -718,9 +516,7 @@ class ArtistDetailPanel(QWidget):
                     session.scalars(
                         select(ArtistTopTrack)
                         .where(ArtistTopTrack.artist_id == self._artist_id)
-                        # sorted by playcount, not fetch-order rank - see
-                        # the other ArtistTopTrack query above (set_artist)
-                        # for why
+                        # sorted by playcount, not rank - see set_artist
                         .order_by(func.coalesce(ArtistTopTrack.playcount, -1).desc(), ArtistTopTrack.rank)
                     )
                 )
@@ -732,8 +528,7 @@ class ArtistDetailPanel(QWidget):
         """Groups self._tracks by `_normalize_title` and keeps only the
         single best pressing per group (highest play_count, then rating,
         then earliest release year so a studio original wins a tie over a
-        live/anniversary reissue, then title, purely for a stable pick) -
-        2026-09-16 follow-up #3, see _normalize_title/class docstring.
+        live/anniversary reissue, then title, purely for a stable pick).
         Used both to match a Last.fm chart entry against ownership and,
         with no Last.fm chart yet, to rank owned songs by play_count."""
         groups: dict[str, list[Track]] = {}
@@ -754,36 +549,25 @@ class ArtistDetailPanel(QWidget):
         return representative_by_title
 
     def _refresh_top_tracks(self) -> None:
-        """Two different ways to build the list, depending on whether a
-        Last.fm fetch has ever run for this artist (self._lastfm_top_tracks).
+        """Build the list from James's picks, else the Last.fm chart, else
+        owned tracks by play_count.
 
-        2026-09-16 follow-up #4 (see class docstring) - when it has, the
-        list shows that whole chart: every entry appears whether James owns
-        it or not, matched against the library by (normalized) title right
-        now (_owned_by_title) rather than whatever ownership state existed
-        when the fetch ran - so a song bought later is picked up the next
-        time this page opens, no new fetch needed. An unowned entry's row
-        reads "Not in your library" and can't be tapped to play (see
-        _play_top_track). `chart` below (self._lastfm_top_tracks) already
-        comes back from set_artist/_on_popularity_fetch_finished sorted by
-        playcount descending, not Last.fm's own fetch-order rank - see the
-        2026-09-16 same-day follow-up #5 comment on that query for why.
+        With picks or a chart, every entry appears whether James owns it or
+        not, matched against the library by normalized title right now
+        (_owned_by_title); an unowned row reads "Not in your library" and
+        can't be tapped to play (see _play_top_track). The chart arrives
+        sorted by playcount (see the query in set_artist).
 
-        Falls back to the pre-follow-up-#4 approach - locally-owned tracks
-        only, ranked by Track.play_count (denormalized, kept in sync by
-        PlayHistory writes) - only when no Last.fm chart has ever been
-        fetched for this artist, so a library with no Last.fm API key
-        configured (or one Last.fm doesn't recognize) behaves exactly as
-        it did before Last.fm was introduced at all. Ties fall back to
-        rating, then title, purely for a stable order.
+        With neither, owned tracks are ranked by Track.play_count
+        (denormalized, kept in sync by PlayHistory writes), ties by rating
+        then title for a stable order.
 
-        Either way, every pressing of the same owned song is collapsed
-        into one representative first (follow-up #3) so a song with
-        several pressings can't fill multiple slots.
+        Either way, every pressing of the same song is collapsed into one
+        representative first so a song can't fill multiple slots.
         """
         owned_by_title = self._owned_by_title()
-        # one row per song, every version's plays together (2026-10-13 -
-        # see services/top_songs.py)
+        # one row per song, every version's plays together (see
+        # services/top_songs.py)
         chart = top_songs.distinct_chart(self._lastfm_top_tracks)
 
         if self._picks or chart:
@@ -853,7 +637,7 @@ class ArtistDetailPanel(QWidget):
         ])
         self.top_tracks_stack.setCurrentWidget(self.top_tracks)
 
-    # -- choosing the top songs (2026-10-13) ------------------------------
+    # -- choosing the top songs ---------------------------------------------
 
     #: tests swap the dialog out
     top_songs_dialog_class = None
@@ -884,22 +668,16 @@ class ArtistDetailPanel(QWidget):
     def _play_top_track(self, payload: dict) -> None:
         idx = payload.get("track_index")
         if idx is None:
-            # a real row with nothing to play - James doesn't own this
-            # song yet (see class docstring's follow-up #4) - rather than
-            # silently doing nothing on a tap that looked like it should
-            # do something.
+            # James doesn't own this song yet - say so rather than
+            # silently ignoring a tap that looks like it should do something
             if self._top_tracks:
                 self.ctx.notify("You don't own this track yet")
             return
         if not self._playable_top_tracks:
             return
         # plays through the owned Top Tracks only, starting at the tapped
-        # row's position among them - not self._tracks (the full
-        # discography) and not self._top_tracks (which may include unowned
-        # rows with nothing to queue) - "start here and keep going through
-        # this artist's other favorites you own" reads better than jumping
-        # into wherever that track happens to fall in the full disc/track
-        # running order.
+        # row's position among them - "start here and keep going through
+        # this artist's favorites you own", not the full discography order.
         self.ctx.play_tracks(
             self._playable_top_tracks, start=idx, source=f"artist:{self._artist_id}:top"
         )
@@ -913,12 +691,11 @@ def _release_caption(track: Track) -> str:
 
 
 class TopSongsDialog(QDialog):
-    """Choose an artist's top songs (2026-10-13; eight places since
-    2026-10-22 - TOP_TRACKS_COUNT). Each place is a box
-    to pick from - Last.fm's songs first (one entry per song, with plays),
-    then the songs in the library - or to type into. "Use Last.fm's list"
-    drops the picks and goes back to the chart. After Ok, `titles()` holds
-    the five in order (an empty list for "use Last.fm's")."""
+    """Choose an artist's top songs (TOP_TRACKS_COUNT places). Each place
+    is a box to pick from - Last.fm's songs first (one entry per song, with
+    plays), then the songs in the library - or to type into. "Use Last.fm's
+    list" drops the picks and goes back to the chart. After Ok, `titles()`
+    holds the picks in order (an empty list for "use Last.fm's")."""
 
     def __init__(self, artist_name: str, current: list[str], chart, owned: list[str],
                  has_picks: bool = False, parent=None) -> None:

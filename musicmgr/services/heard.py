@@ -1,5 +1,5 @@
-"""Songs heard on an internet station (2026-10-19 - James chose "Heard on
-this station" for Now Playing's right-hand pane while a station plays).
+"""Songs heard on an internet station - shown in Now Playing's right-hand
+pane ("Heard on this station") while a station plays.
 
 A station sends the song it's playing as stream text - usually
 "Artist - Title", sometimes just a title, an ad or the station's slogan.

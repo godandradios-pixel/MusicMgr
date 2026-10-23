@@ -1,11 +1,7 @@
-"""Read and write a music file's own tags (2026-10-06).
+"""Read and write a music file's own tags.
 
-James: "let's proceed with 3. Tag editor with MusicBrainz lookup. Fix tags
-in the files themselves, plus a 'look up this album' button. Better tags
-would also improve chart matching."
-
-Until now MusicMgr only ever *read* tags (services/scanner.py:read_tags).
-This module is the write side, kept separate from the scanner so the
+The scanner reads tags (services/scanner.py:read_tags); this module is the
+write side, kept separate from the scanner so the
 scanner stays read-only. `services/tag_editor.py` is what the app calls:
 it writes through here, then has the scanner read the files again so the
 library follows the files.
@@ -97,7 +93,7 @@ WRITABLE_EXTENSIONS = {
 
 class TagWriteError(Exception):
     """A file couldn't be written. `str()` is a short reason fit to show
-    James ("in use by another program", "read-only", ...)."""
+    the user ("in use by another program", "read-only", ...)."""
 
 
 @dataclass
@@ -840,14 +836,14 @@ def write_values(path: Path | str, values: TagValues) -> bool:
 
 #: how long to keep trying when Windows says the file is busy - antivirus,
 #: the search indexer or MusicMgr's own loudness measuring often hold a
-#: file for a moment (2026-10-13: a song just queued was being measured)
+#: file for a moment (e.g. a song just queued being measured)
 SWAP_WAIT_S = 3.0
 SWAP_STEP_S = 0.2
 
 
 def _swap_in(tmp: Path, path: Path) -> None:
     """Replace `path` with the tagged copy, waiting out a short lock. A
-    file that stays locked (the song that's playing) raises as before."""
+    file that stays locked (the song that's playing) raises."""
     import time
 
     deadline = time.monotonic() + SWAP_WAIT_S

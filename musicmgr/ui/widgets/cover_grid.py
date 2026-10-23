@@ -5,13 +5,11 @@ grid is generic over what a tile represents - `GridTile.key` is a release id
 for albums and an artist id for artists - so both browsers get the same
 scrolling and sorting behaviour for free.
 
-The A-Z jump bar used to live here too, one per grid; it's now a single bar
-shared by all four Library presentations, owned by `LibraryView` and shown
-directly under the search box (see that module's docstring). `jump_letters()`
-and `scroll_to_letter()` are the seam - `LibraryView` calls them to ask "what
-letters make sense to show right now" and "jump to this one", the same
-questions the old per-grid bar used to answer for itself. `JumpBar` (the
-widget class) stays here since `LibraryView` still needs one instance of it.
+The A-Z jump bar is a single bar shared by all four Library presentations,
+owned by `LibraryView` and shown under the search box (see that module's
+docstring). `jump_letters()` and `scroll_to_letter()` are the seam -
+`LibraryView` calls them to ask "what letters make sense to show right now"
+and "jump to this one". The `JumpBar` widget class lives here.
 """
 
 from __future__ import annotations
@@ -59,46 +57,25 @@ MIN_TILES_FOR_SORTING = 5
 class GridTile:
     """One cell. `count`/`extra` back the numeric sorts and the caption.
 
-    `kind="video"` marks a tile that represents a matching video woven into
-    Albums/Artists search results (2026-09-06) rather than the grid's own
-    native content (a release or an artist) - see `CoverGrid._rebuild()`
-    (hidden unless the search box actually matches one) and `_on_clicked()`
-    (routed to `videoActivated` instead of `tileActivated`, since `key` is a
-    video id there, not a release/artist id). `initials_source` overrides
-    what `cover_pixmap` uses to generate a placeholder when there's no
-    `cover_path` - a video tile sets it to the artist's name so a cover-less
-    video gets an artist-shaped placeholder ("DV" for Dana Voss) rather than
-    one built from its own title, which produced meaningless glyphs
-    ("18 And Life (Official Music Video)" -> "1A") the one time this
-    project tried titling a placeholder off a video's own name (see
-    architecture.md's "Videos" section, 2026-08-30).
+    `kind="video"` marks a matching video woven into Albums/Artists search
+    results rather than the grid's own content (a release or an artist) -
+    see `CoverGrid._rebuild()` (shown only when the search matches one) and
+    `_on_clicked()` (routed to `videoActivated`, since `key` is a video id
+    there). `initials_source` overrides what `cover_pixmap` builds a
+    placeholder from when there's no `cover_path` - a video tile sets it to
+    the artist's name, since initials from a video title are meaningless
+    ("18 And Life (Official Music Video)" -> "1A"; see architecture.md's
+    "Videos" section).
 
-    `kind="video_group"` is a second, later addition (2026-09-06): when a
-    search matches more than one of the same artist's videos, `_rebuild()`
-    collapses all of them into a single stand-in - one search hit on the
-    artist's *name* is what qualifies every video of theirs at once (a
-    video's own title is never enough by itself here - see `_rebuild()`'s
-    matching loop and `set_filter_text`'s docstring), and an artist with
-    nine videos was otherwise flooding the grid with nine near-identical
-    tiles for that one name match - every video's only stand-in cover is
-    that same artist's portrait (see `list_videos_for_search`), so two or
-    more of them look identical apart from a caption. A *lone* matching
-    video is not that problem and stays its own ordinary `kind="video"`
-    tile, directly tappable to play (see `_rebuild()`). This is the
-    *fallback* shape of
-    the multi-video collapse, used only when the artist has no tile of
-    their own among the results to fold the note into instead (no
-    releases in the library, or - for Albums - more than one matching
-    release with no single unambiguous one to pick); the common case (an
-    artist search matching their own already-shown tile, e.g. James's
-    original "Journey" report) instead just appends "· ▶ N videos" onto
-    that existing tile's caption and never creates one of these at all -
-    see `_rebuild()`'s `host_indices` handling, added the same day once
-    collapsing to a same-artist *second tile* turned out to still read as
-    two results for one artist. `key` is meaningless here (arbitrarily one
-    of the collapsed videos' ids - never read); `_on_clicked()` routes it
-    to `videoGroupActivated` with `subtitle` (the artist name) instead,
-    since there's no single video to play."""
+    `kind="video_group"`: when a search matches several of one artist's
+    videos (all of which would show the same artist portrait), `_rebuild()`
+    collapses them into one stand-in. Usually the note "▶ N videos" is
+    folded into the artist's own tile's caption instead (see `_rebuild()`'s
+    `host_indices`); this stand-in is the fallback when there's no single
+    such tile. A lone matching video stays an ordinary `kind="video"` tile.
+    `key` is never read here; `_on_clicked()` emits `videoGroupActivated`
+    with `subtitle` (the artist name), since there's no single video to
+    play."""
 
     key: int
     title: str
@@ -191,9 +168,7 @@ class CoverDelegate(QStyledItemDelegate):
         painter.restore()
 
         if selected:
-            # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for
-            # this whole cleanup) - selection outline, walnut brown now
-            # instead of red-orange.
+            # selection outline, walnut brown (see ui/theme.py's #Primary)
             painter.setPen(QColor(COLORS["jukebox_key_hi"]))
             painter.setBrush(Qt.NoBrush)
             painter.drawPath(clip)
@@ -214,14 +189,9 @@ class CoverDelegate(QStyledItemDelegate):
             metrics.elidedText(tile.title, Qt.ElideRight, text_w),
         )
 
-        # -3, not -2 (2026-09-23): the second caption line is the one that
-        # elides first, and since the 115px shrink both Library grids use
-        # (see LibraryView._build_album_grid) it was losing real words -
-        # "5 releases · 96 tr…" in Artists. A point off the subtitle buys
-        # ~8% more characters everywhere without touching the tile size or
-        # the bold title line above, which stays at font_base. The Artists
-        # caption also dropped its trailing "tracks" in the same pass (see
-        # LibraryView._load_artists).
+        # -3: the second caption line elides first at the Library grids'
+        # small tile size (see LibraryView._build_album_grid); a smaller
+        # subtitle fits more words without touching the tile or title line
         font.setPixelSize(TOUCH["font_base"] - 3)
         font.setBold(False)
         painter.setFont(font)
@@ -276,15 +246,9 @@ class JumpBar(QWidget):
     def set_available(self, letters: set[str]) -> None:
         """Which letters `_letter_at`'s scroll-snap is allowed to land on.
 
-        This used to also grey out the rest via QPushButton's disabled
-        look, but every letter is always tappable - it always types into
-        the search box (`letterTyped`) whether or not it currently has
-        anything to scroll to (`letterPicked`) - so a disabled look told
-        the user the opposite of the truth: dimming "S" while spelling
-        "RUSH" read as "you can't press this", when tapping it worked
-        exactly the same as any other letter. All keys now render
-        identically; `_available` still drives `_letter_at`'s snap, just
-        nothing about how the letters are drawn."""
+        Unavailable letters aren't drawn disabled: every letter always types
+        into the search box (`letterTyped`), whether or not it has anything
+        to scroll to, so all keys render identically."""
         self._available = set(letters)
 
     def _index_at(self, x: int) -> int:
@@ -293,12 +257,9 @@ class JumpBar(QWidget):
 
     def _raw_letter_at(self, x: int) -> Optional[str]:
         """The literal letter under this x position, ignoring which letters
-        are currently enabled. Unlike `_letter_at`'s nearest-available snap
-        (built for smooth scroll-scrubbing - see its own docstring), spelling
-        a word into the search box has to type exactly the letter tapped, even
-        one with nothing to jump to right now: e.g. typing "RU" already
-        narrows the Artists grid down to nothing starting with "S", but "S" is
-        still the next real letter of "RUSH" and has to land in the box."""
+        are currently available. Unlike `_letter_at`'s nearest-available snap
+        (for scroll-scrubbing), spelling into the search box must type exactly
+        the letter tapped, even one with nothing to jump to right now."""
         if self.width() <= 0:
             return None
         return self.LETTERS[self._index_at(x)]
@@ -328,10 +289,8 @@ class JumpBar(QWidget):
         self._last_emitted = None
         x = int(event.position().x())
         self._handle(x)
-        # typing fires once per press, never while dragging - a scrub across
-        # the strip is for scrolling, and re-firing this on every letter the
-        # thumb slides over while scrolling would spell garbage into the
-        # search box instead of the one letter that was actually tapped.
+        # typing fires once per press, never while dragging - a scrub is for
+        # scrolling and would otherwise spell garbage into the search box
         raw = self._raw_letter_at(x)
         if raw is not None:
             self.letterTyped.emit(raw)
@@ -356,18 +315,13 @@ class CoverGrid(QWidget):
     consulted for a horizontal grid - nothing calls it there.
 
     A horizontal row pages with `‹`/`›` buttons in its own header row rather
-    than a native scrollbar (2026-09-06, James: "instead of space for a
-    scroll bar, can you put the < > ... like shown in the picture" -
-    referencing a reference screenshot of an artist's full discography with
-    paging arrows in place of a scrollbar). The row still scrolls by drag
-    too (`QScroller`, unchanged) - the buttons are an additional, more
-    discoverable way to move a full page at a time, not a replacement for
-    the gesture.
+    than a native scrollbar. It still scrolls by drag too (`QScroller`); the
+    buttons move a full page at a time.
 
     show_sort_picker=False removes the chip row entirely and pins the grid on
-    `default_sort` (a `SortOption.key`) for good - for a caller that has
-    decided its grid only ever needs the one order and offering others would
-    just be chrome (see the Library view's Albums/Artists grids, 2026-09-05).
+    `default_sort` (a `SortOption.key`) for good - for a caller whose grid
+    only ever needs the one order (see the Library view's Albums/Artists
+    grids).
     """
 
     tileActivated = Signal(int)  # GridTile.key - a release or artist id
@@ -409,11 +363,8 @@ class CoverGrid(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
 
-        # show_sort_picker=False permanently fixes the grid on `default_sort`
-        # (or sorts[0]) with no chip row at all - for a caller that has
-        # decided a single sort is always the right one and doesn't want the
-        # chrome of offering others. _sort_widgets stays empty in that case,
-        # which is fine: _rebuild()'s visibility loop below is just a no-op.
+        # with show_sort_picker=False, _sort_widgets stays empty and
+        # _rebuild()'s visibility loop is a no-op
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self._sort_group: Optional[QButtonGroup] = None
@@ -437,11 +388,8 @@ class CoverGrid(QWidget):
         self.count_label = QLabel("")
         self.count_label.setObjectName("Dim")
         bar.addWidget(self.count_label)
-        # Paging arrows replace the native horizontal scrollbar for a
-        # horizontal row (see the class docstring for the report this
-        # answers) - built here, in the header row alongside the count
-        # label, rather than overlaid on the tiles themselves. Wired up
-        # once `self.view` exists, below.
+        # paging arrows for a horizontal row (see the class docstring), in
+        # the header row beside the count label rather than over the tiles
         self.prev_btn: Optional[QPushButton] = None
         self.next_btn: Optional[QPushButton] = None
         if horizontal:
@@ -455,10 +403,9 @@ class CoverGrid(QWidget):
             self.next_btn.clicked.connect(lambda: self._page(1))
             bar.addWidget(self.prev_btn)
             bar.addWidget(self.next_btn)
-        # In its own widget (2026-10-03) so a caller that moves count_label
-        # elsewhere can hide the then-empty row - see LibraryView, which
-        # puts the Albums/Artists count in its search row to free a row
-        # of tiles.
+        # in its own widget so a caller that moves count_label elsewhere can
+        # hide the then-empty row - see LibraryView, which puts the count in
+        # its search row
         self.header_bar = QWidget()
         bar.setContentsMargins(0, 0, 0, 0)
         self.header_bar.setLayout(bar)
@@ -480,14 +427,9 @@ class CoverGrid(QWidget):
         self.view.itemClicked.connect(self._on_clicked)
 
         # +12 is breathing room for the delegate's own sizeHint (art_size +
-        # TILE_CAPTION + TILE_PAD * 2). A horizontal row's own scrollbar is
-        # always off (see below) - the ‹/› buttons page it instead - so
-        # there's no scrollbar height to budget for here the way an earlier
-        # version of this fix had to (James's "Rush" layout report,
-        # 2026-09-06: "don't truncate the album artwork and scroll bar in
-        # the middle" - the scrollbar itself was clipping tile artwork by
-        # eating into this fixed height; removing the scrollbar removed
-        # that problem at the root rather than just budgeting around it).
+        # TILE_CAPTION + TILE_PAD * 2). A horizontal row's scrollbar is
+        # always off (the ‹/› buttons page it), so no scrollbar height is
+        # budgeted - a scrollbar in this fixed height would clip the artwork.
         row_height = art_size + TILE_CAPTION + TILE_PAD * 2 + 12
         if horizontal:
             self.view.setFlow(QListView.LeftToRight)
@@ -518,12 +460,9 @@ class CoverGrid(QWidget):
         hbar.setValue(hbar.value() + direction * step)
 
     def _update_page_buttons(self, *_args) -> None:
-        """Keeps ‹/› enabled only while there's somewhere left to page to -
-        connected to the row's scrollbar `valueChanged`/`rangeChanged`
-        (paging, dragging, or the tile list changing all move it), and
-        called once after every `_rebuild()` so a freshly (re)loaded row
-        starts with the right enabled state rather than whatever the
-        buttons happened to show before. A no-op for a non-horizontal grid,
+        """Keeps ‹/› enabled only while there's somewhere left to page to.
+        Connected to the row's scrollbar `valueChanged`/`rangeChanged` and
+        called after every `_rebuild()`. A no-op for a non-horizontal grid,
         where `prev_btn`/`next_btn` are never created."""
         if self.prev_btn is None or self.next_btn is None:
             return
@@ -540,17 +479,10 @@ class CoverGrid(QWidget):
     def set_filter_text(self, text: str) -> None:
         """Live-narrow the grid to tiles whose *own* title matches `text` -
         an album's own title in the Albums grid, an artist's own name in the
-        Artists grid (James, 2026-09-06: "on the artist page ... only search
-        on Artists", "when on Albums, only ... on albums" - searching Albums
-        used to also match the release's artist-name subtitle, and Artists'
-        subtitle happened to be a "N releases · M tracks" count that could
-        stray-match a typed number). A video woven into either grid's search
-        results matches the same way a native tile does here - by *name*,
-        not its own title: only the video's artist name has to match (see
-        `_rebuild()`). James, 2026-09-06: searching "rush" in Artists was
-        surfacing a "Rush, Rush" video by Paula Abdul purely because the
-        video's title contained "rush" - Albums/Artists browse by name, so
-        a video's own title is never a reason for it to show up there.
+        Artists grid - never the subtitle (an album's artist, or an artist's
+        "N releases · M tracks" count). A video woven into the results
+        matches by its artist's name only, never its own title (see
+        `_rebuild()`), since Albums/Artists browse by name.
 
         Matching, not re-sorting - the sort chip still decides order, this
         just drops tiles that don't qualify. An empty string shows everything
@@ -574,9 +506,7 @@ class CoverGrid(QWidget):
         """Sorts `tiles` (default: `self._tiles`) by whichever `SortOption`
         is active. Taking an explicit list, rather than always reading
         `self._tiles`, lets `_rebuild()` re-apply the same order to the
-        post-filter/post-collapse tile list too (see its "video_group"
-        handling, 2026-09-06) without a second, parallel sort
-        implementation."""
+        post-filter/post-collapse tile list too."""
         source = self._tiles if tiles is None else tiles
         key = self._sort.key
         if key == "subtitle":
@@ -601,27 +531,12 @@ class CoverGrid(QWidget):
         if self._filter_text:
             needle = self._filter_text
             kept: list[GridTile] = []
-            #: every matching video, gathered per artist so more than one
-            #: from the same artist can be collapsed into a single stand-in
-            #: below rather than shown one tile each. Originally this only
-            #: covered a match on the *artist's* name rather than the
-            #: video's own title (2026-09-06: searching an artist with nine
-            #: videos was flooding the grid with nine near-identical tiles
-            #: for one name match); briefly widened the same day to group
-            #: title matches too, after James asked about a search result
-            #: full of apparent "duplications" that turned out to be several
-            #: of one artist's videos, each a distinct title but all showing
-            #: that same artist's portrait as their only stand-in "cover"
-            #: (a video has no artwork of its own - see
-            #: `list_videos_for_search`). Narrowed back to name-only the
-            #: same day, once that widening let an unrelated video attach a
-            #: wrong artist's tile to the results: searching "rush" in
-            #: Artists surfaced "Rush, Rush" by Paula Abdul, who doesn't
-            #: match "rush" as an artist at all - Albums/Artists browse by
-            #: name, so a video's *own* title is never a reason for it (or
-            #: its artist) to show up there; see the loop below and
-            #: `set_filter_text`'s docstring. Keyed by `subtitle` (the
-            #: artist name), preserving first-seen order.
+            #: every matching video, gathered per artist so several from one
+            #: artist collapse into one tile below (they'd all show the same
+            #: artist portrait - see `list_videos_for_search`). A video
+            #: matches by its artist's name only, never its own title (see
+            #: `set_filter_text`). Keyed by `subtitle` (the artist name),
+            #: in first-seen order.
             video_groups: dict[str, list[GridTile]] = {}
             for t in ordered:
                 if t.kind == "video":
@@ -649,17 +564,9 @@ class CoverGrid(QWidget):
                 # among the results - their own tile in Artists (`title ==
                 # artist`), or their one matching release in Albums
                 # (`subtitle == artist`) - fold the note into its existing
-                # caption instead of showing a second circle/card for the
-                # same artist (2026-09-06, second round: James - "why are
-                # we still showing 2 Artist circles, I thought they would
-                # be collapsed into 1" - the first cut of this fix always
-                # added a separate stand-in tile, even when the real one
-                # was already sitting right there). Two or more candidates
-                # (an artist with several matching albums, say) has no
-                # single unambiguous home to fold into, so that - and an
-                # artist with no tile of their own at all, e.g. one with no
-                # releases in the library - both still fall back to the
-                # stand-in tile below.
+                # caption instead of showing a second tile for the same
+                # artist. Two or more candidates (several matching albums),
+                # or none, fall back to the stand-in tile below.
                 host_indices = [
                     i for i, h in enumerate(kept)
                     if h.kind == "item" and (h.title == artist or h.subtitle == artist)
@@ -703,15 +610,10 @@ class CoverGrid(QWidget):
             item.setSizeHint(QSize(size + TILE_PAD * 2, size + TILE_CAPTION + TILE_PAD * 2))
             self.view.addItem(item)
         self.view.setUpdatesEnabled(True)
-        # native items/tiles counted separately from videos woven into the
-        # search results, so a handful of collapsed "N videos" matches don't
-        # inflate "N artists"/"N albums" with things that aren't one
-        # (2026-09-06). individual_video_count covers a lone match that
-        # stayed its own tile; video_match_groups covers a folded match
-        # (2+ videos from one artist, 2026-09-06 third round - see the
-        # video_groups comment above) as a single count regardless of how
-        # many videos it folded together, since it no longer shows as more
-        # than one tile.
+        # native tiles counted separately from videos woven into the search
+        # results, so video matches don't inflate "N artists"/"N albums".
+        # individual_video_count is lone matches; video_match_groups counts
+        # each folded group (2+ videos from one artist) once.
         native_count = sum(1 for t in ordered if t.kind not in ("video", "video_group"))
         video_count = individual_video_count + video_match_groups
         plural = "" if native_count == 1 else "s"
@@ -728,10 +630,8 @@ class CoverGrid(QWidget):
             widget.setVisible(worth_sorting)
 
         self._ordered_cache = ordered
-        # a fresh tile list changes the scrollbar's range (fewer/more tiles
-        # to page through), so the buttons' enabled state needs re-checking
-        # even though nothing dragged/paged anything - a no-op for a
-        # non-horizontal grid (see _update_page_buttons's own guard).
+        # a fresh tile list changes the scrollbar's range, so re-check the
+        # ‹/› buttons' enabled state
         self._update_page_buttons()
         self.updated.emit()
 
@@ -739,8 +639,7 @@ class CoverGrid(QWidget):
         """Letters worth showing on the shared A-Z bar right now, or None if
         jumping makes no sense for the active sort (e.g. Albums sorted by
         Year has no alphabetical order to jump within) or there's too little
-        on screen to be worth it - the same two conditions that used to hide
-        the old per-grid jump bar outright."""
+        on screen to be worth it."""
         if self._sort.alpha_field is None or len(self._ordered_cache) <= MIN_TILES_FOR_SORTING:
             return None
         return {self._letter_of(t) for t in self._ordered_cache}
@@ -779,11 +678,9 @@ class CoverGrid(QWidget):
         they're on screen right now. `filtered=False` ignores the search box
         and returns every tile in the active sort order instead.
 
-        2026-10-17 - James: "When I'm on an artist page ... I would like a
-        way to click a right arrow for next artist and < for a previous
-        artist" - LibraryView._artist_neighbors walks this list so the
-        artist page's ‹ › arrows step through artists in the same order the
-        Artists grid shows them (including a live search filter)."""
+        LibraryView._artist_neighbors walks this list so the artist page's
+        ‹ › arrows step through artists in the order the Artists grid shows
+        them (including a live search filter)."""
         tiles = self._ordered_cache if filtered else self._sorted()
         return [t.key for t in tiles if t.kind == "item"]
 

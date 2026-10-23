@@ -1,8 +1,4 @@
-"""An artist's top songs: one row per song, and James's own picks
-(2026-10-13).
-
-James: "I would like the ability to change most popular songs. Some are
-repeated and I want 5 different songs, even if that song has a variation."
+"""An artist's top songs: one row per song, and the user's own picks.
 
 Two things, both for the artist page's top-songs list
 (ui/widgets/artist_panel.py):
@@ -13,7 +9,7 @@ Two things, both for the artist page's top-songs list
   `song_key` treats every version of a song as the same song, and
   `distinct_chart` folds the chart down to one row per song, with the
   plain title and the versions' plays added together.
-- **Picks.** James can choose the five himself (`ArtistTopPick`). Picks
+- **Picks.** The user can choose the five himself (`ArtistTopPick`). Picks
   survive a new Last.fm fetch, and "Use Last.fm's list" puts the chart
   back.
 """

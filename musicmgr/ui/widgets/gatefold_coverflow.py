@@ -12,11 +12,9 @@ squeezing each half's horizontal extent by cos(angle) is exactly the
 foreshortening a true rotateY would produce for a flat card facing the
 camera, without needing perspective math at all.
 
-Only released as a scroll-driven browser for one artist's releases (tens,
-not thousands) - `_MAX_VISIBLE_DELTA` skips both the transform math and
-the `cover_pixmap()` call for anything far enough off-screen not to be
-visible, so a large discography doesn't pay to lay out release 40 while
-looking at release 2.
+Meant for one artist's releases (tens, not thousands) - `_MAX_VISIBLE_DELTA`
+skips both the transform math and the `cover_pixmap()` call for anything
+far enough off-screen not to be visible.
 """
 
 from __future__ import annotations
@@ -41,41 +39,27 @@ from .cover_grid import GridTile
 
 #: panels this far from the focused one (in whole-release units) are
 #: skipped entirely - not laid out, not painted, no cover_pixmap() call.
-#: Kept small on purpose (2026-09-15, James: "too much wasted space...a
-#: bunch of albums showing a bunch of lines is not useful") - a coverflow
-#: is for one release in focus plus a few readable neighbors, not for
-#: scanning a whole discography at once (that's what the plain grid this
-#: replaced was for). Past this point it's just a closed sliver anyway
-#: (see _FOLD_RATE), so there's nothing gained by laying out more of them.
+#: Kept small on purpose: a coverflow is for one release in focus plus a
+#: few readable neighbors, not for scanning a whole discography, and past
+#: this point a panel is a closed sliver anyway (see _FOLD_RATE).
 _MAX_VISIBLE_DELTA = 4
 
 #: fixed breathing room, in pixels, between one panel's folded edge and
 #: the next - independent of panel_size so it reads as a thin sliver of
 #: background, not a proportionally bigger gap on a bigger cover.
 #:
-#: 2026-09-16 (James: "reduce the blank space between the albums"):
-#: replaced the previous fixed-ratio spacing (panel centers a flat 0.92 *
-#: panel_size apart, regardless of how folded either neighbor was). A
-#: folded panel's visible width shrinks by scale*cos_t - both of which
-#: fall off faster than linearly with distance from focus (see _FOLD_RATE)
-#: - so a *constant* center-to-center step left a small, correct-looking
-#: gap next to the focused panel but a rapidly ballooning one further out
-#: (measured: ~5px between focus and its immediate neighbor, but ~120-160px
-#: between the more-folded panels beyond that, at panel_size=190 - the
-#: "blank space" actually being reported). `_CoverflowCanvas` now spaces
-#: panels by the *sum of their actual visible half-widths* plus this one
-#: fixed gap (see `_half_width_at`/`_offset_table`), so consecutive panels
-#: sit this same small distance apart everywhere in the row, however far
-#: folded - never overlapping (that was the old ratio's other job), and
-#: never drifting apart either.
+#: A folded panel's visible width shrinks faster than linearly with
+#: distance from focus (see _FOLD_RATE), so a constant center-to-center
+#: step would leave gaps ballooning further out. `_CoverflowCanvas` spaces
+#: panels by the *sum of their actual visible half-widths* plus this gap
+#: (see `_half_width_at`/`_offset_table`), so consecutive panels sit the
+#: same small distance apart everywhere, never overlapping.
 _EDGE_GAP = 8.0
 
 #: foldT (0 = flat/open, 1= fully closed sliver) reaches 1.0 a bit past
-#: three releases away from focus, not two - slowed down from the first
-#: cut so 2-3 releases on each side of focus stay recognizable instead of
-#: closing down to an unreadable line almost immediately. Only the last
-#: release or two before _MAX_VISIBLE_DELTA read as a bare sliver now - a
-#: hint that more exist, not the majority of what's on screen.
+#: three releases away from focus, so 2-3 releases on each side of focus
+#: stay recognizable; only the last release or two before
+#: _MAX_VISIBLE_DELTA read as a bare sliver - a hint that more exist.
 _FOLD_RATE = 0.3
 _FOLD_MAX_DEG = 87.0
 
@@ -121,9 +105,8 @@ class _CoverflowCanvas(QWidget):
         self._press_target = 0.0
         self._dragged = False
 
-        # 2026-09-26 (James: "too much wasted space") - was panel_size + 34;
         # the focused panel's drop shadow only reaches ~10px past its own
-        # bottom edge (see _paint_panel), so +20 still clears it.
+        # bottom edge (see _paint_panel), so +20 clears it.
         self.setFixedHeight(panel_size + 20)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -150,9 +133,8 @@ class _CoverflowCanvas(QWidget):
         # doesn't silently change what order releases appear in
         self._tiles = sorted(tiles, key=lambda t: t.sort_key)
         # the focused panel always draws dead-center in the canvas (see
-        # _panel_geometry) - starting on release 0 left the entire left
-        # half of the row empty since nothing exists before it. Starting in
-        # the middle instead fills the row from the first paint.
+        # _panel_geometry), so starting on release 0 would leave the left
+        # half of the row empty; start in the middle instead.
         start = float(len(self._tiles) // 2) if self._tiles else 0.0
         self._scroll_pos = start
         self._target_pos = start
@@ -271,12 +253,11 @@ class _CoverflowCanvas(QWidget):
 
     def _paint_caption(self, painter, tile, half: float, alpha: float) -> None:
         """The open release's title (and year, when known) painted over
-        the bottom of its own cover on a dark gradient band - 2026-09-26
-        (James: "too much wasted space"), replacing the caption line that
-        used to sit on its own row under the canvas. Called from
-        _paint_panel in that panel's own (scaled, clipped) coordinates, so
-        the band follows the cover's rounded corners. `alpha` fades it out
-        as the panel leaves focus mid-animation."""
+        the bottom of its own cover on a dark gradient band, rather than a
+        caption row of its own under the canvas. Called from _paint_panel
+        in that panel's own (scaled, clipped) coordinates, so the band
+        follows the cover's rounded corners. `alpha` fades it out as the
+        panel leaves focus mid-animation."""
         size = self._panel_size
         pad = 8.0
         title_font = QFont(painter.font())
@@ -455,26 +436,13 @@ class GatefoldCoverflow(QWidget):
 
     Own layout is the canvas flanked by large prev/next arrow buttons. The
     open release's title/year is painted over the bottom of its own cover
-    (2026-09-26, James: "too much wasted space" - see
-    _CoverflowCanvas._paint_caption). Before that, a caption underneath
-    named the currently-open release (2026-09-15,
-    James: "move the title of the album below the album" - it used to sit
-    in a header bar above the strip, disconnected from the cover it
-    actually named; centered under the canvas it lines up with the open
-    panel, which the fold math always draws dead-center - see
-    _CoverflowCanvas._panel_geometry).
+    (see _CoverflowCanvas._paint_caption).
 
-    2026-09-16 follow-up (James: the "N releases ‹ ›" pager's arrows, up
-    in the artist page's breadcrumb row, were "too small" - screenshot
-    showed the 32px `RowPageArrow` pair easy to miss next to the count
-    text): `prev_btn`/`next_btn` moved from that small shared style into
-    this widget's own row, sized up to the new 56px `CoverflowNavArrow`
-    style (matching `PlayerBar`'s own `#Transport` touch targets) and
-    docked directly against the canvas's left/right edges instead of
-    living somewhere else on the page. `count_label` is still built here
-    and still deliberately left off `root` - it's plain status text, not a
-    control, so the caller (ArtistDetailPanel) still places it wherever it
-    wants (today: the breadcrumb row, where the pager used to sit).
+    `prev_btn`/`next_btn` use the 56px `CoverflowNavArrow` style (matching
+    `PlayerBar`'s `#Transport` touch targets), docked against the canvas's
+    left/right edges. `count_label` is built here but deliberately left off
+    `root` - it's plain status text, not a control, so the caller
+    (ArtistDetailPanel) places it wherever it wants (the breadcrumb row).
     """
 
     tileActivated = Signal(int)  # GridTile.key - a release id
@@ -492,12 +460,9 @@ class GatefoldCoverflow(QWidget):
         self.canvas.tileOpened.connect(self.tileActivated.emit)
         self.canvas.focusChanged.connect(self._on_focus_changed)
 
-        # large, easy-to-hit prev/next targets flanking the artwork itself
-        # (see the class docstring's 2026-09-16 follow-up) rather than the
-        # small shared #RowPageArrow style used for other pagers in the
-        # app (cover_grid.py's own horizontal rows, jukebox.py's page
-        # header) - this pair is dedicated to this widget, so restyling
-        # them doesn't affect those other pagers.
+        # large, easy-to-hit prev/next targets flanking the artwork itself,
+        # with their own style rather than the small shared #RowPageArrow
+        # one used by other pagers, so restyling them doesn't affect those.
         self.prev_btn = QPushButton("‹")
         self.prev_btn.setObjectName("CoverflowNavArrow")
         self.prev_btn.setCursor(Qt.PointingHandCursor)
@@ -514,9 +479,9 @@ class GatefoldCoverflow(QWidget):
         canvas_row.addWidget(self.next_btn, 0, Qt.AlignVCenter)
         root.addLayout(canvas_row, 0)
 
-        # still kept up to date (see _on_focus_changed) but no longer laid
-        # out - the caption is painted onto the open cover now (see the
-        # class docstring), which saves the row this label used to take.
+        # still kept up to date (see _on_focus_changed) but not laid out -
+        # the caption is painted onto the open cover (see the class
+        # docstring).
         self.focus_label = dim_label("")
         self.focus_label.setAlignment(Qt.AlignHCenter)
         self.focus_label.setParent(self)

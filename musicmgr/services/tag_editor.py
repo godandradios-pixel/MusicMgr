@@ -1,8 +1,5 @@
-"""Edit tags in the music files and bring the library along (2026-10-06).
-
-James: "Tag editor with MusicBrainz lookup. Fix tags in the files
-themselves, plus a 'look up this album' button. Better tags would also
-improve chart matching."
+"""Edit tags in the music files and bring the library along (with a
+MusicBrainz album lookup - services/musicbrainz.py).
 
 The files are the source of truth, so an edit is: write the tags into each
 of the song's files (services/tag_writer.py), then have the scanner read

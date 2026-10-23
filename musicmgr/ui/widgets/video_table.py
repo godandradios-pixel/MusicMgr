@@ -9,18 +9,14 @@ show for a video, and a column that always reads blank is worse than not
 having it. "Group by: None / Artist" mirrors MusicBee's own artist-grouped
 view (its only grouping dimension we have real data for).
 
-Deliberately NOT Qt's native `QTreeWidget.setSortingEnabled(True)` column-click
-sorting: native per-column sort only compares each level's own item *text*,
-which breaks two ways here - Year/Time need numeric comparison, not string
-("2:00" would sort before "10:00"), and a header click should always re-sort
-*within* each artist group while the groups themselves stay alphabetical,
-which native sorting has no concept of at all. So sorting is manual
-(`_rebuild`, keyed by `_sort_value`) - the same "own the sort, rebuild the
-widget" approach `CoverGrid._sorted`/`_rebuild` already uses elsewhere in
-this app, just with grouping layered on top. `QTreeWidget` itself is used
-only for its native two-level (group header + spanned row) rendering and
-column layout - there is never a third level, so this is a table with
-section dividers, not a real tree.
+Deliberately NOT Qt's native `QTreeWidget.setSortingEnabled(True)`: native
+sort compares each level's item *text*, so Year/Time would sort as strings
+("2:00" before "10:00"), and a header click must re-sort *within* each
+artist group while the groups stay alphabetical. So sorting is manual
+(`_rebuild`, keyed by `_sort_value`), like `CoverGrid._sorted`/`_rebuild`,
+with grouping layered on top. `QTreeWidget` is used only for its two-level
+(group header + spanned row) rendering and column layout - never a third
+level, so this is a table with section dividers, not a real tree.
 """
 
 from __future__ import annotations
@@ -48,11 +44,10 @@ from .common import ChipButton, dim_label
 
 #: which VideoRow.key a leaf row represents; absent (None) on a group header
 ROLE_KEY = Qt.UserRole + 3
-#: size of the picture beside each title (2026-10-22), 16:9
+#: size of the picture beside each title, 16:9
 THUMB_W, THUMB_H = 64, 36
 #: which artist a group-header row represents (absent on a leaf row) - lets
 #: focus_artist() find the right header without parsing its display text
-#: (2026-09-06)
 ROLE_GROUP_ARTIST = Qt.UserRole + 4
 
 #: (column key, header label)
@@ -85,7 +80,7 @@ class VideoRow:
     year: Optional[int]
     duration_ms: Optional[int]
     sort_key: str
-    #: the video's picture (services/video_details.py, 2026-10-22), if any
+    #: the video's picture (services/video_details.py), if any
     thumb: Optional[str] = None
 
 
@@ -135,7 +130,7 @@ class VideoTable(QWidget):
         self.tree.setHeaderLabels([label for _, label in COLUMNS])
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
-        # 2026-10-22: a small picture of each video beside its title
+        # a small picture of each video beside its title
         self.tree.setIconSize(QSize(THUMB_W, THUMB_H))
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -169,14 +164,11 @@ class VideoTable(QWidget):
         self._rebuild()
 
     def set_filter_text(self, text: str) -> None:
-        """Narrow to videos whose title OR artist matches `text` - both, not
-        either/or a picked field, since a video has no separate "search by"
-        control the way Library's grids have a whole view each to search
-        within (2026-09-15, James: "the search bar for videos to include
-        artists and track titles"). Same shape as CoverGrid.set_filter_text:
-        matching, not re-sorting - the active sort/group stays put, this
-        just drops rows that don't qualify. An empty string shows
-        everything again."""
+        """Narrow to videos whose title OR artist matches `text` - both,
+        since the video list has no separate "search by" control. Same
+        shape as CoverGrid.set_filter_text: matching, not re-sorting - the
+        active sort/group stays put, this just drops rows that don't
+        qualify. An empty string shows everything again."""
         text = text.strip().lower()
         if text == self._filter_text:
             return
@@ -199,7 +191,7 @@ class VideoTable(QWidget):
     def focus_artist(self, artist: str) -> None:
         """Switch to Group by Artist (if not already there) and scroll that
         artist's section into view - the landing spot for a collapsed
-        "N videos" tile tapped in a Library search (2026-09-06), since
+        "N videos" tile tapped in a Library search, since
         there's no per-artist filter here to jump to instead. A no-op,
         landing wherever the table already was, if the artist can't be
         found (shouldn't happen for a name this table itself supplied)."""

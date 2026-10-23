@@ -14,11 +14,9 @@ from typing import Iterable, Optional, Sequence, Tuple
 
 _ARTICLES = ("the ", "a ", "an ")
 
-#: matches the leading article plus ALL the whitespace after it, however much
-#: there is - a fixed "the " (4 chars) slice missed a stray double space in a
-#: real tag ("The  Romantics"), leaving a leading space in the sort key that
-#: then sorted before every other artist (a space is "less than" any letter
-#: or digit). See sort_name() below.
+#: matches the leading article plus ALL the whitespace after it, so a stray
+#: double space ("The  Romantics") can't leave a leading space in the sort
+#: key. See sort_name() below.
 _ARTICLE_RE = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 
 #: parenthetical noise that should not affect matching
@@ -62,10 +60,8 @@ def normalize(text: Optional[str]) -> str:
 def sort_name(name: str) -> str:
     """'The Beatles' -> 'Beatles, The' for alphabetical browsing.
 
-    Strips *all* the whitespace between the article and the rest of the
-    name, not just a fixed one-space-wide slice - a tag with a stray extra
-    space ("The  Romantics") would otherwise leave that space as the first
-    character of the sort key, sorting the artist ahead of everything else.
+    Strips *all* the whitespace after the article, so "The  Romantics"
+    doesn't get a leading space that sorts it ahead of everything else.
     """
     match = _ARTICLE_RE.match(name)
     if not match:
@@ -74,9 +70,7 @@ def sort_name(name: str) -> str:
     return f"{rest}, {match.group(1)}"
 
 
-#: acts whose own name has a comma or "&"/"and" in it - never split
-#: (2026-10-19: "Blood, Sweat & Tears" had become "Blood, Sweat" + "Tears",
-#: 121 songs; Earth, Wind & Fire, Emerson, Lake & Palmer ... the same)
+#: acts whose own name has a comma or "&"/"and"/"+" in it - never split
 PROTECTED_NAMES = (
     "Blood, Sweat & Tears", "Earth, Wind & Fire", "Emerson, Lake & Palmer",
     "Emerson, Lake & Powell", "Crosby, Stills, Nash & Young", "Crosby, Stills & Nash",
@@ -84,8 +78,6 @@ PROTECTED_NAMES = (
     "Phillips, Craig & Dean", "Dino, Desi & Billy", "Lambert, Hendricks & Ross",
     "Dave Dee, Dozy, Beaky, Mick & Tich", "Tyler, The Creator", "Lipps, Inc.",
     "Earth, Wind and Fire", "10,000 Maniacs",
-    # 2026-10-21: the band's "&" (or "+") split every song into "for KING" +
-    # "COUNTRY" - 167 songs on PC1
     "for KING & COUNTRY", "for KING + COUNTRY",
 )
 _PROTECTED_RE = [
@@ -162,7 +154,7 @@ def split_artists(text: Optional[str]) -> list[str]:
     'Daft Punk feat. Pharrell Williams & Nile Rodgers'
         -> ['Daft Punk', 'Pharrell Williams', 'Nile Rodgers']
 
-    2026-10-19 (James's library audit) - names that aren't lists stay whole:
+    Names that aren't lists stay whole:
     bands with a comma or "&" in their name (PROTECTED_NAMES), "..., Jr.",
     "Leader and His Orchestra", and "Fisher, Eddie". Lists that are lists
     come apart: "Shawn Mendes, Camila Cabello", "Nelly Furtado ft.Timbaland",
@@ -176,8 +168,8 @@ def split_artists(text: Optional[str]) -> list[str]:
     raw = re.sub(r"\s+", " ", str(text).replace("\xa0", " ")).strip()
     if not raw:
         return []
-    # a credit whose first "name" is only punctuation is one name, not two -
-    # "? and the Mysterians" used to come apart into "?" and "the Mysterians"
+    # a credit whose first "name" is only punctuation is one name, not two
+    # ("? and the Mysterians")
     first = _FEAT_SPLIT.split(raw)[0]
     if not normalize(first):
         return [raw]
@@ -277,14 +269,10 @@ def score_pair(
 ) -> float:
     """Combined title+artist confidence, title weighted more heavily.
 
-    2026-10-01 - the artist now always has to be reasonably close. This
-    used to let an exact title through with almost any artist ("if a < 0.45
-    and t < 0.95"), which on James's library had linked about 29,600 of
-    285,600 chart entries to someone else's song of the same name - Phil
-    Collins to Tom Jones, and two 1949 hits that charted for two artists at
-    once (Cruising Down the River, Forever and Ever) both to Russ Morgan's
-    record, so a 30-song chart saved as a 28-song playlist. Found via
-    exactly that: James's Billboard 1949 Year End playlist coming up short.
+    The artist always has to be reasonably close (MIN_ARTIST_SIMILARITY),
+    even for an exact title: otherwise a chart entry links to someone
+    else's song of the same name, e.g. a hit that charted for two artists
+    at once collapsing onto one record.
     """
     t = similarity(normalize(title_a), normalize(title_b))
     a = artist_similarity(artist_a, artist_b)

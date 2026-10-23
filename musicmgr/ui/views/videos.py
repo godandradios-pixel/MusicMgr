@@ -3,11 +3,7 @@ open the embedded player pane with an in-app full-screen toggle.
 
 The table itself lives in `ui/widgets/video_table.py` (columns, sorting,
 group-by - see its docstring for why Title/Artist/Year/Time rather than
-MusicBee's Album/Genre/Rating). This is the third shape this view has taken
-in one day (2026-08-30): a cover grid with meaningless title-initials tiles
-first, then a plain single-column list once the tiles were dropped, now a
-proper table once James asked for MusicBee-style columns/sort/group-by -
-see architecture notes for the full history.
+MusicBee's Album/Genre/Rating).
 
 Deliberately just one presentation (no Artists/Genres chips like the Library
 view) - a video is a flat row, not a Master/Release/Track hierarchy to browse
@@ -50,26 +46,14 @@ class VideosView(BaseView):
         self.stats = dim_label("")
         self.header.insertWidget(1, self.stats)
 
-        # a "Add folders to scan from Settings…" hint used to sit here,
-        # always shown regardless of whether any videos existed - removed
-        # 2026-09-15 (James: reclaim that row of height "to allow the video
-        # to be larger" - the embedded player's actual height is whatever's
-        # left after everything else in body(), so one less always-on row
-        # is real vertical room back for the picture).
+        # no always-on hint row: the embedded player's height is whatever
+        # body() leaves, so every row here costs the picture.
         # same "Search this view…" + Space/⌫/✕ shape as LibraryView's own
-        # search row (2026-09-15, James: "the search bar for videos to
-        # include artists and track titles") - videos had no search at all
-        # before this, unlike every Library presentation. Matches by title
-        # OR artist (see VideoTable.set_filter_text) rather than needing a
-        # separate "search by" picker the way Library's four presentations
-        # each search their own field.
-        # wrapped in a widget of its own (2026-09-23) rather than added to
-        # body() as a bare layout, purely so the whole row can be hidden in
-        # one call while the player pane is up - Qt reclaims a hidden
-        # widget's space, but a layout full of individually-hidden widgets
-        # still leaves its own spacing behind (the same reasoning
-        # video_panel.py's `self.controls.setVisible(False)` already
-        # follows).
+        # search row. Matches by title OR artist (see
+        # VideoTable.set_filter_text) rather than a "search by" picker.
+        # In a widget of its own so the whole row can be hidden in one call
+        # while the player pane is up - Qt reclaims a hidden widget's space,
+        # but a layout of individually-hidden widgets leaves its spacing.
         self.search_row = QWidget()
         search_row = QHBoxLayout(self.search_row)
         search_row.setContentsMargins(0, 0, 0, 0)
@@ -103,13 +87,9 @@ class VideosView(BaseView):
         search_row.addStretch(1)
         self.body().addWidget(self.search_row)
 
-        # 2026-09-15 same-day follow-up - James: "It's missing the
-        # alphabet, how do I touch type letters to search without it" -
-        # the search row above added Space/⌫/✕ but not this, and on a
-        # touch panel with no physical keyboard this bar is the *only* way
-        # to actually type a letter (tapping one spells it into the search
-        # box) - see JumpBar's own docstring and LibraryView's module
-        # docstring for the same reasoning there.
+        # on a touch panel with no physical keyboard, this bar is the only
+        # way to type a letter (tapping one spells it into the search box) -
+        # see JumpBar's docstring and LibraryView's module docstring.
         self.jump_bar = JumpBar()
         self.jump_bar.letterPicked.connect(self._on_letter_key)
         self.jump_bar.letterTyped.connect(self._on_letter_typed)
@@ -136,16 +116,10 @@ class VideosView(BaseView):
         self.player_panel = VideoPlayerPanel(self.ctx)
         # "‹ Back" asks MainWindow to return to whatever section was active
         # before a search match routed here (ctx.videosBackRequested - see
-        # its own docstring), rather than dropping onto this view's own
-        # table the way it briefly did while Videos had a real sidebar
-        # entry (2026-09-15 to 2026-09-16): reached by a single-video match
-        # (_open_video, below) that never visited the table at all, "back"
-        # to it would be a step that was never taken - the same "actively
-        # misleading" problem this button's very first design already
-        # ran into once (see video_panel.py's own docstring). Doesn't stop
-        # playback, same as leaving Now Playing doesn't stop music - the
-        # persistent PlayerBar keeps transport for it either way (see
-        # video_panel.py's docstring).
+        # its docstring), not to this view's table: a single-video match
+        # (_open_video) never visited the table. Doesn't stop playback, same
+        # as leaving Now Playing doesn't stop music - the persistent
+        # PlayerBar keeps transport (see video_panel.py's docstring).
         self.player_panel.backRequested.connect(self.ctx.videosBackRequested.emit)
         return self.player_panel
 
@@ -206,17 +180,11 @@ class VideosView(BaseView):
         """Show/hide everything above the panes - the page title, the
         "N videos · H:MM:SS" stats, the search row and the A-Z jump bar.
 
-        2026-09-23, James: "allow the video window to be larger". All four
-        of these exist to browse the *table*; while the player pane is up
-        the table isn't on screen at all, so they were costing the picture
-        roughly a third of the window for controls that had nothing to act
-        on. Hidden widgets don't reserve space in Qt, so this is real
-        height handed to `video_widget`'s stretch factor - the same trick
-        the 2026-09-15 "Add folders to scan from Settings…" hint removal
-        and video_panel.py's own hidden `controls` row already used, just
-        applied to the whole browse chrome at once instead of one row.
-        Everything comes straight back on the way out (`_focus_artist`, or
-        the next visit to the table).
+        All four exist to browse the *table*, which isn't on screen while
+        the player pane is up, so hiding them hands that height to
+        `video_widget` (hidden widgets don't reserve space in Qt).
+        Everything comes back on the way out (`_focus_artist`, or the next
+        visit to the table).
         """
         self.title.setVisible(visible)
         self.stats.setVisible(visible)
@@ -247,7 +215,7 @@ class VideosView(BaseView):
         self._set_browse_chrome_visible(False)
 
     def _focus_artist(self, artist: str) -> None:
-        """A collapsed "N videos" tile from a Library search (2026-09-06) -
+        """A collapsed "N videos" tile from a Library search -
         no single video to play, so this lands on the table itself, grouped
         by Artist and scrolled to that artist's section, rather than the
         player pane `_open_video` uses."""

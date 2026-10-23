@@ -29,11 +29,9 @@ class AppContext(QObject):
     #: single video, routed via LibraryView._activate_video
     playVideoRequested = Signal(int)
     #: ask the Videos view to group by Artist and scroll to one artist's
-    #: section, rather than playing a specific video - used when a Library
-    #: search match is a *collapsed* "N videos" tile (an Albums/Artists grid
-    #: match on the artist's name rather than any one video's own title, see
-    #: CoverGrid._rebuild()'s "video_group" tiles, 2026-09-06) which has no
-    #: single video id to hand to playVideoRequested.
+    #: section - used when a Library search match is a *collapsed* "N
+    #: videos" tile (see CoverGrid._rebuild()'s "video_group" tiles), which
+    #: has no single video id to hand to playVideoRequested.
     focusVideoArtistRequested = Signal(str)
     #: a video started/stopped playing - lets the persistent PlayerBar take
     #: over (or hand back) transport for it, so there's one set of controls
@@ -44,16 +42,10 @@ class AppContext(QObject):
     videoPlaybackEnded = Signal()
     #: the embedded video player's "‹ Back" button asking to return to
     #: whatever section was active before Videos was reached - the same
-    #: generic "ask, don't know the target yourself" contract
-    #: nowPlayingBackRequested below already established, and for the same
-    #: reason: 2026-09-16 follow-up (James: "remove the Videos sidebar menu
-    #: option" now that Title Details has its own "Videos only" checkbox -
-    #: see NAV_ITEMS in ui/app.py) took away Videos' own persistent
-    #: destination, so its player's back button can no longer just drop
-    #: onto its own table the way it briefly did while Videos had a real
-    #: sidebar entry (2026-09-15) - see VideosView._build_player and
-    #: MainWindow._go_back_from_videos, which tracks the target the same
-    #: way MainWindow._nowplaying_back_key already does.
+    #: "ask, don't know the target yourself" contract as
+    #: nowPlayingBackRequested below, since Videos has no sidebar entry of
+    #: its own to fall back to (see NAV_ITEMS in ui/app.py,
+    #: VideosView._build_player and MainWindow._go_back_from_videos).
     videosBackRequested = Signal()
     #: Now Playing's "‹ Back" button asking to return to whatever section was
     #: active before Now Playing was opened. NowPlayingView doesn't hold a
@@ -62,26 +54,22 @@ class AppContext(QObject):
     #: section that was (see MainWindow._nowplaying_back_key).
     nowPlayingBackRequested = Signal()
     #: ask the Library view to open a specific artist's page - used by Now
-    #: Playing's tappable artist name, so someone can jump straight from
-    #: what's playing to that artist's page without hunting through Library
-    #: (2026-09-06). Library switches itself to the Library section and
-    #: selects Artist mode before opening the page; the emitter doesn't need
-    #: to navigate first, mirroring playVideoRequested's contract.
+    #: Playing's tappable artist name. Library switches itself to the
+    #: Library section and selects Artist mode before opening the page; the
+    #: emitter doesn't need to navigate first, mirroring
+    #: playVideoRequested's contract.
     openArtistRequested = Signal(int)
     #: ask the Library view to open a specific release's page - the same
     #: pattern as openArtistRequested, for Now Playing's tappable album
-    #: art/title (2026-09-06). A release opened this way isn't part of the
-    #: Albums or Artists browsing hierarchy, so Library gives its breadcrumb
-    #: a standalone "Now Playing" ancestor rather than one of those grids.
+    #: art/title. A release opened this way isn't part of the Albums or
+    #: Artists browsing hierarchy, so Library gives its breadcrumb a
+    #: standalone "Now Playing" ancestor rather than one of those grids.
     openReleaseRequested = Signal(int)
 
     #: same as openArtistRequested, for Settings' "Missing metadata"
-    #: dashboard (2026-09-22 - James: "is there any way we can have a back
-    #: button when you go from missing metadata to the album and then
-    #: back") - a separate signal rather than reusing openArtistRequested
-    #: because the artist page's breadcrumb needs to say "Missing metadata"
-    #: and lead back there, not to the plain Artists grid (see
-    #: LibraryView._open_artist_from_missing_metadata).
+    #: dashboard - a separate signal because the artist page's breadcrumb
+    #: needs to say "Missing metadata" and lead back there, not to the
+    #: plain Artists grid (see LibraryView._open_artist_from_missing_metadata).
     openArtistFromMissingMetadataRequested = Signal(int)
     #: same idea as openArtistFromMissingMetadataRequested, for a release
     #: row (Album artwork / Lyrics tabs) - the release breadcrumb's "Now
@@ -97,19 +85,19 @@ class AppContext(QObject):
     def __init__(self, player: PlayerController, parent=None) -> None:
         super().__init__(parent)
         self.player = player
-        #: 2026-10-01 "radio from this song" - services/radio.py
+        #: "radio from this song" - services/radio.py
         from ..services.radio import RadioController
 
         self.radio = RadioController(player, self)
         self.radio.notified.connect(self.notify)
-        #: 2026-10-01 radio tuner page - services/tuner.py
+        #: radio tuner page - services/tuner.py
         from ..services.tuner import TunerController
 
         self.tuner = TunerController(player, self)
         self.tuner.notified.connect(self.notify)
-        #: 2026-10-13 phone remote - services/web_remote.py. Created here
-        #: (not started): MainWindow starts it at launch when Settings ›
-        #: Phone remote is on, and Settings turns it on and off.
+        #: phone remote - services/web_remote.py. Created here (not
+        #: started): MainWindow starts it at launch when Settings › Phone
+        #: remote is on, and Settings turns it on and off.
         from ..services.web_remote import RemoteServer
 
         self.web_remote = RemoteServer(self, self)
@@ -117,10 +105,9 @@ class AppContext(QObject):
         #: screen, kept in sync by ReleaseDetailPanel.set_release and
         #: ArtistDetailPanel.set_artist via set_viewing() - never queued or
         #: played on its own, only consulted by play_or_resume() so the
-        #: persistent PlayerBar's one play button can start something even
-        #: before any specific track has been tapped (see "Redundant Play
-        #: button removed from the release page" / its follow-up in
-        #: architecture.md for why this exists).
+        #: PlayerBar's play button can start something before any track has
+        #: been tapped (see "Redundant Play button removed from the release
+        #: page" in architecture.md).
         self._viewing_tracks: list = []
         self._viewing_source: str = "library"
 
@@ -160,18 +147,14 @@ class AppContext(QObject):
 
         Every real "hit play" action in the app - a track tap, Play
         everything, Shuffle, Play owned, a playlist/chart's Play, and the
-        PlayerBar's own empty-queue fallback (play_or_resume) - routes
-        through this one method, so it's also the single place to send the
-        person to Now Playing when that happens (see "Auto-navigate to Now
-        Playing when playback starts" in architecture.md). Advancing to the
-        next queued track never calls this again, so nothing pulls the
-        person back here mid-playback - they stay on Now Playing (or
-        wherever they've navigated since) until they hit play somewhere new.
-        Deliberately not in play_or_resume()'s *resume* branch or in
-        enqueue_tracks() - resuming an already-loaded, merely-paused track,
-        or just queueing something for later, isn't "hitting play" on
-        something new and shouldn't yank the person away from whatever
-        they're doing.
+        PlayerBar's empty-queue fallback (play_or_resume) - routes through
+        this one method, so it's also the single place to send the person
+        to Now Playing (see "Auto-navigate to Now Playing when playback
+        starts" in architecture.md). Advancing to the next queued track
+        never calls this, so nothing pulls the person back mid-playback.
+        Deliberately not used for play_or_resume()'s *resume* branch or
+        enqueue_tracks() - resuming or queueing isn't "hitting play" on
+        something new.
         """
         items = queue_items_from_tracks(tracks)
         if not items:
@@ -179,7 +162,7 @@ class AppContext(QObject):
             return 0
         start = min(max(start, 0), len(items) - 1)
         self.player.play_tracks(items, start=start, source=source)
-        # navigate=False (2026-09-30): the Jukebox page's Play all/Shuffle
+        # navigate=False: the Jukebox page's Play all/Shuffle
         # stay put so its cards can follow the music
         if navigate:
             self.navigateRequested.emit("nowplaying")

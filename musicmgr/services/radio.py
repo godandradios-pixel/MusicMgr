@@ -1,8 +1,8 @@
-"""Radio - an endless mix seeded by one song or artist (2026-10-01).
+"""Radio - an endless mix seeded by one song or artist.
 
-James picked this off the feature list: "pick a seed song and it keeps
-queuing similar tracks you own, using Last.fm's similar-artists data
-together with your ratings and play counts" (Plexamp's track radio).
+Like Plexamp's track radio: from a seed song it keeps queuing similar
+tracks you own, using Last.fm's similar-artists data together with your
+ratings and play counts.
 
 **Which artists fit.** Each library artist gets an affinity, 0..1, from
 whichever of these is strongest:
@@ -14,10 +14,10 @@ whichever of these is strongest:
   *currently playing* artist's list counts at half strength, so a long
   session drifts gently the way Plexamp's does.
 - **Chart neighbours** - artists that share chart weeks with the seed
-  (cosine of their chart-issue sets). James's library has ~400k chart
+  (cosine of their chart-issue sets). The library has ~400k chart
   entries, and two artists charting in the same weeks is a strong sign of
   the same era and audience - the best signal available offline.
-- **Playlist neighbours** - artists that share his own playlists.
+- **Playlist neighbours** - artists that share the user's own playlists.
 - **Same genre**, weakly, as a last resort for a thin pool.
 
 The seed artist itself is in the mix too, but spaced out.
@@ -281,7 +281,7 @@ _KEY_SPAN = 1_000_000_000
 
 
 def _track_artist_subquery():
-    """track_id -> its main artist. About 1.5% of James's tracks carry more
+    """track_id -> its main artist. About 1.5% of tracks carry more
     than one "Main" credit; the one whose name appears in the track's own
     artist text wins (else the lowest artist id)."""
     from sqlalchemy import case
@@ -358,7 +358,7 @@ def chart_neighbours(session: Session, artist_id: int) -> dict[int, float]:
     """Artists that chart in the same weeks/years as `artist_id`.
 
     Worked out per chart, then blended by how present the seed is on each
-    chart (share of that chart's issues it appears in). James's charts are
+    chart (share of that chart's issues it appears in). Charts are
     organised Source > Genre > Type, so a country artist's neighbours come
     mostly from the Country charts it lives on rather than from the one
     big weekly Hot 100 where it crosses over now and then - which would

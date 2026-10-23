@@ -1,4 +1,4 @@
-"""Settings › Files and data (verify, back up / restore, locate, move) (split out of settings.py, 2026-10-22)."""
+"""Settings › Files and data (verify, back up / restore, locate, move)."""
 
 from __future__ import annotations
 
@@ -24,17 +24,10 @@ class FilesSection:
     methods share the view's state."""
 
     def verify_files(self) -> None:
-        """2026-09-07 follow-up: checks video files too now, not just audio -
-        the same "one unified thing" this whole view's folder merge is
-        about (see module docstring); there's no reason "Verify files"
-        would only mean half of what's watched.
-
-        2026-09-22 - James: "does the progress bar also work on ... verify
-        files" (it didn't - this used to run both checks entirely
-        synchronously, right here, with no feedback). Threaded the same
-        way as every other bulk action on this page now - see
-        VerifyFilesThread (ui/widgets/common.py), which runs both the
-        audio and video checks in the two phases this used to be."""
+        """Check that every audio and video file can still be found, on a
+        background thread with the page's progress bar - see
+        VerifyFilesThread (ui/widgets/common.py), which runs the audio and
+        video checks as two phases."""
         if self._verify_thread is not None and self._verify_thread.isRunning():
             self.ctx.notify("Already verifying files")
             return
@@ -65,9 +58,8 @@ class FilesSection:
         self.progress.setVisible(False)
         self.progress_label.setText("")
         self._hide_cancel(self._verify_thread)
-        # 2026-10-18 - the newly-flagged count alone read as "nothing is
-        # missing" while Purge found 133 flagged by earlier scans; show
-        # the running total too.
+        # show the running total too - the newly-flagged count alone misses
+        # files flagged by earlier scans
         with self.ctx.session() as session:
             total = lib.library_stats(session)["missing"]
             total += vid_svc.video_counts(session)["video_missing"]

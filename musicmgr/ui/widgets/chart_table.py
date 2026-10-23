@@ -1,104 +1,49 @@
-"""Sortable, filterable, multi-select chart table - the PC-density answer to
-Charts' old touch-sized `TouchTree` list.
+"""Sortable, filterable, multi-select chart table for the Charts screen.
 
-James's framing (2026-08-30): Charts is admin work done at a desk to seed
-data you'll later turn into playlists, not something you tap through mid-
-listen the way the rest of this touch-first app is - so unlike every other
-list here, this one is deliberately NOT sized for a finger. Rows are dense,
-columns are real (Name / Type / Coverage, click-to-sort), there's a search
-box to filter by name, and rows multi-select so a bulk Move-to-folder or
-Delete doesn't mean one chart at a time.
+Charts is admin work done at a desk to seed data you'll later turn into
+playlists, so unlike every other list in this touch-first app this one is
+deliberately NOT sized for a finger. Rows are dense, columns are real
+(Name / Type / Coverage, click-to-sort), a search box filters by name, and
+rows multi-select for bulk Move-to-folder or Delete.
 
-**Source dropped as a column (revised again, same day):** it started as a
-fourth real column, but a folder-and-chart tree only has so much width to
-give a Fixed column before the Stretch column (Name - the one thing you
-actually read every row by) gets squeezed, and that got worse once editions
-became a third tree level (see below) with its own indentation eating into
-that same shared budget. James flagged the result directly - "look at all
-the blank spots" - after Coverage got clipped once already and got fixed,
-then Name itself started rendering blank on the newly-added edition rows.
-Source (the CSV basename a chart was imported from) is useful sometimes but
-not something you read every row for the way Name is, so it moved to a
-tooltip on the Name cell instead of a column - freeing real width for what
-actually needs it. `ChartLeafNode.source` still carries the value; it's
-just not one of `COLUMNS` any more.
+**Source is a tooltip, not a column.** Name is the one column you read
+every row by and the sole Stretch column; Source (the CSV basename a chart
+was imported from) lives in the Name cell's tooltip so it doesn't squeeze
+Name. `ChartLeafNode.source` still carries the value.
 
-**Three tree levels, not two (revised 2026-08-30, same day):** the first cut
-put a chart's individual dated editions in a completely separate middle
-pane. James looked at the result and asked why editions weren't "in the main
-column with just another subfolder" - fair: this screen already has folders
-that expand to reveal charts, so charts expanding to reveal their editions
-the same way is the more consistent shape, and it means one browse tree
-instead of a tree plus a second list widget. So: Folder -> Chart -> Edition,
-all in this one widget, and a chart gets the same chevron/whole-row-expands
-treatment a folder already has - if it has any editions at all.
+**Three tree levels: Folder -> Chart -> Edition**, all in this one widget.
+A chart with editions gets the same chevron/whole-row-expands treatment a
+folder has; one with none renders as a plain leaf.
 
-**Editions render as one spanned line, like a folder, not as their own
-columns.** They never had a Type or Source to show anyway (only a date and
-a coverage figure), so splitting them across the same Name/Type/Coverage
-columns a chart uses left two of the three cells blank on every single
-edition row - exactly the "blank spots" James was pointing at. An edition
-now shows one line, `setFirstColumnSpanned(True)` same as a folder header:
-"31 Dec 2024 · 83/100 in library" - immune to column-width squeezing
-because there's no column boundary running through it at all.
+**Folder and edition rows are one spanned line**
+(`setFirstColumnSpanned(True)`), e.g. "31 Dec 2024 · 83/100 in library",
+so no column boundary runs through them. `setFirstColumnSpanned()` is a
+silent no-op on an item not yet attached to a `treeWidget()`, so it's
+called from the attachment sites (`_add_level`, `_populate_chart_children`)
+right after `addTopLevelItem`/`addChild`, not in the `_make_*_item`
+builders. `_SpanGuardDelegate` skips painting columns 1+ of a spanned row
+(stylesheet painting otherwise draws empty selection boxes there), and
+`QTreeWidget::branch:selected` is styled in theme.py so a selected row's
+indentation isn't native highlight blue.
 
-**That spanning didn't actually work until later the same day - it was a
-silent no-op the whole time.** `QTreeWidgetItem.setFirstColumnSpanned()`
-only takes effect once the item already has a `treeWidget()` - called on a
-freestanding item before it's attached to its parent (which is what both
-`_make_folder_item` and `_make_issue_item` did, since they hand a finished
-item back to the caller to attach), it silently does nothing, and calling
-it later doesn't retroactively fix it either. So every "spanned" row here
-was, invisibly, still three real columns the whole time - it just *looked*
-like one line because the other two cells were empty and blended into the
-unselected background. James caught it from a screenshot of a selected
-edition row - "what is that blue box" - where selection colored those two
-empty cells enough to show as their own boxes, plus a stray native-blue
-highlight in the indentation strip. Fix: `setFirstColumnSpanned(True)` now
-runs from the attachment call sites (`_add_level` for folders,
-`_populate_chart_children` for editions), immediately after `addTopLevelItem`/
-`addChild`, not inside the `_make_*_item` builders. Two more defenses went
-in alongside it, since spanning had clearly been silently failing before
-without anyone (including tests) catching it: `_SpanGuardDelegate` skips
-painting columns 1+ outright for any item where `isFirstColumnSpanned()` is
-true (Qt's QSS-based item painting doesn't suppress those columns on its
-own, even when spanning genuinely is in effect), and
-`QTreeWidget::branch:selected` is styled explicitly in theme.py instead of
-falling back to the platform's native highlight blue for a selected row's
-indentation area.
+**Editions are populated lazily, on first expand.** A weekly chart can
+have thousands of editions, and Charts refreshes on any library change, so
+`ChartTable` never receives edition data up front; it takes an
+`issues_provider` callback (`chart_id -> Sequence[ChartIssueNode]`) and
+calls it only for a chart that is actually expanded (persisted expand state
+included). `services/charts.py:issue_coverage_by_chart` keeps that one
+query cheap. The search filter never force-expands a chart's editions
+(filter text never matches a date, and it would reintroduce the cost) -
+only a chart's own name/folder membership decides its visibility.
 
-**Editions are populated lazily, on first expand, not eagerly with
-everything else.** This isn't just tidiness: James's real Billboard Hot 100
-Weekly chart has 3,393 editions. Building all of them as tree items (and
-computing per-edition library coverage for each) on every single Charts
-refresh - which happens on any library change, not just when you're looking
-at that one chart - would be real, felt slowness for no benefit, since
-almost every refresh nobody's even looking at that chart's editions. So
-`ChartTable` never receives edition data up front the way it receives
-folders and charts; it takes an `issues_provider` callback instead
-(`chart_id -> Sequence[ChartIssueNode]`) and calls it only for a chart that
-is actually expanded - persisted expand state included, so a chart you left
-open before a refresh gets re-queried once (still just that one chart), not
-every chart. `services/charts.py:issue_coverage_by_chart` is what makes even
-that one query cheap regardless of edition count - see its docstring. A
-chart's editions are also never force-expanded by the search filter the way
-folders are (filter text never matches a date anyway, and force-expanding
-every filtered chart's potentially-thousands of editions on every keystroke
-would reintroduce the exact cost this design avoids) - only a chart's own
-name/folder-membership decides whether it stays visible while filtering.
-
-Folders keep the same "whole row toggles expansion" and chevron-in-text
-behaviour `TouchTree` uses elsewhere (see ui/widgets/common.py), and stay
-selectable - unlike `VideoTable`'s pure-divider group headers, a chart
-folder is itself a first-class thing you Rename/Move/Delete, so it needs a
-real payload and real selection, not just `Qt.ItemIsEnabled`. Charts get the
-same expand/collapse chevron once they have at least one edition; a chart
-with none renders as a plain leaf, same as before. Sorting only ever
-reorders chart *leaves* within their folder (never editions, which always
-stay in the newest-first order `services/charts.py:list_issues` already
-returns); folders themselves always sort alphabetically, same rule
-`VideoTable` uses for its artist groups - see that module's docstring for
-why manual sort/rebuild replaces Qt's native `setSortingEnabled`.
+Folders keep the "whole row toggles expansion" and chevron-in-text
+behaviour `TouchTree` uses elsewhere (see ui/widgets/common.py) and stay
+selectable - a chart folder is itself something you Rename/Move/Delete, so
+it needs a real payload and selection. Sorting only reorders chart
+*leaves* within their folder (editions stay in the newest-first order
+`services/charts.py:list_issues` returns); folders always sort
+alphabetically, as in `VideoTable` - see that module's docstring for why
+manual sort/rebuild replaces Qt's native `setSortingEnabled`.
 """
 
 from __future__ import annotations
@@ -146,9 +91,8 @@ class ChartLeafNode:
     kind: str  # Chart.kind, carried through in the payload for callers that need it
     shape: str  # "Year-End" / "Weekly" / "—" - see services/charts.py:chart_shape
     source: str  # display text - already basename'd by the caller, or "—"
-    editions: int  # not its own column any more (see module docstring) - used
-    # only to decide whether this chart gets an expand chevron, and shown in
-    # its Name-column tooltip
+    editions: int  # not a column - decides whether this chart gets an expand
+    # chevron, and shown in its Name-column tooltip
     coverage_pct: Optional[int]  # 0-100, or None when the chart has no entries at all
     coverage_label: str  # what the Coverage column shows - "44%" or "—"
 
@@ -166,15 +110,9 @@ class _SpanGuardDelegate(QStyledItemDelegate):
     """Qt's QSS-based item painting doesn't honor setFirstColumnSpanned() the
     way the native (non-stylesheet) style does: the spanned column 0 rect is
     correctly widened to cover the whole row, but the app's `::item:selected`
-    rule still fires its own separate rounded box for columns 1 and 2 too -
-    visible as two empty "ghost" boxes next to any selected folder or edition
-    row (both span column 0). James flagged this on an edition row ("what is
-    that blue box"), but it's really two things: this one (present on folder
-    rows too, since 2026-08-30's first pass at spanning, just less obvious at
-    the top level) and the branch-guide color below. Fix here is to just not
-    paint columns 1+ at all for a spanned row - there's nothing to show
-    there anyway, so skipping the paint call removes the box outright rather
-    than trying to recolor it to blend in."""
+    rule still draws its own rounded box for columns 1 and 2 - two empty
+    "ghost" boxes beside any selected folder or edition row. Columns 1+ of a
+    spanned row have nothing to show, so they're simply not painted."""
 
     def __init__(self, tree: "ChartTable", parent=None) -> None:
         super().__init__(parent)
@@ -214,25 +152,16 @@ class ChartTable(QTreeWidget):
         # Qt's default (~20px/level) eats real width from every deeper row -
         # a folder > chart > edition item loses two levels' worth from the
         # same Name-column budget before a single character of its own text
-        # is drawn. Trimmed down now that there are three levels, not two.
+        # is drawn, so it's kept small.
         self.setIndentation(14)
-        # Stylesheet painting doesn't suppress columns 1+ on a spanned row on
-        # its own (see _SpanGuardDelegate) - without this, a selected folder
-        # or edition row shows two empty "ghost" boxes where Type/Coverage
-        # would be.
+        # see _SpanGuardDelegate - no "ghost" boxes on spanned rows
         self.setItemDelegate(_SpanGuardDelegate(self, self))
         self.setUniformRowHeights(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        # A real horizontal scrollbar, not AlwaysOff, is the safety net for
-        # the bug fixed 2026-08-30: with it off and two Stretch columns
-        # sharing whatever space the other Fixed columns didn't already
-        # claim, a narrow pane (the Charts screen's browse column is ~300px
-        # by default) squeezed Name down to a couple of pixels - showing
-        # only its chevron - and silently clipped Coverage off the right
-        # edge entirely, with no way to recover either. Now only Name
-        # stretches (see below), and setMinimumSectionSize is the hard floor
-        # that keeps every column readable even if the pane gets this narrow
-        # again; scrolling only kicks in if that floor itself doesn't fit.
+        # A real horizontal scrollbar is the safety net for a narrow pane
+        # (the Charts browse column is ~300px by default): only Name
+        # stretches, setMinimumSectionSize keeps every column readable, and
+        # scrolling kicks in only if that floor itself doesn't fit.
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.setMouseTracking(True)
@@ -252,20 +181,15 @@ class ChartTable(QTreeWidget):
         header.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
         header.setSectionResizeMode(COL_TYPE, QHeaderView.Fixed)
         header.setSectionResizeMode(COL_COVERAGE, QHeaderView.Fixed)
-        # 80px used to clip "Year-End"/"Year End" to "Year-..." - the item's
-        # own padding+margin (theme.py: 6px padding + 4px margin per side)
-        # eats ~20px of the nominal column width before any text is drawn,
-        # leaving less than the ~65px "Year End"/"Weekly" actually need.
-        # James called the truncated result out directly: "The 'Year-....'
-        # offers no value." 96px clears both labels with room to spare.
+        # the item's padding+margin (theme.py: 6px + 4px per side) eats ~20px
+        # of the column before any text, so 96px is what fits "Year End"
         header.resizeSection(COL_TYPE, 96)
-        # 84px clipped the header to "Ɔoverage"; 100px shows it whole
+        # 100px shows the "Coverage" header whole
         header.resizeSection(COL_COVERAGE, 100)
-        # Type hidden 2026-09-30: charts are now filed Source > Genre > Type
+        # Type is hidden: charts are filed Source > Genre > Type
         # (tools/organize_charts_by_source.py names each chart "Year End" or
-        # "Weekly"), so the column just repeated the name - James: "let's
-        # remove the repeated Year End Year End". Kept (not deleted) so it
-        # can come back with one line if a chart ever needs it again.
+        # "Weekly"), so the column would repeat the name. Kept so it can
+        # come back with one line.
         self.setColumnHidden(COL_TYPE, True)
         for col in (COL_TYPE, COL_COVERAGE):
             self.headerItem().setTextAlignment(col, Qt.AlignRight | Qt.AlignVCenter)
@@ -392,12 +316,8 @@ class ChartTable(QTreeWidget):
                 parent_widget.addTopLevelItem(item)
             else:
                 parent_widget.addChild(item)
-            # Must come AFTER the item is attached to the tree - called on a
-            # freestanding item it's a silent no-op (no treeWidget() yet for
-            # it to record the span against), which is exactly what made
-            # every "spanned" row here quietly not-actually-spanned since
-            # this was first added - see the module docstring's note on
-            # James's "what is that blue box" report for how that surfaced.
+            # must come AFTER the item is attached to the tree - on a
+            # freestanding item it's a silent no-op (see module docstring)
             item.setFirstColumnSpanned(True)
             item.setExpanded(expanded)
             self._add_level(item, folder.id, visible_folder_ids)

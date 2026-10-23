@@ -1,6 +1,6 @@
-"""Merge spelling variants of one artist (2026-10-19 - James's library audit:
-"Tim McGraw" / "Tim Mc Graw", "MercyMe" / "Mercy Me", "B.J. Thomas" / "Bj
-Thomas" ... - two artists in the library, each with part of the songs).
+"""Merge spelling variants of one artist ("Tim McGraw" / "Tim Mc Graw",
+"MercyMe" / "Mercy Me", "B.J. Thomas" / "Bj Thomas" ... - two artists in
+the library, each with part of the songs).
 
 `merge_artists` moves everything that points at the variant - song and
 album credits, albums, videos, jukebox slots, aliases, a picture or bio the
@@ -9,11 +9,11 @@ the variant's spelling as an alias. `library.get_or_create_artist` checks
 those aliases, so a file still tagged "Bj Thomas" files under B.J. Thomas on
 its next scan instead of bringing the duplicate back.
 
-ARTIST_MERGES is the reviewed list from PC1's library (James approved it,
-keeping M / MO and M.I.A. / Mia apart and merging The Kingsmen with King's
-Men, B.o.B with Bob and The Blue Notes with Bluenotes). `apply_artist_merges`
-runs it once per data folder at startup (ui/app.py), so every PC whose
-library came from the same files gets the same clean-up.
+ARTIST_MERGES is a reviewed list (keeping M / MO and M.I.A. / Mia apart and
+merging The Kingsmen with King's Men, B.o.B with Bob and The Blue Notes
+with Bluenotes). `apply_artist_merges` runs it once per data folder at
+startup (ui/app.py), so every PC whose library came from the same files
+gets the same clean-up.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from .matching import normalize, sort_name
 #: (kept name, spellings merged into it)
 ARTIST_MERGES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ('Tim McGraw', ('Tim Mc Graw',)),
-    # 2026-10-21 (ARTIST_MERGE_V2_PREF): videos named "for KING + COUNTRY -"
+    # (ARTIST_MERGE_V2_PREF): videos named "for KING + COUNTRY -"
     ('for KING & COUNTRY', ('for KING + COUNTRY', 'for KING and COUNTRY')),
     ('MercyMe', ('Mercy Me',)),
     ('Coldplay', ('Cold Play',)),

@@ -1,4 +1,4 @@
-"""The radio tuner's brain (2026-10-01): what's tuned in, episode resume,
+"""The radio tuner's brain: what's tuned in, episode resume,
 and the On-Air station. The page itself is ui/views/tuner.py.
 
 Three kinds of thing sit on the dial:
@@ -17,7 +17,7 @@ Three kinds of thing sit on the dial:
 Anything else played from elsewhere in the app simply takes over the
 player; the dial stays where it was.
 
-A station whose stream drops (2026-10-03) is retuned once on its own, the
+A station whose stream drops is retuned once on its own, the
 way you'd nudge the dial; if it still won't come in it's marked off the
 air (RadioStation.off_air_since) and the Radio page offers to look up a
 new link. A station that's stuck connecting or buffering for
@@ -64,7 +64,7 @@ class TunerController(QObject):
     notified = Signal(str)
     #: a station went off the air (True) or came back (False)
     stationAirChanged = Signal(int, bool)
-    #: a SiriusXM channel's page was opened in the web browser (2026-10-21)
+    #: a SiriusXM channel's page was opened in the web browser
     browserStationOpened = Signal(int)
 
     def __init__(self, player, parent=None) -> None:
@@ -216,8 +216,8 @@ class TunerController(QObject):
         return QDesktopServices.openUrl(QUrl(url))
 
     def open_in_browser(self, station_id: int, url: str) -> bool:
-        """Play a SiriusXM channel: open its web-player page in the browser
-        (2026-10-21, the SXM band). MusicMgr can't play SiriusXM itself, so
+        """Play a SiriusXM channel (the SXM band): open its web-player page
+        in the browser. MusicMgr can't play SiriusXM itself, so
         it gets out of the way first - a station playing here is stopped,
         anything else paused - so the two don't play over each other."""
         kind, _ident = self._tuned

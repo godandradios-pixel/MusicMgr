@@ -77,13 +77,12 @@ _TITLE_HAS_FEAT_RE = re.compile(r"\b(?:feat\.?|ft\.?|featuring)\s", re.IGNORECAS
 
 
 def _move_featuring_to_title(title: str, artist: str) -> tuple[str, str]:
-    """Keep a guest singer out of the video's artist (2026-10-21).
+    """Keep a guest singer out of the video's artist.
 
-    "for KING & COUNTRY ft. Courtney - Without You.mp4" used to file under
-    an artist called "for KING & COUNTRY ft. Courtney" - one made-up artist
-    per guest, five of them for that one band on PC1. The video now files
-    under "for KING & COUNTRY" and its title becomes "Without You (feat.
-    Courtney)", so nothing in the name is lost. Only an explicit feat./ft./
+    "for KING & COUNTRY ft. Courtney - Without You.mp4" files under
+    "for KING & COUNTRY" with the title "Without You (feat. Courtney)", so
+    nothing in the name is lost and no made-up artist is created per guest.
+    Only an explicit feat./ft./
     featuring is split off: "Simon & Garfunkel - The Boxer.mp4" stays with
     Simon & Garfunkel (the music side's split_artists would credit Simon
     and Garfunkel separately, which a video, with one artist, can't do)."""
@@ -106,7 +105,7 @@ def repair_video_artists(session: Session) -> int:
     library.get_or_create_artist's aliases. No file is opened; only rows
     whose title or artist comes out different change. Artists left with
     nothing pointing at them are removed. Returns how many videos changed.
-    One-time per data folder (ui/app.py, 2026-10-21)."""
+    One-time per data folder (ui/app.py)."""
     changed = 0
     left: set[int] = set()
     for video in list(session.scalars(select(Video))):
@@ -149,7 +148,7 @@ def import_video_file(
 ) -> Optional[Video]:
     """Import or refresh a single video file. Returns the Video.
 
-    `force=True` (2026-09-18, "Re-read all tags" scan option in
+    `force=True` ("Re-read all tags" scan option in
     ui/views/settings/ - audio and video scan together under one
     `ScanThread`) bypasses the unchanged-file shortcut below, mirroring
     services/scanner.py:import_file's own `force` flag.
@@ -157,7 +156,7 @@ def import_video_file(
     stat = path.stat()
     existing = session.scalar(select(Video).where(Video.path == str(path)))
     if existing is None and config.CASE_INSENSITIVE_PATHS:
-        # 2026-10-19: same file under another capitalization (see
+        # same file under another capitalization (see
         # scanner.find_media_file) - keep the row, follow the new spelling
         existing = session.scalar(
             select(Video).where(path_matches(Video.path, path)).limit(1)
@@ -172,7 +171,7 @@ def import_video_file(
             return existing
         result.updated += 1
         # a changed file gets its thumbnail found again
-        # (services/video_details.py, 2026-10-22)
+        # (services/video_details.py)
         existing.thumbnail_path = None
     else:
         result.added += 1
@@ -206,14 +205,12 @@ def scan_video_folder(
     force: bool = False,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> ScanResult:
-    """2026-09-22 - James: "add a real cancel button that stops any process
-    running within Settings". `should_stop`, checked once per file before
-    that file's own import, `break`s rather than raising - same
-    safe-via-break shape scanner.py:scan_folder's own should_stop just
-    adopted, and for the same reason: no per-file savepoint here either
-    (see the matching `session.rollback()` comment below), so a clean break
-    just leaves the folder's own end-of-scan bookkeeping (WatchedFolder
-    timestamp, flush) to run over whatever got imported before the stop."""
+    """Import every video file under `root`. `should_stop` (Settings'
+    Cancel button), checked once per file, `break`s rather than raising,
+    like scanner.py:scan_folder: there's no per-file savepoint (see the
+    `session.rollback()` comment below), so a clean break lets the
+    end-of-scan bookkeeping (WatchedFolder timestamp, flush) run over
+    whatever was imported before the stop."""
     root = Path(root).expanduser()
     result = result or ScanResult()
     if not root.exists():
@@ -257,7 +254,7 @@ def import_video_paths(
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> ScanResult:
     """Import just these video files - no folder walk, no WatchedFolder
-    bookkeeping. The video twin of scanner.import_paths (2026-09-23, USB
+    bookkeeping. The video twin of scanner.import_paths (used after a USB
     sync). Non-video paths are ignored; an unchanged file is skipped."""
     result = result or ScanResult()
     for p in paths:
@@ -293,13 +290,9 @@ def rescan_all_videos(
 def remove_skipped_folder_videos(session: Session) -> int:
     """Take videos inside a folder scans now skip (config.SKIP_SCAN_DIRS -
     GoodSync's _gsdata_ above all) back out of the library - the video twin
-    of scanner.remove_skipped_folder_files (2026-10-21).
-
-    The 2026-10-18 fix made video scans skip those folders, but only the
-    music side got a cleanup for what an older scan had already imported.
-    PC1 still had 15 videos from D:\\Movies\\_gsdata_\\_saved_ (GoodSync's
-    old versions), four of them filed under an artist called "_saved_" -
-    the folder name, since their file names had no "Artist - Title".
+    of scanner.remove_skipped_folder_files. Cleans up what an older scan
+    imported from those folders (e.g. GoodSync's _gsdata_\\_saved_ old
+    versions, sometimes filed under an artist called "_saved_").
 
     Deleting a Video row takes nothing else with it (nothing has a foreign
     key to videos.id - see purge_missing_videos), so unlike the music side
@@ -355,11 +348,8 @@ def mark_missing_videos(
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> int:
     """Flag rows whose file has disappeared instead of deleting metadata -
-    same convention as scanner.py:mark_missing_files, `progress` (2026-09-22,
-    part of the same "does the progress bar also work on ... verify files"
-    fix) included, and now `should_stop` too (2026-09-22 same-day
-    follow-up, "add a real cancel button...") - same safe-via-break shape
-    as scanner.py:mark_missing_files."""
+    same convention, `progress` and safe-via-break `should_stop` as
+    scanner.py:mark_missing_files."""
     total = session.scalar(select(func.count(Video.id))) or 0
     count = 0
     for i, video in enumerate(session.scalars(select(Video)), start=1):
@@ -385,13 +375,9 @@ def purge_missing_videos(session: Session) -> int:
     event, or a jukebox slot side), so there is nothing a delete here could
     silently take down with it. That's also why, unlike the audio purge
     (which runs automatically on every scan - see its own docstring), this
-    one is wired to a manual, confirmed Settings button instead: it's the
-    one video-library action that's actually irreversible, so it gets a
-    "are you sure" rather than running unattended (2026-09-15, James: a
-    library carried over from another machine's Linux paths showed every
-    video "missing" and duplicated after a Windows rescan - see
-    mark_missing_videos above for why the paths themselves don't move, and
-    settings.py's "Purge missing videos…" button for the cleanup step).
+    one is wired to a manual, confirmed Settings button ("Purge missing
+    videos…"): it's irreversible, and a library carried over from another
+    OS's paths can show every video "missing" at once.
     Call `mark_missing_videos` first (or run a scan) so `is_missing` is
     actually current before purging by it.
     """

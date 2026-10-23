@@ -1,45 +1,31 @@
-"""Radio page (2026-10-01): an antique multi-band radio for old-time radio
-shows and internet stations.
-
-James's request: "Internet radio and old-time radio shows. A tuner page for
-streaming stations, styled as an antique radio dial to match the
-turntable. It could include old-time radio show archives alongside regular
-stations. I have a whole set of old radio programs." His choices: shows
-resume in air-date order, an On-Air "broadcast night" station, stations
-from presets plus a directory search, and (after a round dial was tried
-and dropped) one slide-rule glass with several bands, like a 1950s
-European set.
+"""Radio page: an antique multi-band radio for old-time radio shows and
+internet stations - one slide-rule glass with several bands, like a 1950s
+European set. Shows resume in air-date order; there's an On-Air "broadcast
+night" station; stations come from presets plus a directory search.
 
 The set is ui/widgets/radio_dial.py; what tuning does is services/tuner.py
 (shows: services/otr.py, stations: services/stations.py).
 
 Bands (guessed from folder names, changeable with a show's or station's
-Band... button). First layout was "by type of program"; reorganised the
-same day at James's request ("Let's leave FM to allow enter on URL
-streams, Then use the AM for the same URL streams. For the Police band,
-let's do the WWII NEWS & SOUNDS with ON THE AIR and AMERICAN HISTORY. On
-the SW1 we can move what was in the AM band, On SW2 we can move what was
-on the POLICE band"): FM and AM internet stations, POLICE On the Air, WWII
+Band... button): FM and AM internet stations, POLICE On the Air, WWII
 news and American history, SW1 drama and comedy, SW2 crime and mystery,
-LW speeches, Paul Harvey and commercials. Shows already scanned move over
-once (services/otr.py:migrate_band_layout).
+LW speeches, Paul Harvey and commercials. Shows scanned under an older
+layout move over once (services/otr.py:migrate_band_layout).
 
 The page header says, in one line, what's tuned in (or what the pointer
 rests on) beyond what the player bar already shows, with the actions that
-go with it beside it. (Until 2026-10-03 this was a card under the set.)
+go with it beside it.
 
-2026-10-03: FM/AM stations sit at the frequency in their name; Move ◀/▶
-only applies to internet-only stations (the others are placed by their
-frequency). The magic eye follows the stream's signal, and a station
-that's gone off the air is faded on the glass with a "Find a new link…"
-button in the header (ReplacementDialog).
+FM/AM stations sit at the frequency in their name; Move ◀/▶ only applies
+to internet-only stations. The magic eye follows the stream's signal, and
+a station that's gone off the air is faded on the glass with a "Find a new
+link…" button in the header (ReplacementDialog).
 
-2026-10-21: the SXM band - SiriusXM channels that play in the web browser
-(services/stations.py has the why). James adds one by pasting the link of
-the channel's page in SiriusXM's web player (right-click the channel's
-tile, Copy link). Tapping a channel's name opens
-it in the browser; sweeping the pointer, the knob, the wheel or the keys
-only point at one (RadioSet.last_tune_was_tap), so browsing the band never
+The SXM band holds SiriusXM channels that play in the web browser
+(services/stations.py has the why), added by pasting the link of the
+channel's page in SiriusXM's web player. Tapping a channel's name opens it
+in the browser; sweeping the pointer, the knob, the wheel or the keys only
+point at one (RadioSet.last_tune_was_tap), so browsing the band never
 opens a tab per channel - "Play in browser ▶" opens the one pointed at.
 The band isn't scanned, and SXM channels and other stations don't move
 between bands (an FM stream can't open in a browser, nor the reverse).
@@ -79,7 +65,7 @@ from .base import BaseView
 log = logging.getLogger(__name__)
 
 STATIC_KEY = "tuner_static"
-#: Scan (2026-10-04): how long each station plays once its stream is up,
+#: Scan: how long each station plays once its stream is up,
 #: and how long to wait for one that won't come in before moving on
 SCAN_HOLD_MS = 8000
 SCAN_GIVE_UP_MS = 12000
@@ -125,7 +111,7 @@ def _set_setting(ctx: AppContext, key: str, value: str) -> None:
 def dial_entries(session) -> tuple[dict[str, list[tuple[str, int, str]]], set[int]]:
     """What's on each band of the dial, in dial order - (kind, id, label)
     with kind "onair" / "show" / "station" - and the ids of stations off the
-    air. Shared with Now Playing's tabletop radio (2026-10-19), so its
+    air. Shared with Now Playing's tabletop radio, so its
     pointer sits where this page's does."""
     entries: dict[str, list[tuple[str, int, str]]] = {k: [] for k in BAND_KEYS}
     off_air: set[int] = set()
@@ -324,7 +310,7 @@ class EpisodesDialog(QDialog):
 
 
 class ReplacementDialog(QDialog):
-    """A new stream link for a station that's gone off the air (2026-10-03):
+    """A new stream link for a station that's gone off the air:
     the same directory entry again if the station has moved its stream,
     then stations found by its call letters and name. Choosing one keeps
     the station's name, band, place and logo and tunes it in."""
@@ -590,9 +576,8 @@ class TunerView(BaseView):
         self._initialised = False
         self._live = False
         self._off_air: set[int] = set()
-        # Scan (2026-10-04, from the radio ideas: "plays each station on the
-        # band for about 8 seconds, like the scan button on a car radio.
-        # Press it again to stay on the current station.")
+        # Scan: plays each station on the band for about 8 seconds, like a
+        # car radio's scan button; pressing it again stays on the station.
         self._scanning = False
         #: the (kind, id) the scan last tuned; anything else tuned stops it
         self._scan_expect: Optional[tuple[str, int]] = None
@@ -607,13 +592,10 @@ class TunerView(BaseView):
         self.rescan_btn = make_compact(TouchButton("Rescan shows"))
         self.rescan_btn.clicked.connect(self.rescan)
 
-        # 2026-10-03 - James: "Don't like the redundant 105.9 The X WXDX.
-        # Maybe we move the Band Rename Remove to the top and just eliminate
-        # that whole block to give more room for the radio dials". The info
-        # card under the set is gone: what it said that the player bar
-        # doesn't (the song a station is playing, an episode's broadcast
-        # date, off the air, what to do on an empty band) is one line in the
-        # page header, and its buttons sit beside it.
+        # no info card under the set: what the player bar doesn't say (the
+        # song a station is playing, an episode's broadcast date, off the
+        # air, what to do on an empty band) is one line in the page header,
+        # with its buttons beside it.
         while self.header.count() > 1:          # keep the title, drop the stretch
             self.header.takeAt(1)
         self.status = ElidingLabel("")
@@ -678,7 +660,7 @@ class TunerView(BaseView):
         self.btn_folder.clicked.connect(self.choose_folder)
         self.btn_starters = make_compact(TouchButton("Add old-time radio stations", primary=True))
         self.btn_starters.clicked.connect(self._add_starters)
-        # the SXM band (2026-10-21)
+        # the SXM band
         self.btn_open_browser = make_compact(TouchButton("Play in browser ▶", primary=True))
         self.btn_open_browser.setToolTip("Open this channel in SiriusXM's web player")
         self.btn_open_browser.clicked.connect(self._listen_pointed)
@@ -731,7 +713,7 @@ class TunerView(BaseView):
         self._update_info()
 
     def _fetch_missing_logos(self) -> None:
-        """Stations that arrived by USB sync (2026-10-01) bring their logo's
+        """Stations that arrived by USB sync bring their logo's
         web address, not the picture: fetch each one once, when the Radio
         page is opened."""
         tried = self.__dict__.setdefault("_logos_tried", set())
@@ -816,7 +798,7 @@ class TunerView(BaseView):
 
     def _on_reception(self, value: float) -> None:
         """The station fades and flutters under the static as the pointer
-        leaves it (2026-10-03) - only while the radio is what's playing."""
+        leaves it - only while the radio is what's playing."""
         self.ctx.player.set_reception(value if self.ctx.tuner.tuned[0] else 1.0)
 
     def _sync_signal(self) -> None:
@@ -1103,7 +1085,7 @@ class TunerView(BaseView):
         self._show_buttons(*buttons)
 
     def _info_browser_station(self, station_id: int, name: str, url: str) -> None:
-        """A SiriusXM channel on the SXM band (2026-10-21)."""
+        """A SiriusXM channel on the SXM band."""
         opened = self._browser_station == station_id
         self._set_status(name, "playing in your web browser" if opened
                          else "SiriusXM · tap its name or Play in browser",

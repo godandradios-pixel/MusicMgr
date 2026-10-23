@@ -1,19 +1,9 @@
 """App version string, for the Settings page's About footer.
 
-2026-09-23 update: MusicMgr now has real releases (GitHub Releases on
-godandradios-pixel/MusicMgr, installed by the in-app updater), so the
-SemVer number in `musicmgr.__version__` leads the label and the commit
-info below is kept alongside it as build detail:
-"1.5.0 (5e3094e - 2026-09-23)". The history below explains the commit
-part, which is still how two builds of the *same* version are told apart.
-
-MusicMgr has no formal release process - James is the only user, there
-are no version-numbered releases, no tags (see `git tag` - empty), and
-nothing else in the codebase tracks a version at all. Rather than hand-
-maintain a number that's guaranteed to go stale the moment someone
-forgets to bump it, "version" here just means "exactly which commit is
-this" - a short git hash plus the date it was committed, which is always
-accurate for free.
+The SemVer number in `musicmgr.__version__` (GitHub Releases, installed by
+the in-app updater) leads the label, with the commit as build detail:
+"1.5.0 (5e3094e - 2026-09-23)". The commit part - a short git hash plus
+its commit date - is how two builds of the *same* version are told apart.
 
 Two sources, tried in order:
 

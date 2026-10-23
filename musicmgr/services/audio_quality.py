@@ -1,10 +1,6 @@
-"""A short "how good is this file" label for what's playing (2026-10-13).
-
-James: "With the radio there is a LIVE pill at the bottom. For other songs,
-can we have a Mono Stereo or bit rate or some other indicator that can be
-used to describe the quality of the file". The player bar shows the label in
-a pill where LIVE sits for a station (ui/widgets/player_bar.py), and the
-phone remote shows it under the album.
+"""A short "how good is this file" label for what's playing. The player
+bar shows it in a pill where LIVE sits for a station
+(ui/widgets/player_bar.py), and the phone remote shows it under the album.
 
     FLAC · 16/44.1 · Stereo        lossless: bit depth / sample rate
     FLAC · 24/96 · Stereo          (hi-res is just the bigger numbers)

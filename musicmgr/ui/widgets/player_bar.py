@@ -8,33 +8,18 @@ temporarily points its buttons and seek bar at whatever VideoController is
 playing instead of the audio queue - see enter_video_mode/exit_video_mode,
 wired up from ui/app.py via AppContext.videoPlaybackStarted/Ended.
 
-Also owns the `PulseVisualizer` strip across its top edge (2026-09-06,
-moved here from Now Playing; see ui/widgets/visualizer.py's module
-docstring for the full history, including the same-day follow-up that
-made it audio-reactive again). Its active/idle state is wired to the exact
-same `on_state` transitions the transport already reacts to, so it tracks
-play/pause for music with no separate wiring of its own.
+Also owns the `PulseVisualizer` strip across its top edge (see
+ui/widgets/visualizer.py). Its active/idle state follows the same
+`on_state` transitions the transport reacts to.
 
-**Feeding it real data (2026-09-06 follow-up).** `_start_spectrum` fires a
-background `SpectrumThread` (services/spectrum.py) on every track change,
-the same "analyze once per track, off the GUI thread" shape the original
-2026-09-05 spectrum feature used before it was removed - see that
-module's docstring for why this was brought back. `on_position` (already
-firing every position tick for the seek bar) also feeds the visualizer's
-`update_position`. `on_track_changed`/`enter_video_mode` both clear its
-data - an emptied queue, or a playing video - rather than start a new
-analysis. Video briefly got its own real analysis too (2026-09-15,
-same-day follow-up - the same decode-the-file-and-index-by-position trick
-works whether `path` is an audio file or a video container's audio
-track), then James asked for that back out again along with the
-visualizer strip itself, wanting the video bigger and no pulse bar while
-watching one at all: `enter_video_mode`/`exit_video_mode` now also
-`setVisible()` the strip and call `_update_height()` to actually give its
-row of height back rather than just leaving it there, hidden and idle.
-`SPECTRUM_ENABLED` and the discard-stale-results pattern in
-`_on_spectrum_ready`/`_on_spectrum_failed` mirror that same removed
-feature's own conventions exactly, including the reason for both (see
-their docstrings and tests/conftest.py's autouse fixture).
+`_start_spectrum` runs a background `SpectrumThread` (services/spectrum.py)
+on every track change - analyze once per track, off the GUI thread - and
+`on_position` feeds the visualizer's `update_position`. An emptied queue
+clears its data. While a video plays the strip is hidden (no analysis at
+all) and `_update_height()` gives its row of height back to the video.
+`SPECTRUM_ENABLED` and the discard-stale-results check in
+`_on_spectrum_ready`/`_on_spectrum_failed` are explained in their own
+docstrings and tests/conftest.py's autouse fixture.
 """
 
 from __future__ import annotations
@@ -65,13 +50,11 @@ from ..theme import COLORS
 log = logging.getLogger(__name__)
 
 #: gates the real background analysis - see tests/conftest.py's autouse
-#: `_disable_spectrum_threads` fixture. Exists for the exact reason the
-#: original 2026-09-05 spectrum feature's identical flag did: every test
-#: that builds a real PlayerBar and plays back real audio would otherwise
-#: spawn a real, un-awaited SpectrumThread as a side effect, which - given
-#: enough of them - hung the full suite before (see architecture.md's
-#: "Audio-reactive spectrum bars on the PlayerBar"). Tests that actually
-#: exercise the real threaded decode opt back in explicitly.
+#: `_disable_spectrum_threads` fixture. Without it every test that plays
+#: real audio through a PlayerBar spawns an un-awaited SpectrumThread,
+#: and enough of them hang the suite (see architecture.md's
+#: "Audio-reactive spectrum bars on the PlayerBar"). Tests of the threaded
+#: decode opt back in explicitly.
 SPECTRUM_ENABLED = True
 
 
@@ -157,13 +140,10 @@ class PlayerBar(QFrame):
         root.setSpacing(16)
 
         # --- current track -------------------------------------------------
-        # 2026-10-01 - James: "can the stop and play button at the bottom be
-        # in a fixed centered location? It moves around depending on the
-        # length of the album name". The left (cover, title, artist/album)
-        # and right (Queue, volume) sides are now the same fixed width, so
-        # the transport row sits in the true centre of the bar whatever the
-        # text; a long title or album is cut short with "…" (full text in
-        # the tooltip) instead of widening the left side.
+        # The left (cover, title, artist/album) and right (Queue, volume)
+        # sides are the same fixed width, so the transport row stays in the
+        # true centre of the bar whatever the text; a long title or album
+        # is cut short with "…" (full text in the tooltip).
         left_box = QWidget()
         left_box.setFixedWidth(SIDE_WIDTH)
         left = QHBoxLayout(left_box)
@@ -198,13 +178,9 @@ class PlayerBar(QFrame):
         self.shuffle_btn = self._transport("⇄", "Shuffle", checkable=True)
         self.back_btn = self._transport("−15s", "Back 15 seconds", wide=True)
         # ⏮/⏭ (U+23EE/U+23ED, the "Miscellaneous Technical" media-symbol
-        # block) are exactly the range Windows hands off to the color emoji
-        # font instead of the plain UI font, regardless of the app's own
-        # font-family stack - that's what was showing up as small solid-blue
-        # squares instead of a flat glyph matching shuffle/repeat. Doubled
-        # triangles from the Geometric Shapes block (the same block ▶ already
-        # uses safely for play) read the same way visually without tripping
-        # that fallback.
+        # block) are drawn by Windows with the color emoji font whatever the
+        # app's font stack (small blue squares). Doubled triangles from the
+        # Geometric Shapes block (as ▶ for play) avoid that fallback.
         self.prev_btn = self._transport("◀◀", "Previous")
         self.play_btn = self._transport("▶", "Play / pause", main=True)
         self.next_btn = self._transport("▶▶", "Next")
@@ -236,11 +212,10 @@ class PlayerBar(QFrame):
         self.seek.setRange(0, 1000)
         self.seek.sliderPressed.connect(lambda: setattr(self, "_seeking", True))
         self.seek.sliderReleased.connect(self._commit_seek)
-        # 2026-10-03 - James: on a live station "the -15s / +30s, shuffle
-        # and repeat buttons do nothing useful, and the seek bar just counts
-        # up to --:--". While an internet station plays those are hidden and
-        # this LIVE badge takes the seek bar's place; previous/next step
-        # along the station's band instead (see _set_live).
+        # While an internet station plays, -15s/+30s, shuffle and repeat
+        # (useless on a live stream) are hidden and this LIVE badge takes
+        # the seek bar's place; previous/next step along the station's band
+        # instead (see _set_live).
         self.live_badge = QLabel("●  LIVE")
         self.live_badge.setObjectName("LiveBadge")
         self.live_badge.setAlignment(Qt.AlignCenter)
@@ -252,9 +227,7 @@ class PlayerBar(QFrame):
         self.live_badge.setToolTip("Live internet radio")
         self.live_badge.setVisible(False)
         self._live = False
-        # 2026-10-13 - James: "For other songs, can we have a Mono Stereo or
-        # bit rate or some other indicator that can be used to describe the
-        # quality of the file" - the file's format, bit depth/sample rate
+        # the file's quality: format, bit depth/sample rate
         # (lossless) or bitrate (compressed) and channels, in a pill at the
         # end of the seek row (services/audio_quality.py). Outlined rather
         # than filled like LIVE, warm for lossless, dim for compressed.
@@ -284,16 +257,14 @@ class PlayerBar(QFrame):
         vol_icon = QLabel("Vol")
         vol_icon.setObjectName("Dim")
         self.volume = QSlider(Qt.Horizontal)
-        # 2026-09-08 follow-up - James: "make that volume control bar brown
-        # to fit pallete" - see ui/theme.py's QSlider#VolumeSlider rule for
-        # why this needed its own object name rather than retinting QSlider
-        # generally (the seek bar right above shares that same base rule).
+        # its own object name so ui/theme.py's QSlider#VolumeSlider rule can
+        # tint it brown without retinting the seek bar's shared QSlider rule.
         self.volume.setObjectName("VolumeSlider")
         self.volume.setFixedWidth(140)
         self.volume.setRange(0, 100)
         self.volume.setValue(int(player.volume * 100))
         self.volume.valueChanged.connect(lambda v: self._active().set_volume(v / 100))
-        # 2026-10-01: the radio tuner's VOLUME knob turns this too
+        # the radio tuner's VOLUME knob turns this too
         player.volumeChanged.connect(self._sync_volume_slider)
         right.addWidget(self.queue_btn)
         right.addWidget(vol_icon)
@@ -319,7 +290,7 @@ class PlayerBar(QFrame):
         player.positionChanged.connect(self.on_position)
         player.durationChanged.connect(self.on_duration)
         player.playbackStateChanged.connect(self.on_state)
-        # 2026-10-03: a station's sound, analysed as it plays
+        # a station's sound, analysed as it plays
         player.liveBands.connect(self.visualizer.push_live)
 
     def _transport(
@@ -358,14 +329,9 @@ class PlayerBar(QFrame):
         glyph = {"off": "↻", REPEAT_ALL: "↻", REPEAT_ONE: "↻¹"}[mode]
         self.repeat_btn.setText(glyph)
         self.repeat_btn.setToolTip(f"Repeat {mode}")
-        # 2026-09-13 follow-up (James: "clean up the remaining red/orange
-        # lines and text in the app ... brown pallete" - see ui/theme.py's
-        # #Primary comment for the rest of this sweep): this one was a raw
-        # "#e8563f" literal rather than a COLORS["accent"] lookup, so it
-        # slipped past every earlier retint that searched for the token by
-        # name. jukebox_key_hi, not jukebox_key, since this is small bold
-        # text on the button's own dark background (same reasoning as
-        # ui/widgets/common.py's toggle-icon colors below).
+        # jukebox_key_hi, not jukebox_key, since this is small bold text on
+        # the button's own dark background (same reasoning as
+        # ui/widgets/common.py's toggle-icon colors).
         self.repeat_btn.setStyleSheet(
             "" if mode == "off" else f"color: {COLORS['jukebox_key_hi']}; font-weight: 700;"
         )
@@ -403,16 +369,10 @@ class PlayerBar(QFrame):
         audio queue is paused by the caller before this fires, so nothing
         talks over the video). No queue concept for a single video, so
         prev/next/shuffle/repeat are disabled for as long as this lasts."""
-        # 2026-09-15, two follow-ups same day: a video's own audio was
-        # briefly analyzed here too (same decode a music track gets, so the
-        # visualizer would react to it), then James asked for that back out
-        # entirely - "When watching a music video, I really don't need the
-        # pulse visualizer. I want to look at the video" - along with the
-        # visualizer strip itself hidden during video, not just idle, so
-        # its height goes back to the picture (see _update_height below).
-        # No decode even attempted now, not just an unused one - clearing
-        # here is also what keeps a stale music track's bars from lingering
-        # once the strip is hidden and no longer overwriting them itself.
+        # No visualizer during a video: the strip is hidden and its height
+        # goes back to the picture (see _update_height below), and no decode
+        # is attempted. Clearing here keeps a stale music track's bars from
+        # lingering in the hidden strip.
         self._start_spectrum(None)
         self._set_live(False)
         self.quality_badge.setVisible(False)
@@ -467,13 +427,9 @@ class PlayerBar(QFrame):
     def _update_height(self) -> None:
         """The visualizer strip's height is only ever "there" or "not" -
         hiding the widget (enter_video_mode/exit_video_mode above) doesn't
-        by itself shrink this frame's own fixed height, so the room it used
-        to take stays reserved as dead space unless this also runs. Giving
-        that room back is the actual point of hiding it during video
-        (2026-09-15, James: "so that video size can be bigger") - this bar
-        sits below the stacked view content in MainWindow's layout, so a
-        shorter PlayerBar directly means more vertical room for whatever's
-        above it, the embedded video player included."""
+        by itself shrink this frame's fixed height, so this must run too.
+        A shorter PlayerBar gives more vertical room to the view above it,
+        which is the point of hiding the strip during video."""
         extra = 0 if self._video is not None else VISUALIZER_HEIGHT
         self.setFixedHeight(self._content_height + extra)
 
@@ -550,8 +506,8 @@ class PlayerBar(QFrame):
         # wiring for the video case.
         self.visualizer.set_active(state == "playing")
 
-    # -- spectrum analysis (2026-09-06 follow-up - see the module and
-    # ui/widgets/visualizer.py docstrings for why this is back) --------------
+    # -- spectrum analysis (see the module and ui/widgets/visualizer.py
+    # docstrings) ------------------------------------------------------------
 
     def _start_spectrum(self, path: Optional[str]) -> None:
         """Fires a background analysis for `path` (or clears the visualizer's
@@ -561,8 +517,7 @@ class PlayerBar(QFrame):
         than one in flight, and `_on_spectrum_ready`/`_on_spectrum_failed`
         check the reported path against `self._spectrum_path` before
         applying a result, so a late-arriving stale one (e.g. from a fast
-        double-skip) is simply discarded - the same shape this project uses
-        elsewhere for "ignore a result that's no longer current"."""
+        double-skip) is simply discarded."""
         self._spectrum_path = path
         if path is None or not SPECTRUM_ENABLED:
             self.visualizer.clear_data()

@@ -2,10 +2,8 @@
 PlayerBar - see services/spectrum.py for how the underlying [0..1] band
 data is computed (a whole-track Goertzel pass, done once per track on a
 background thread) and architecture.md's "Audio-reactive spectrum bars on
-the PlayerBar" for the scope this was built to (James: "is there a pulse
-visualizer we could display somewhere when the music plays", 2026-09-05 -
-he chose a small bar-spectrum widget in the bottom bar, real audio-reactive
-rather than purely decorative).
+the PlayerBar" for its scope. Not currently used: PlayerBar uses
+PulseVisualizer (see ui/widgets/visualizer.py's module docstring).
 
 This widget is purely a display: PlayerBar hands it a track's precomputed
 buckets (`set_data`), tells it where playback is right now
@@ -105,12 +103,8 @@ class SpectrumBars(QWidget):
         n = self.BAR_COUNT
         gap = 3.0
         bar_w = (w - gap * (n - 1)) / n
-        # 2026-09-13 follow-up (see ui/theme.py's #Primary comment for this
-        # whole sweep) - this class isn't actually used anywhere in the app
-        # today (see ui/widgets/visualizer.py's module docstring: PlayerBar
-        # moved on to PulseVisualizer after this widget's original outing),
-        # but there's no reason to leave a stray red-orange behind in dead
-        # code either.
+        # theme colours, not a hardcoded hue (see ui/theme.py's #Primary
+        # comment)
         color = QColor(COLORS["jukebox_key_hi"] if self._active else COLORS["text_dim"])
         painter.setBrush(color)
 

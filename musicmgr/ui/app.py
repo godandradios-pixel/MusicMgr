@@ -46,34 +46,23 @@ from .views.tuner import TunerView
 from .views.videos import VideosView
 from ..version import RELEASE_VERSION
 
-#: James, 2026-09-06: "remove the Library [item] as a left sidebar item and
-#: make all those sub menus part of the main [nav]" - Artists/Albums/Tracks/
-#: Title Details used to nest under one collapsible "Library" button (see
-#: LIBRARY_MODE_KEYS below); each now gets its own top-level slot here,
-#: in the exact order James asked for.
-#: 2026-10-03 - James: "Let's move Jukebox to the top left menu option" -
-#: it's also the page MusicMgr opens on, so it leads the rail.
+#: the nav rail, top to bottom. Artists/Albums/Tracks/Title Details are
+#: top-level slots (routed to LibraryView - see LIBRARY_MODE_KEYS below).
+#: Jukebox leads the rail; it's also the page MusicMgr opens on.
 NAV_ITEMS = [
     ("jukebox", "Jukebox"),
     ("artist", "Artists"),
     ("album", "Albums"),
     ("track", "Tracks"),
     ("details", "Title Details"),
-    # Videos briefly got a real sidebar entry here (2026-09-15), reverted
-    # the very next day (James: "remove the Videos sidebar menu option"
-    # now that Title Details has its own "Videos only" checkbox - see
-    # track_details_table.py - giving a second, redundant way to reach the
-    # same videos). Back to how it started: no sidebar entry, reachable
-    # only mid-transit from a search match or the artist page's own video
-    # list (ctx.playVideoRequested/focusVideoArtistRequested, both still
-    # wired up below) - the "videos" key stays in the views/PANES mapping
-    # a few lines down for exactly that, it just isn't one of these
-    # buttons any more. See ctx.videosBackRequested's own docstring for
-    # what changed in the embedded player's "‹ Back" button to match.
+    # Videos has no sidebar entry: it's reached from a search match or
+    # Title Details' "Videos only" filter (ctx.playVideoRequested/
+    # focusVideoArtistRequested, wired below). The "videos" key stays in
+    # the views mapping for that - see ctx.videosBackRequested's docstring
+    # for how the embedded player's "‹ Back" works.
     ("playlists", "Playlists"),
     ("charts", "Charts"),
-    # 2026-10-01 - old-time radio shows and internet stations, see
-    # ui/views/tuner.py
+    # old-time radio shows and internet stations, see ui/views/tuner.py
     ("radio", "Radio"),
     ("settings", "Settings"),
 ]
@@ -110,10 +99,8 @@ class MainWindow(QMainWindow):
         self._current_key: Optional[str] = None
         self._nowplaying_back_key: Optional[str] = None
         #: same idea as _nowplaying_back_key, for the embedded video
-        #: player's "‹ Back" button now that Videos isn't a sidebar
-        #: destination of its own any more - see navigate() and
-        #: _go_back_from_videos(), and ctx.videosBackRequested's docstring
-        #: for why this exists.
+        #: player's "‹ Back" button (Videos isn't a sidebar destination) -
+        #: see navigate(), _go_back_from_videos() and ctx.videosBackRequested.
         self._videos_back_key: Optional[str] = None
 
         central = QWidget()
@@ -170,17 +157,13 @@ class MainWindow(QMainWindow):
         self._toast_timer.timeout.connect(self.toast.hide)
 
         self._install_shortcuts()
-        # 2026-09-07 follow-up, James: "When you start the app, default to
-        # the Jukebox page." Startup used to always land on Albums ("album"
-        # - not "artist", first though it now sits in the rail - kept the
-        # screen James saw before the sidebar was flattened); now it opens
-        # straight to the jukebox board instead.
+        # the app opens on the Jukebox page
         self.navigate("jukebox")
         self._start_web_remote()
 
     def _start_web_remote(self) -> None:
-        """2026-10-13 phone remote (services/web_remote.py): back on at
-        launch if it was left on in Settings › Phone remote."""
+        """Phone remote (services/web_remote.py): back on at launch if it
+        was left on in Settings › Phone remote."""
         from ..services import web_remote
 
         try:
@@ -196,45 +179,21 @@ class MainWindow(QMainWindow):
 
     # -- chrome ---------------------------------------------------------------
 
-    #: Displayed size of the brand icon in _build_brand_row(). 2026-09-07,
-    #: three rounds in one day: 28 (first pass) -> 56 ("make it a lot
-    #: bigger") -> stacked layout + this size + the QIcon fix below ("it's
-    #: completely blurry ... still could be bigger"). Stacking the icon
-    #: above the wordmark (instead of beside it) uncoupled icon size from
-    #: nav_width entirely, so this can go as big as looks good without
-    #: fighting the sidebar's width the way a side-by-side layout did.
+    #: Displayed size of the brand icon in _build_brand_row(). The icon
+    #: sits above the rail's buttons rather than beside a wordmark, so its
+    #: size is independent of the rail's width.
     _BRAND_ICON_SIZE = 88
 
     def _build_brand_row(self) -> QWidget:
-        """The nav rail's header: MusicMgr's icon, upper-left.
-        James, 2026-09-07: "put the ico image in the upper left area of the
-        MusicMgr application" - this row is the upper-left area (the rail's
-        first row, above every nav button). Replaces the old plain-text-only
-        QLabel#NavBrand. Falls back to a QLabel#NavBrandText wordmark if the
-        icon asset is missing (same guard used for the splash and window
-        icon) - there's otherwise nothing here identifying the app at all,
-        since the icon artwork already has "MusicMgr" lettered into it (see
-        the next paragraph).
+        """The nav rail's header: MusicMgr's icon, upper-left. The icon
+        artwork has "MusicMgr" lettered into it, so there's no separate
+        wordmark - except a QLabel#NavBrandText fallback if the icon asset
+        is missing (same guard as the splash and window icon).
 
-        Icon over text, not beside it, as of a same-day follow-up - a
-        side-by-side row forces a tradeoff between icon size and sidebar
-        width (a bigger icon needs a wider row to avoid clipping the
-        wordmark, which fought the earlier "make the sidebar narrower"
-        request); stacked, the icon can be sized independently.
-
-        The blurriness James reported after that was a real bug, not a
-        resolution limit: config.APP_ICON is a multi-resolution .ico (16 up
-        to 256px), and `QPixmap(path)` - what the first two passes used -
-        defaults to that file's *first* frame, which for this Pillow-built
-        icon is the smallest one (16x16) - so scaling up to even 56px was
-        stretching a 16px source. `QIcon(path).pixmap(size)` instead picks
-        whichever embedded frame best matches the requested size.
-
-        Final same-day follow-up: "Looks good, you can remove the MusicMgr
-        text now below the icon" - the icon artwork is itself a badge with
-        "MusicMgr" lettered across it, so the separate QLabel wordmark
-        underneath was redundant once the icon was big enough (88px) to
-        read on its own."""
+        config.APP_ICON is a multi-resolution .ico; `QPixmap(path)` would
+        take its first (16x16) frame and blur when scaled, so
+        `QIcon(path).pixmap(size)` picks the embedded frame that best
+        matches the requested size."""
         row = QFrame()
         row.setObjectName("NavBrand")
         row_layout = QVBoxLayout(row)
@@ -276,10 +235,8 @@ class MainWindow(QMainWindow):
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
         self._nav_buttons: dict[str, QPushButton] = {}
-        # every button that actually sits on the rail - fed to
-        # _nav_rail_width below once they've all been built, so the rail
-        # sizes itself off whichever one turns out widest rather than
-        # guessing "Title Details" is always going to be it.
+        # every button on the rail - fed to _nav_rail_width below so the
+        # rail sizes itself off whichever turns out widest.
         rail_buttons: list[QPushButton] = []
         for key, label in NAV_ITEMS:
             btn = QPushButton(label)
@@ -312,29 +269,13 @@ class MainWindow(QMainWindow):
         return rail
 
     def _nav_rail_width(self, buttons: list[QPushButton]) -> int:
-        """2026-09-13 follow-up (James: this app runs on a small
-        touchscreen jukebox panel, so "let's make the rail a bit smaller
-        ... where I think space may be saved"): `config.TOUCH["nav_width"]`
-        used to be a hand-picked constant, sized by eye against whatever
-        the nav labels happened to look like at the time (see that key's
-        own removal comment in config.py for its 220 -> 176 -> 200
-        history - the last jump only because the brand icon, back when it
-        sat *beside* the wordmark, needed the extra room; a constraint
-        that no longer even applies now that `_build_brand_row` stacks
-        the icon above the text instead).
-
-        Rather than pick yet another fixed number by eye - and risk it
-        going stale again the next time a label or `TOUCH["font_base"]`
-        changes - this measures every real nav button's own `sizeHint()`.
-        That already reflects the live `#NavButton`/`#NavQuit` QSS (the
-        same 18px each-side padding, `nav_item_height`, and `font_base`
-        every other touch control on the rail uses) because `main()`
-        below calls `app.setStyleSheet(...)` before `MainWindow` - and
-        therefore these buttons - ever gets constructed. Whichever button
-        turns out widest wins, plus `_NAV_WIDTH_BUFFER`, so the rail is
-        always exactly as wide as it needs to be for whatever's actually
-        on it, on whatever machine it's actually running on - no
-        Windows-vs-whatever-built-it font substitution to second-guess."""
+        """Size the rail to its widest real button rather than a fixed
+        constant (the app runs on a small touchscreen panel, so width
+        matters). Each button's `sizeHint()` already reflects the live
+        `#NavButton`/`#NavQuit` QSS (padding, `nav_item_height`,
+        `font_base`) because `main()` calls `app.setStyleSheet(...)` before
+        `MainWindow` is constructed, so this stays right whatever the
+        labels, font size or platform font substitution."""
         widest = max(btn.sizeHint().width() for btn in buttons)
         return widest + self._NAV_WIDTH_BUFFER
 
@@ -396,24 +337,18 @@ class MainWindow(QMainWindow):
         # target with "nowplaying" itself
         if key == "nowplaying" and self._current_key not in (None, "nowplaying"):
             self._nowplaying_back_key = self._current_key
-        # same tracking, for the same reason, now that a video search match
-        # (LibraryView._activate_video/_activate_video_group) routes here
-        # via ctx.navigateRequested.emit("videos") without Videos being a
-        # button of its own to highlight/return to - see
-        # ctx.videosBackRequested's docstring.
+        # same tracking for Videos, which is reached via
+        # ctx.navigateRequested.emit("videos") (e.g. a video search match)
+        # without a button of its own - see ctx.videosBackRequested.
         if key == "videos" and self._current_key not in (None, "videos"):
             self._videos_back_key = self._current_key
         self._current_key = key
         self.stack.setCurrentWidget(view)
         if key == "library":
-            # a raw "library" hand-off (Now Playing's tappable artist/album
-            # jumping straight here - see ui/views/nowplaying.py) rather than
-            # one of Library's own top-level mode buttons - highlight
-            # whichever mode select_mode() left it on instead of leaving
-            # every one of those buttons unchecked. QButtonGroup's own
-            # exclusivity handles unchecking the previous button in every
-            # other case, now that all of them (including the four Library
-            # modes) share one flat, exclusive group.
+            # a raw "library" hand-off (e.g. Now Playing's tappable
+            # artist/album - see ui/views/nowplaying.py): highlight whichever
+            # mode select_mode() left it on. In every other case the one
+            # flat, exclusive QButtonGroup unchecks the previous button.
             button = self._nav_buttons.get(view.mode)
         else:
             button = self._nav_buttons.get(key)
@@ -450,12 +385,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self.ctx.web_remote.stop()
         self.player.stop()
-        # gives any in-flight background spectrum analysis (2026-09-06
-        # follow-up - see ui/widgets/player_bar.py's module docstring) a
-        # brief window to finish rather than abandoning it mid-decode
+        # gives any in-flight background spectrum analysis (see
+        # ui/widgets/player_bar.py's module docstring) a brief window to
+        # finish rather than abandoning it mid-decode
         self.player_bar.shutdown()
-        # 2026-10-01 volume levelling: a track being measured in the
-        # background (services/player.py:LoudnessThread)
+        # volume levelling: a track being measured in the background
+        # (services/player.py:LoudnessThread)
         stop_background_measuring()
         from ..services.radio import stop_background_work as stop_radio_work
 
@@ -468,9 +403,9 @@ class MainWindow(QMainWindow):
         from . import video_details_worker
 
         video_details_worker.stop(self.ctx)
-        # 2026-10-19: today's library backup, the first time the app closes
-        # each day (services/library_backup.py) - after everything above has
-        # stopped writing, before the window goes
+        # today's library backup, the first time the app closes each day
+        # (services/library_backup.py) - after everything above has stopped
+        # writing, before the window goes
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             library_backup.make_daily_backup(config.DB_PATH, config.DB_BACKUP_DIR)
@@ -486,13 +421,13 @@ SIDE_COVERS_PREF = "side_covers_done"
 UNKNOWN_ARTIST_REPAIR_PREF = "unknown_artist_repair_done"
 CREDIT_RESPLIT_PREF = "credit_resplit_done"
 ARTIST_MERGE_PREF = "artist_merges_v1_done"
-#: 2026-10-21: for KING & COUNTRY - the band kept whole in song credits,
+#: for KING & COUNTRY - the band kept whole in song credits,
 #: "for KING + COUNTRY" merged in, guests out of video artists
 ARTIST_MERGE_V2_PREF = "artist_merges_v2_done"
 CREDIT_RESPLIT_V2_PREF = "credit_resplit_v2_done"
 VIDEO_ARTIST_REPAIR_PREF = "video_artist_repair_done"
-#: 2026-10-21: albums split in two by a catalog number stored as
-#: "88697187522, 88697187522" (Jordin Sparks and 8 others on PC1)
+#: albums split in two by a catalog number stored as
+#: "88697187522, 88697187522"
 SPLIT_RELEASE_REPAIR_PREF = "split_release_repair_done"
 
 
@@ -500,9 +435,8 @@ def bootstrap_database() -> None:
     """Create the DB and seed the built-in charts and smart playlists."""
     config.ensure_dirs()
     init_engine()
-    # 2026-09-24 (USB sync step 2): rename id-named artwork to MusicBee-style
-    # names once per data folder, after backing up library.db - see
-    # services/artwork_names.py
+    # USB sync: rename id-named artwork to MusicBee-style names once per
+    # data folder, after backing up library.db - see services/artwork_names.py
     with session_scope() as session:
         artwork_names.migrate_if_needed(session, db_path=config.DB_PATH)
     with session_scope() as session:
@@ -510,21 +444,17 @@ def bootstrap_database() -> None:
         pl_svc.ensure_builtin_playback_playlists(session)
         chart_svc.remove_orphaned_playback_charts(session)
         lib_svc.backfill_album_artists(session)
-        # fix_artist_sort_keys and fix_single_artist_compilations used to
-        # run here too - about 0.27 s of every start on PC1's library, for
-        # checks that only find work after a scan. They run at the end of
-        # every library scan now (scanner.tidy_after_scan, 2026-10-21).
-        # 3.5 s on the real library (reads every file path) - a one-time
-        # clean-up for databases scanned before the scanner learned about
-        # compilations, so it runs once per data folder, not every start
-        # (2026-09-24, "I don't want it taking a long time at startup")
+        # fix_artist_sort_keys and fix_single_artist_compilations run at
+        # the end of every library scan (scanner.tidy_after_scan), not here.
+        # Compilation merging is a slow one-time clean-up (reads every file
+        # path) for databases scanned before the scanner knew about
+        # compilations, so it runs once per data folder, not every start.
         if updater.get_pref(session, COMPILATION_MERGE_PREF) != "1":
             lib_svc.merge_compilation_duplicates(session)
             updater.set_pref(session, COMPILATION_MERGE_PREF, "1")
-        # 2026-10-17: records and singles the old folder-wide album-artist
-        # rule filed under one artist (all of Old78Records under Bing
-        # Crosby, their covers blank) go back to their own artists and
-        # covers - once per data folder (it reads some files' tags)
+        # records and singles an old folder-wide album-artist rule filed
+        # under one artist go back to their own artists and covers - once per
+        # data folder (it reads some files' tags)
         if updater.get_pref(session, FOLDER_ARTIST_REPAIR_PREF) != "1":
             try:
                 with session.begin_nested():
@@ -536,8 +466,8 @@ def bootstrap_database() -> None:
                     logging.getLogger(__name__).info(
                         "put %d albums back under their own album artist / cover", fixed)
                 updater.set_pref(session, FOLDER_ARTIST_REPAIR_PREF, "1")
-        # 2026-10-17: each 78 side's own label, for files already scanned
-        # (once per data folder - it reads the 78s' pictures)
+        # each 78 side's own label, for files already scanned (once per
+        # data folder - it reads the 78s' pictures)
         if updater.get_pref(session, SIDE_COVERS_PREF) != "1":
             try:
                 saved = scanner_svc.save_side_covers(session)
@@ -547,9 +477,9 @@ def bootstrap_database() -> None:
                 if saved:
                     logging.getLogger(__name__).info("saved %d 78 side labels", saved)
                 updater.set_pref(session, SIDE_COVERS_PREF, "1")
-        # 2026-10-19: "? and the Mysterians" and untagged "Artist - Title"
-        # files out from under one artist called "?" (once per data folder -
-        # it re-reads only those files; see repair_unknown_artist_merge)
+        # "? and the Mysterians" and untagged "Artist - Title" files out
+        # from under one artist called "?" (once per data folder - it re-reads
+        # only those files; see repair_unknown_artist_merge)
         if updater.get_pref(session, UNKNOWN_ARTIST_REPAIR_PREF) != "1":
             try:
                 with session.begin_nested():
@@ -561,10 +491,10 @@ def bootstrap_database() -> None:
                     logging.getLogger(__name__).info(
                         "re-read %d files filed under '?' / Unknown Artist", reread)
                 updater.set_pref(session, UNKNOWN_ARTIST_REPAIR_PREF, "1")
-        # 2026-10-19: every song's artist credits worked out again with the
-        # new splitting rules ("Blood, Sweat & Tears" whole again, big-band
-        # singers out of "Glenn Miller (Tex Beneke & chorus, vocal)") - from
-        # the stored artist text, no files read; ~25 s once on PC1
+        # every song's artist credits worked out again with the current
+        # splitting rules ("Blood, Sweat & Tears" whole, big-band singers out
+        # of "Glenn Miller (Tex Beneke & chorus, vocal)") - from the stored
+        # artist text, no files read; slow, once per data folder
         if updater.get_pref(session, CREDIT_RESPLIT_PREF) != "1":
             try:
                 with session.begin_nested():
@@ -577,8 +507,8 @@ def bootstrap_database() -> None:
                         "re-split artist credits on %d tracks, removed %d stray artists",
                         changed, removed)
                 updater.set_pref(session, CREDIT_RESPLIT_PREF, "1")
-        # 2026-10-19: spelling variants of one artist merged (Tim McGraw /
-        # Tim Mc Graw ...) - the reviewed list in services/artist_merge.py
+        # spelling variants of one artist merged (Tim McGraw / Tim Mc Graw
+        # ...) - the reviewed list in services/artist_merge.py
         if updater.get_pref(session, ARTIST_MERGE_PREF) != "1":
             try:
                 with session.begin_nested():
@@ -589,13 +519,12 @@ def bootstrap_database() -> None:
                 if merged:
                     logging.getLogger(__name__).info("merged %d duplicate artists", merged)
                 updater.set_pref(session, ARTIST_MERGE_PREF, "1")
-        # 2026-10-21: for KING & COUNTRY under one artist - merge the "+"
-        # spelling (the whole reviewed list again; groups already merged
-        # just confirm their aliases), then re-split song credits so the
-        # band stays whole instead of "for KING" + "COUNTRY" (167 songs on
-        # PC1), then re-file videos with guests moved into the title. In
-        # that order: the re-split and video pass both resolve names
-        # through the aliases the merge records.
+        # for KING & COUNTRY under one artist - merge the "+" spelling (the
+        # whole reviewed list again; groups already merged just confirm their
+        # aliases), then re-split song credits so the band stays whole instead
+        # of "for KING" + "COUNTRY", then re-file videos with guests moved into
+        # the title. In that order: the re-split and video pass both resolve
+        # names through the aliases the merge records.
         _run_once(session, ARTIST_MERGE_V2_PREF, "artist merges v2",
                   lambda: artist_merge.apply_artist_merges(session), "merged %d duplicate artists")
         _run_once(session, CREDIT_RESPLIT_V2_PREF, "credit re-split v2",
@@ -626,17 +555,9 @@ def _run_once(session, pref: str, label: str, work, message: str) -> None:
 
 def _setup_logging() -> None:
     """Send every module's `logging.getLogger(__name__).exception(...)` call
-    (scanner.py's per-bad-file catch is the one that motivated this) to
-    config.LOG_PATH, so it lands somewhere readable instead of nowhere.
-
-    Nothing called logging.basicConfig or attached a handler anywhere in
-    this app before now, so every log.exception(...) call was going to
-    Python's default "last resort" handler - stderr - and the built .exe is
-    a windowed (console=False) app with no stderr for anyone to see, so in
-    practice these were going nowhere at all (James, 2026-09-08: a scan
-    failure with the real cause masked by a generic SQLAlchemy message -
-    diagnosing it turned up this as a second bug, since log.exception was
-    already meant to capture exactly that kind of per-file failure)."""
+    (e.g. scanner.py's per-bad-file catch) to config.LOG_PATH. Without a
+    handler they'd go to stderr, which the windowed (console=False) .exe
+    doesn't have."""
     config.ensure_dirs()
     handler = logging.FileHandler(config.LOG_PATH, encoding="utf-8")
     handler.setFormatter(
@@ -648,10 +569,10 @@ def _setup_logging() -> None:
 
 
 def _prepare_for_update_restart(argv: list[str]) -> None:
-    """In-app updates (2026-09-23, services/updater.py). "Restart now"
-    launches the new exe with `--wait-pid <old pid>` and then closes the
-    old one normally - wait for it to be fully gone before anything here
-    opens library.db, so the two never hold the database at once."""
+    """In-app updates (services/updater.py). "Restart now" launches the
+    new exe with `--wait-pid <old pid>` and then closes the old one normally
+    - wait for it to be fully gone before anything here opens library.db,
+    so the two never hold the database at once."""
     pid = updater.parse_wait_pid(argv)
     if pid is not None:
         updater.wait_for_pid_exit(pid)
@@ -692,7 +613,7 @@ def main(argv: Optional[list[str]] = None, splash=None) -> int:
 
     # The splash stays up through the database work and building the
     # window below. launch.py normally shows it before this module is even
-    # imported (2026-10-21 - see that module's docstring).
+    # imported (see that module's docstring).
     if splash is None:
         from ..launch import build_splash, close_bootloader_splash
 
@@ -713,12 +634,9 @@ def main(argv: Optional[list[str]] = None, splash=None) -> int:
     if "--fullscreen" in argv or "--kiosk" in argv:
         window.showFullScreen()
     elif "--maximized" in argv:
-        # 2026-09-08, James: "how can I get the MusicMgr app to automatically
-        # run in windows 11 at startup and to be maximized" - a plain
-        # windowed launch (showMaximized() keeps the title bar/taskbar,
-        # unlike the borderless --fullscreen/--kiosk mode above; a Startup-
-        # folder shortcut's own "Run: Maximized" property isn't reliably
-        # honored by Qt apps, so this flag is the reliable way to get there).
+        # for a Windows startup shortcut: showMaximized() keeps the title
+        # bar/taskbar (unlike borderless --fullscreen/--kiosk), and a
+        # shortcut's own "Run: Maximized" isn't reliably honored by Qt apps.
         window.showMaximized()
     else:
         window.show()
@@ -732,15 +650,14 @@ def main(argv: Optional[list[str]] = None, splash=None) -> int:
         QTimer.singleShot(1500, lambda: window.ctx.notify(message))
     if "--after-update" in argv:
         QTimer.singleShot(1500, lambda: window.ctx.notify(f"Updated to MusicMgr {RELEASE_VERSION}"))
-    # 2026-10-22: video thumbnails and years, in the background a couple of
-    # minutes in - only when some video still needs them (one COUNT query),
-    # so an ordinary start does no extra work (ui/video_details_worker.py)
+    # video thumbnails and years, in the background a couple of minutes in
+    # - only when some video still needs them (one COUNT query), so an
+    # ordinary start does no extra work (ui/video_details_worker.py)
     from . import video_details_worker
 
     QTimer.singleShot(120_000, lambda: video_details_worker.start(window.ctx, only_if_pending=True))
-    # 2026-09-24 - James: "I should never be checking for updates or anything
-    # that relies on an internet connection at startup" - no update check
-    # here any more; Settings → Updates → "Check now" is the only trigger.
+    # nothing that needs the internet runs at startup - Settings → Updates
+    # → "Check now" is the only update-check trigger.
     return app.exec()
 
 

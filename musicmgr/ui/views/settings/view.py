@@ -1,7 +1,6 @@
 """The Settings page itself: builds the page from its sections (one
 module each in this package) and owns what they share - the busy check,
-the Cancel button, the folding groups (split out of settings.py,
-2026-10-22)."""
+the Cancel button, the folding groups."""
 
 from __future__ import annotations
 
@@ -67,16 +66,13 @@ class SettingsView(
         self._popularity_thread: Optional[PopularityDownloadThread] = None
         self._artwork_thread: Optional[ArtworkBulkThread] = None
         self._metadata_scan_thread: Optional[MetadataScanThread] = None
-        #: 2026-09-22 - James: "does the progress bar also work on the
-        #: import of artist images and the other settings options that
-        #: scan" (it didn't - "Artist images"/"Verify files"/"Charts" all
-        #: used to run entirely on the UI thread with no feedback). Same
-        #: QThread-with-a-progress-signal shape as everything above.
+        #: same QThread-with-a-progress-signal shape as everything above,
+        #: so these scans report progress instead of blocking the UI thread.
         self._artist_images_thread: Optional[ArtistImagesImportThread] = None
         self._verify_thread: Optional[VerifyFilesThread] = None
         self._rematch_thread: Optional[RematchChartsThread] = None
         self._loudness_thread: Optional[LoudnessAnalyzeThread] = None
-        #: 2026-10-13 Settings › Duplicates (services/duplicates.py)
+        #: Settings › Duplicates (services/duplicates.py)
         self._duplicates_thread = None
         #: last "Missing metadata" scan, reused so reopening the dashboard
         #: (e.g. right after fixing one item) doesn't rerun the whole thing
@@ -88,41 +84,21 @@ class SettingsView(
         #: a "you've already been here" marker (MissingMetadataDialog), so
         #: it's additive only, never cleared by a rescan.
         self._metadata_visited: set = set()
-        # 2026-09-22 follow-up (James: "is there any way we can have a back
-        # button when you go from missing metadata to the album and then
-        # back") - the artist/release page's own "Missing metadata"
-        # breadcrumb crumb (LibraryView._return_to_missing_metadata) lands
-        # back here by emitting this rather than by calling anything on
-        # Settings directly, the same "Library and Settings only talk
-        # through ctx" convention every other cross-view hand-off in this
-        # app already follows.
+        # the artist/release page's "Missing metadata" breadcrumb crumb
+        # (LibraryView._return_to_missing_metadata) lands back here by
+        # emitting this rather than calling Settings directly - Library and
+        # Settings only talk through ctx.
         ctx.missingMetadataBackRequested.connect(self.view_missing_metadata)
 
-        # 2026-09-16 follow-up (same one that added the row-per-tool
-        # Maintenance table below) - this page's content used to fit
-        # `BaseView`'s own plain (non-scrolling) body every time, because
-        # the old cramped-buttons "tools" row was short enough that the
-        # whole page's total height rarely exceeded a real window. Turning
-        # those buttons into nine full rows (see _ToolRow) made the page
-        # tall enough that it regularly doesn't - and unlike
-        # `ArtistDetailPanel` (ui/widgets/artist_panel.py), which has
-        # wrapped its own content in a QScrollArea since it grew a
-        # biography and Top Tracks section, `BaseView.body()` is a plain
-        # QVBoxLayout directly on the view widget with nothing scrollable
-        # about it: a view taller than the window it's given doesn't
-        # scroll, it just gets squeezed - every row's label and button
-        # compressed toward zero height rather than clipped cleanly, which
-        # is what actually happened (not a rendering bug in the new rows
-        # themselves - James's screenshot on a normal-height window showed
-        # everything crushed into illegibility). Wrapping this page's own
-        # body in its own scroll area - the same fix ArtistDetailPanel
-        # already uses, just applied here instead of changing `BaseView`
-        # for every other page - means a short window scrolls this page
-        # instead of crushing it. `body` (a local, shadowing but distinct
-        # from self.body()) is what every line below now builds into,
-        # instead of `self.body()` directly - only the page's own title
-        # (added by BaseView.__init__ above, before this) stays outside the
-        # scroll area, always visible.
+        # `BaseView.body()` is a plain, non-scrolling QVBoxLayout, and a
+        # view taller than its window gets squeezed (every row compressed
+        # toward zero height) rather than scrolled. This page is tall
+        # enough for that, so its body gets its own scroll area - the same
+        # fix ArtistDetailPanel (ui/widgets/artist_panel.py) uses - rather
+        # than changing `BaseView` for every page. `body` (a local, distinct
+        # from self.body()) is what everything below builds into; only the
+        # page title (added by BaseView.__init__) stays outside the scroll
+        # area, always visible.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -154,14 +130,12 @@ class SettingsView(
         grid.addWidget(self.total_time, 2, 0, 1, 6, alignment=Qt.AlignHCenter)
         body.addWidget(card)
 
-        # ---- collapsible groups (2026-10-01) ----
-        # James: "The Settings page is now way to 'busy' how can we better
-        # organize the settings? Maybe collapsable groups". Everything below
-        # the library numbers sits in a folding group (CollapsibleSection);
-        # a folded group's header still says what's in it. Which groups are
-        # open is remembered (SECTIONS_OPEN_KEY); Library starts open.
-        # `body` is pointed at each group's own layout in turn, so the code
-        # building each part of the page is unchanged.
+        # ---- collapsible groups ----
+        # Everything below the library numbers sits in a folding group
+        # (CollapsibleSection); a folded group's header still says what's in
+        # it. Which groups are open is remembered (SECTIONS_OPEN_KEY);
+        # Library starts open. `body` is pointed at each group's own layout
+        # in turn, so the code building each part of the page is unchanged.
         page = body
         self._sections: dict[str, CollapsibleSection] = {}
         open_keys = self._load_open_sections()
@@ -208,15 +182,7 @@ class SettingsView(
         the notify() message to show instead of starting a new one - every
         bulk-action handler below checks this (after its own "am I already
         running" check, which gets its own more specific message) so at
-        most one such job ever touches the database at once.
-
-        2026-09-22 follow-up (the same "does the progress bar also work
-        on ... the other settings options that scan" conversation that
-        added ArtistImagesImportThread/VerifyFilesThread/RematchChartsThread
-        below) - one shared check replacing each handler's own repeated
-        "if self._x_thread ... elif self._y_thread ..." chain, which was
-        still fine at four sibling threads to cross-check but stopped being
-        worth copy-pasting once there were eight."""
+        most one such job ever touches the database at once."""
         for thread, busy_message in (
             (self._thread, "A scan is running — wait for it to finish first"),
             (self._migration_thread, "A data move is running — wait for it to finish first"),
@@ -236,17 +202,14 @@ class SettingsView(
                 return busy_message
         return None
 
-    #: every bulk-action thread attribute that's actually safe to interrupt
-    #: mid-run - the same nine minus `_migration_thread`. 2026-09-22, James:
-    #: "add a real cancel button that stops any process running within
-    #: Settings" - `MigrationThread` (data_migration.migrate) copies files
-    #: to a new location in several discrete steps (db, artwork/, artists/,
-    #: then rewriting paths) with no per-step undo; stopping it partway
-    #: could leave a half-copied, half-rewritten destination that looks
-    #: plausible but isn't safe to actually switch to. Every thread listed
-    #: here, by contrast, either commits/flushes per-item or is read-only -
-    #: see each service function's own should_stop docstring note for the
-    #: specifics - so a break is always safe.
+    #: every bulk-action thread attribute that's safe to interrupt mid-run
+    #: - all but `_migration_thread`. `MigrationThread`
+    #: (data_migration.migrate) copies files to a new location in several
+    #: steps (db, artwork/, artists/, then rewriting paths) with no
+    #: per-step undo, so stopping it partway could leave a plausible but
+    #: unsafe half-copied destination. Every thread listed here either
+    #: commits/flushes per item or is read-only (see each service
+    #: function's should_stop note), so a break is always safe.
     _CANCELLABLE_THREAD_ATTRS = (
         "_thread",
         "_bio_thread",

@@ -1,4 +1,4 @@
-"""Settings › Phone remote (split out of settings.py, 2026-10-22)."""
+"""Settings › Phone remote."""
 
 from __future__ import annotations
 
@@ -25,13 +25,12 @@ class RemoteSection:
     methods share the view's state."""
 
     def _build_remote(self, section) -> None:
-        """Build the Remote group (moved out of __init__, 2026-10-22)."""
-        # ---- phone remote (2026-10-13) ----
-        # James: "Web Access remote to MusicMgr" - control this PC's
-        # MusicMgr from an iPhone's browser on the same network (remote
-        # control only, no login). See services/web_remote.py. Per PC, like
-        # every other setting here, so each machine is turned on - and gets
-        # its own address - separately.
+        """Build the Remote group."""
+        # ---- phone remote ----
+        # Control this PC's MusicMgr from a phone's browser on the same
+        # network (remote control only, no login). See services/web_remote.py.
+        # Per PC, so each machine is turned on - and gets its own address -
+        # separately.
         body = section("Phone remote", "remote")
         remote_card = QFrame()
         remote_card.setObjectName("Card")
@@ -39,11 +38,9 @@ class RemoteSection:
         rgrid.setContentsMargins(20, 14, 20, 14)
         rgrid.setHorizontalSpacing(18)
         rgrid.setVerticalSpacing(10)
-        # an On/Off button, not a checkbox (2026-10-13 follow-up - James:
-        # "make that tick on more visible, I didn't know there was an option
-        # there"; the theme's checkbox square is nearly invisible on a Card).
-        # Still called remote_cb and still checkable, so isChecked/
-        # setChecked/toggled work as before - _sync_remote_toggle dresses it.
+        # an On/Off button, not a checkbox: the theme's checkbox square is
+        # nearly invisible on a Card. Still called remote_cb and checkable,
+        # so isChecked/setChecked/toggled work - _sync_remote_toggle dresses it.
         self.remote_state = QLabel("")
         self.remote_cb = TouchButton("")
         self.remote_cb.setCheckable(True)
@@ -69,9 +66,8 @@ class RemoteSection:
         self.remote_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.remote_qr = QLabel()
         self.remote_qr.setVisible(False)
-        # 2026-10-15 - Windows had James's home network set to Public, so the
-        # firewall dropped the phone; see web_remote's "Windows networks"
-        # same day: also when Windows Firewall has no rule letting it in
+        # shown when Windows calls this network Public or the firewall has
+        # no rule letting the phone in; see web_remote's "Windows networks"
         self.remote_fix_btn = TouchButton("Fix it")
         self.remote_fix_btn.setToolTip(
             "Lets the phone in: sets this network to Private and adds a Windows Firewall "
@@ -89,7 +85,7 @@ class RemoteSection:
         status_box.addWidget(self.remote_fix_btn, alignment=Qt.AlignLeft)
         rgrid.addLayout(status_box, 3, 0, 1, 2)
         rgrid.addWidget(self.remote_qr, 1, 2, 3, 1, alignment=Qt.AlignRight | Qt.AlignTop)
-        # Ask (2026-10-15, services/voice_ask.py) - spoken requests from the
+        # Ask (services/voice_ask.py) - spoken requests from the
         # phone's Ask box. The AI needs a key for the chosen model - Gemini's
         # is free (Google AI Studio), Claude's is paid (Anthropic); without
         # one only the plain phrasings work (offline). Each key is kept.

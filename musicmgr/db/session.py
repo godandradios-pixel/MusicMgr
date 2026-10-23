@@ -41,48 +41,31 @@ _COLUMN_ADDITIONS = {
     "playlists": [
         ("folder_id", "INTEGER REFERENCES playlist_folders(id)"),
         # plain column, no UNIQUE - SQLite's ALTER TABLE ADD COLUMN can't add
-        # a unique constraint to an existing table. Same trade-off the model
-        # already accepts for folder_id/album_artist_id above: a fresh
-        # install gets the unique index from create_all, a migrated database
-        # gets the column without it. Nothing in this app inserts more than
-        # one playback playlist per slug, so the missing DB-level constraint
-        # on an old database is not load-bearing.
+        # a unique constraint. A fresh install gets the unique index from
+        # create_all; a migrated database doesn't, which is harmless since
+        # nothing inserts more than one playback playlist per slug.
         ("slug", "VARCHAR(120)"),
         ("cover_path", "TEXT"),
     ],
-    # 2026-09-26 tile grid on the Playlists page: a chosen folder image.
-    # (playlists.cover_path has been in the model since the table was
-    # created; listed here too only as the same kind of cheap defensive
-    # guard "tracks.rating" below is.)
+    # a chosen folder image for the Playlists page's tile grid.
+    # (playlists.cover_path above is a cheap defensive guard, like
+    # "tracks.rating" below.)
     "playlist_folders": [("cover_path", "TEXT")],
     "charts": [("folder_id", "INTEGER REFERENCES chart_folders(id)")],
-    # defensive, not a dated addition - Track.rating has been in the model
-    # since before Title Details existed to read it (2026-09-05), but a
-    # database this old has no documented history for the column, and the
-    # guard costs nothing when it's already there.
-    #
-    # lastfm_popularity: 2026-09-16 follow-up - James wanted the artist
-    # page's "Top Tracks" ranked by an authoritative outside source rather
-    # than just local play counts; see services/lastfm_popularity.py and
-    # db.models.Track.lastfm_popularity's own docstring (which also covers
-    # the same-day pivot away from a short-lived spotify_popularity column,
-    # once Spotify turned out to be a dead end for this - see that
-    # docstring for why). A database that picked up the old column during
-    # the few hours it existed just keeps it sitting there unused, same as
-    # every other already-shipped column this project has never bothered
-    # dropping.
+    # rating: defensive - very old databases have no documented history for
+    # the column, and the guard costs nothing when it's already there.
+    # lastfm_popularity: see services/lastfm_popularity.py and
+    # db.models.Track.lastfm_popularity. (An unused spotify_popularity column
+    # may exist on some databases; columns are never dropped.)
     "tracks": [("rating", "INTEGER"), ("lastfm_popularity", "INTEGER")],
-    # 2026-10-01 radio - see db.models.Artist.similar_fetched_at
-    # 2026-10-17 - see db.models.Artist.profile_checked_at
+    # see db.models.Artist.similar_fetched_at / profile_checked_at
     "artists": [("similar_fetched_at", "DATETIME"), ("profile_checked_at", "DATETIME")],
-    # 2026-10-03 - see db.models.RadioStation.off_air_since
+    # see db.models.RadioStation.off_air_since
     "radio_stations": [("off_air_since", "DATETIME")],
-    # 2026-09-07 follow-up: genre chips on the Jukebox page (James: "I would
-    # like the jukebox page to have a chip of 5 genres... select the
-    # location and what genre page a track will be organized by") - see
-    # db.models.JukeboxSlot.genre and services/jukebox.py:DEFAULT_JUKEBOX_GENRE.
+    # the Jukebox page's genre chips - see db.models.JukeboxSlot.genre and
+    # services/jukebox.py:DEFAULT_JUKEBOX_GENRE.
     "jukebox_slots": [("genre", "VARCHAR(40) DEFAULT 'Rock'")],
-    # 2026-10-01 volume levelling - see db.models.MediaFile.rg_track_gain
+    # volume levelling - see db.models.MediaFile.rg_track_gain
     # and services/replaygain.py
     "media_files": [
         ("rg_track_gain", "FLOAT"),
@@ -109,10 +92,10 @@ def _ensure_columns(engine: Engine) -> None:
 #: indexes added after a table first shipped - create_all() only makes the
 #: indexes of tables it creates, so an existing library gets these here
 _INDEX_ADDITIONS = [
-    # 2026-10-13: "this song's files" (duplicates.album_copy_for during
-    # chart matching, purge_orphaned_tracks, ...) scanned every row
+    # "this song's files" (duplicates.album_copy_for during chart
+    # matching, purge_orphaned_tracks, ...) would otherwise scan every row
     ("ix_media_files_track_id", "media_files", "track_id"),
-    # 2026-10-19: case-insensitive path lookups on Windows (scanner.path_matches)
+    # case-insensitive path lookups on Windows (scanner.path_matches)
     ("ix_media_files_path_nocase", "media_files", "path COLLATE NOCASE"),
     ("ix_videos_path_nocase", "videos", "path COLLATE NOCASE"),
 ]
@@ -135,24 +118,15 @@ def _table_exists(engine: Engine, name: str) -> bool:
 
 def _migrate_watched_folders(engine: Engine) -> None:
     """One-time copy of the old `library_folders`/`video_folders` rows into
-    the new unified `watched_folders` table (2026-09-07 follow-up, James: "I
-    really don't need a different block for audio and video. Just one block
-    to add folders and then one option to scan all those folders" - see
-    `db.models.WatchedFolder`'s docstring). Only ever runs the turn
-    `watched_folders` itself gets created - `init_engine` passes
-    `existed_before=False` exactly once, the very first time an upgraded
-    database (one old enough to still have the pre-merge tables) is opened
-    under this app version - so it can never re-run and resurrect a folder
-    the person has since removed, even though a `WatchedFolder` table with
-    zero rows in it is otherwise indistinguishable from "not migrated yet".
-    A brand-new install never has `library_folders`/`video_folders` at all,
-    so this is a no-op for it. Old rows found in *both* tables for the same
-    (path-normalized) folder merge into one: `enabled` if either was, and
-    whichever `last_scan_at` is more recent - nothing scanned only gets
-    'never scanned' if it truly never scanned in either table. The two old
-    tables are left in place afterward, unused, rather than dropped - this
-    project's migrations are additive-only (see `_ensure_columns` above),
-    and dropping a table this app no longer reads buys nothing but risk."""
+    the unified `watched_folders` table (see `db.models.WatchedFolder`).
+    `init_engine` calls it only when it has just created `watched_folders`,
+    so it can never re-run and resurrect a folder since removed (an empty
+    table is otherwise indistinguishable from "not migrated yet"). A fresh
+    install has no old tables, so it's a no-op there. A folder found in
+    both old tables (path-normalized) merges into one: `enabled` if either
+    was, and the more recent `last_scan_at`. The old tables are left in
+    place, unused - migrations here are additive-only (see
+    `_ensure_columns`)."""
     from pathlib import Path as _Path
 
     old_tables = [t for t in ("library_folders", "video_folders") if _table_exists(engine, t)]
@@ -220,21 +194,15 @@ def reset_database() -> None:
     """Permanently erase the current library database and recreate a
     completely empty one in its place.
 
-    2026-09-19 - James: "Create for me a 'nuke' option. Where you
-    completely wipe out library.db and start with a fresh database."
-    Asked whether to keep a timestamped backup first (the same
-    never-touch-the-original habit "Move data location…" in
-    ui/views/settings/ already follows) or delete outright with no way
-    back, James chose outright deletion - this keeps no copy of anything.
-    `NukeConfirmDialog`/`SettingsView.nuke_library` (ui/views/settings/)
-    are what stand between an accidental tap and this being permanent;
-    this function itself does no confirming of its own.
+    Keeps no backup copy, by the owner's choice. `NukeConfirmDialog`/
+    `SettingsView.nuke_library` (ui/views/settings/) are what stand between
+    an accidental tap and this; the function itself confirms nothing.
 
     Disposes the current engine first so its pooled connection releases
     the file - SQLite's WAL mode (see the `_sqlite_pragmas` connect hook
     above) otherwise leaves the `-wal`/`-shm` sidecar files (and
     sometimes the main file itself) locked, which would make the delete
-    fail outright on Windows, this app's actual platform.
+    fail on Windows.
     """
     global _engine, _Session
     if _engine is not None:

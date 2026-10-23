@@ -1,8 +1,7 @@
-"""Phone remote - control MusicMgr from a phone's web browser (2026-10-13).
+"""Phone remote - control MusicMgr from a phone's web browser.
 
-James: "Web Access remote to MusicMgr" - "I have multiple PC and Linux PCs
-running Music Mgr at different physical locations. I would like to be able
-to connect to any one of them via my iPhone". Remote control only (the music
+James runs MusicMgr on several PCs at different locations and wants to
+control any one of them from his iPhone. Remote control only (the music
 plays on the PC's own speakers), home network only, no login.
 
 Each MusicMgr runs its own small web server when Settings › Phone remote is
@@ -24,7 +23,7 @@ How it fits together:
 * The page itself is `musicmgr/assets/web_remote.html` - one self-contained
   file; it polls /api/state about once a second.
 
-Ask (2026-10-15): POST /api/ask {"text": ...} plays what a spoken request
+Ask: POST /api/ask {"text": ...} plays what a spoken request
 asks for - see services/voice_ask.py. It runs on the request thread (the AI
 can take several seconds) with every library look-up handed to the main
 thread like everything else; `RemoteApi.play_ask` plays the picks and keeps
@@ -135,9 +134,9 @@ def _route_address() -> Optional[str]:
     home network the phone is on. The UDP "connect" never sends a packet; it
     only asks the OS which address it would use.
 
-    2026-10-15: this used to ask about 10.255.255.255, which a virtual
-    adapter (Hyper-V's "Default Switch", WSL, Docker, a VPN) can claim; a
-    real internet address always follows the default route instead."""
+    The public targets come first because a virtual adapter (Hyper-V's
+    "Default Switch", WSL, Docker, a VPN) can claim 10.255.255.255; a real
+    internet address always follows the default route."""
     for target in ("8.8.8.8", "1.1.1.1", "10.255.255.255"):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -184,29 +183,25 @@ def local_addresses() -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# Windows networks (2026-10-15)
+# Windows networks
 # --------------------------------------------------------------------------
 #
-# James's iPhone couldn't open the remote ("Safari couldn't open the page
-# because the server stopped responding"): Windows had his home network
-# "912Latonka" set as *Public*, and MusicMgr is allowed through Windows
-# Firewall on Private networks only, so the phone's connection was dropped
-# silently. The QR code also could have offered the Hyper-V "Default
-# Switch" address (172.23.192.1). So on Windows, Settings › Phone remote now
-# asks Windows which networks are really connected (Get-NetConnectionProfile
-# - virtual adapters have none), lists only their addresses, and warns, with
-# a one-click fix, when one of them is Public.
-
+# MusicMgr is allowed through Windows Firewall on Private networks only, so
+# a home network set as *Public* silently drops the phone's connection, and
+# a virtual adapter (Hyper-V's "Default Switch") can offer an unreachable
+# address. So on Windows, Settings › Phone remote asks Windows which
+# networks are really connected (Get-NetConnectionProfile - virtual adapters
+# have none), lists only their addresses, and warns, with a one-click fix,
+# when one of them is Public.
 #
-# Same day, follow-up: with the network Private the phone still couldn't get
-# in - Windows Firewall had no rule for MusicMgr at all (the "Allow access?"
-# prompt never came up, or was dismissed), and Windows blocks incoming
-# connections that no rule allows. So the check also looks for MusicMgr's own
-# firewall rule (FIREWALL_RULE: inbound TCP on the remote's port, Private and
-# Domain networks - a port rule, so updating MusicMgr to a new exe doesn't
-# undo it) and for Block rules on the MusicMgr program, which a dismissed
-# prompt leaves behind and which beat any Allow rule. One "Fix it" button
-# repairs all of it behind a single Windows permission prompt.
+# Windows also blocks incoming connections no rule allows (the "Allow
+# access?" prompt may never have come up, or was dismissed). So the check
+# also looks for MusicMgr's own firewall rule (FIREWALL_RULE: inbound TCP on
+# the remote's port, Private and Domain networks - a port rule, so updating
+# MusicMgr to a new exe doesn't undo it) and for Block rules on the MusicMgr
+# program, which a dismissed prompt leaves behind and which beat any Allow
+# rule. One "Fix it" button repairs all of it behind a single Windows
+# permission prompt.
 
 FIREWALL_RULE = "MusicMgr phone remote"
 
@@ -488,7 +483,7 @@ class RemoteApi:
                 "station_id": item.station_id,
                 "live": live,
                 "stream_title": self.stream_title if live else "",
-                # 2026-10-13 - the player bar's quality pill (FLAC · 16/44.1 · Stereo)
+                # the player bar's quality pill (FLAC · 16/44.1 · Stereo)
                 "quality": "" if live else _quality_label(item.path),
                 "cover": _art_url("current", item.track_id or item.station_id or 0, item.cover_path),
                 "position_ms": 0 if live else int(player.position() or 0),
@@ -578,8 +573,7 @@ class RemoteApi:
                 "tracks": [_track_dict(t) for t in tracks],
             }
 
-    # 2026-10-18 - Artists and Albums tabs (James: "I would like Artist and
-    # album to appear as an option"). Same rules as the desktop Library
+    # Artists and Albums tabs. Same rules as the desktop Library
     # grids (ui/views/library.py _load_artists/_load_albums): an artist is
     # someone a non-compilation release is filed under, and their page shows
     # only those releases, so the list's count and the page always agree.
@@ -816,7 +810,7 @@ class RemoteApi:
         with self.ctx.session() as s:
             browser = stations.opens_in_browser(s.get(RadioStation, sid))
         ok = self.ctx.tuner.tune_station(sid)
-        if browser:   # a SiriusXM channel (2026-10-21): it opens on the PC
+        if browser:   # a SiriusXM channel: it opens on the PC
             return "Opened in the PC's web browser" if ok else "Couldn't open the PC's web browser"
         return "Tuned in" if ok else "Couldn't tune that station"
 
@@ -828,7 +822,7 @@ class RemoteApi:
         ok = self.ctx.tuner.tune_onair()
         return "On the air" if ok else "Nothing to broadcast yet"
 
-    # -- Ask (2026-10-15, services/voice_ask.py) ---------------------------
+    # -- Ask (services/voice_ask.py) ---------------------------------------
 
     def play_ask(self, result) -> dict:
         """Play what a spoken request picked, remembering what was playing
@@ -1100,7 +1094,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
     def _ask(self) -> None:
-        """A spoken request (2026-10-15). Runs on this request thread - the AI
+        """A spoken request. Runs on this request thread - the AI
         can take a while - with every library look-up handed to the main
         thread; one at a time per PC."""
         remote = self.remote
@@ -1153,7 +1147,7 @@ class RemoteServer(QObject):
         self.port = DEFAULT_PORT
         self.icon_png: bytes = b""
         self._page_cache: Optional[bytes] = None
-        #: spoken requests (2026-10-15) - one at a time
+        #: spoken requests - one at a time
         self.ask_lock = threading.Lock()
         self.asker = voice_ask.Asker(self.run_with_session)
         #: last check_network() answer; None until one finishes
