@@ -98,10 +98,12 @@ def shown(panel):
 
 
 class TestArtistPage:
-    def test_five_different_songs(self, panel):
+    def test_different_songs_up_to_eight(self, panel):
+        # one row per song, versions folded together; up to eight rows
+        # (2026-10-22, was five) - Rush's chart here has six songs
         panel.set_artist(with_chart("Rush", RUSH))
         assert shown(panel) == ["Tom Sawyer", "Limelight", "Closer to the Heart",
-                                "Fly by Night", "YYZ"]
+                                "Fly by Night", "YYZ", "Red Barchetta"]
         assert panel.top_label.text() == "Popular on Last.fm"
         assert panel.top_tracks.payload_at(0)["trail"] == "2K plays"
 

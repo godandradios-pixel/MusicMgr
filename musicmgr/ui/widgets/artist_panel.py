@@ -44,8 +44,9 @@ from ..theme import make_compact
 
 #: how many of an artist's most-played tracks the Top Tracks list shows -
 #: a taste, not a full sortable browse (Title Details already does that,
-#: with its own Artist/Album group-by - see track_details_table.py)
-TOP_TRACKS_COUNT = 5
+#: with its own Artist/Album group-by - see track_details_table.py).
+#: 2026-10-22 - James: "Expand to include a top 8 instead of just 5".
+TOP_TRACKS_COUNT = 8
 
 #: 2026-09-16 same-day follow-up #6 (James, looking at the list on an
 #: ultrawide window: "too much blank space tween the song title on the
@@ -858,7 +859,7 @@ class ArtistDetailPanel(QWidget):
     top_songs_dialog_class = None
 
     def choose_top_songs(self) -> None:
-        """Let James pick the five songs himself - from Last.fm's chart
+        """Let James pick the top songs himself - from Last.fm's chart
         (one entry per song) and the songs he owns, or typed in."""
         if self._artist_id is None:
             return
@@ -912,7 +913,8 @@ def _release_caption(track: Track) -> str:
 
 
 class TopSongsDialog(QDialog):
-    """Choose an artist's five top songs (2026-10-13). Each place is a box
+    """Choose an artist's top songs (2026-10-13; eight places since
+    2026-10-22 - TOP_TRACKS_COUNT). Each place is a box
     to pick from - Last.fm's songs first (one entry per song, with plays),
     then the songs in the library - or to type into. "Use Last.fm's list"
     drops the picks and goes back to the chart. After Ok, `titles()` holds
