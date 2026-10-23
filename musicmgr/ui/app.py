@@ -55,11 +55,11 @@ NAV_ITEMS = [
     ("album", "Albums"),
     ("track", "Tracks"),
     ("details", "Title Details"),
-    # Videos has no sidebar entry: it's reached from a search match or
-    # Title Details' "Videos only" filter (ctx.playVideoRequested/
-    # focusVideoArtistRequested, wired below). The "videos" key stays in
-    # the views mapping for that - see ctx.videosBackRequested's docstring
+    # music videos and movies (ui/views/videos.py). Also reached from a
+    # Library search match (ctx.playVideoRequested/
+    # focusVideoArtistRequested) - see ctx.videosBackRequested's docstring
     # for how the embedded player's "‹ Back" works.
+    ("videos", "Videos"),
     ("playlists", "Playlists"),
     ("charts", "Charts"),
     # old-time radio shows and internet stations, see ui/views/tuner.py
@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
         self._current_key: Optional[str] = None
         self._nowplaying_back_key: Optional[str] = None
         #: same idea as _nowplaying_back_key, for the embedded video
-        #: player's "‹ Back" button (Videos isn't a sidebar destination) -
+        #: player's "‹ Back" button when a search match opened it -
         #: see navigate(), _go_back_from_videos() and ctx.videosBackRequested.
         self._videos_back_key: Optional[str] = None
 
@@ -426,6 +426,8 @@ ARTIST_MERGE_PREF = "artist_merges_v1_done"
 ARTIST_MERGE_V2_PREF = "artist_merges_v2_done"
 CREDIT_RESPLIT_V2_PREF = "credit_resplit_v2_done"
 VIDEO_ARTIST_REPAIR_PREF = "video_artist_repair_done"
+#: music video vs. movie for videos scanned before Video.media_type existed
+VIDEO_MEDIA_TYPE_PREF = "video_media_type_done"
 #: albums split in two by a catalog number stored as
 #: "88697187522, 88697187522"
 SPLIT_RELEASE_REPAIR_PREF = "split_release_repair_done"
@@ -534,6 +536,8 @@ def bootstrap_database() -> None:
                   lambda: video_scanner.repair_video_artists(session), "re-filed %d videos")
         _run_once(session, SPLIT_RELEASE_REPAIR_PREF, "split album repair",
                   lambda: lib_svc.merge_split_releases(session), "put %d split albums back together")
+        _run_once(session, VIDEO_MEDIA_TYPE_PREF, "video media types",
+                  lambda: video_scanner.classify_media_types(session), "filed %d videos as movies")
 
 
 def _run_once(session, pref: str, label: str, work, message: str) -> None:

@@ -65,6 +65,9 @@ _COLUMN_ADDITIONS = {
     # the Jukebox page's genre chips - see db.models.JukeboxSlot.genre and
     # services/jukebox.py:DEFAULT_JUKEBOX_GENRE.
     "jukebox_slots": [("genre", "VARCHAR(40) DEFAULT 'Rock'")],
+    # music video vs. movie - see db.models.Video.media_type. Filled in
+    # for existing rows by video_scanner.classify_media_types (ui/app.py).
+    "videos": [("media_type", "VARCHAR(20) NOT NULL DEFAULT 'music_video'")],
     # volume levelling - see db.models.MediaFile.rg_track_gain
     # and services/replaygain.py
     "media_files": [
@@ -98,6 +101,8 @@ _INDEX_ADDITIONS = [
     # case-insensitive path lookups on Windows (scanner.path_matches)
     ("ix_media_files_path_nocase", "media_files", "path COLLATE NOCASE"),
     ("ix_videos_path_nocase", "videos", "path COLLATE NOCASE"),
+    # the Videos page's Music Videos / Movies tabs
+    ("ix_videos_media_type", "videos", "media_type"),
 ]
 
 

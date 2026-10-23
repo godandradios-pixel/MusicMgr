@@ -82,6 +82,13 @@ class VideoRow:
     sort_key: str
     #: the video's picture (services/video_details.py), if any
     thumb: Optional[str] = None
+    #: the artist's portrait - the Grid layout's stand-in when there's no
+    #: `thumb` (ui/widgets/video_grid.py)
+    fallback_art: Optional[str] = None
+    #: Video.media_type - which Videos page tab the row belongs on
+    media_type: str = "music_video"
+    #: higher = added to the library more recently (Grid's "Recently added")
+    added_rank: int = 0
 
 
 class VideoTable(QWidget):

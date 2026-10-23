@@ -49,7 +49,11 @@ def list_videos_for_search(session: Session) -> list[dict]:
         .order_by(func.lower(Video.title))
     )
     rows: list[dict] = []
-    for video, artist_name, artist_image_path in session.execute(stmt):
+    results = list(session.execute(stmt))
+    # 0 = oldest; the Videos page's "Recently added" sort
+    by_age = sorted(results, key=lambda r: (r[0].added_at or dt.datetime.min, r[0].id))
+    rank = {r[0].id: i for i, r in enumerate(by_age)}
+    for video, artist_name, artist_image_path in results:
         rows.append({
             "video_id": video.id,
             "title": video.title,
@@ -60,6 +64,8 @@ def list_videos_for_search(session: Session) -> list[dict]:
             "year": video.year,
             "duration_ms": video.duration_ms,
             "sort_key": video.title_key or video.title.lower(),
+            "media_type": video.media_type or Video.MEDIA_MUSIC_VIDEO,
+            "added_rank": rank[video.id],
         })
     return rows
 

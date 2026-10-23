@@ -1,16 +1,27 @@
-"""Videos browser: a sortable, groupable table (MusicBee-style), tap a row to
-open the embedded player pane with an in-app full-screen toggle.
+"""Videos page: music videos and movies, on the sidebar between Title
+Details and Playlists.
 
-The table itself lives in `ui/widgets/video_table.py` (columns, sorting,
-group-by - see its docstring for why Title/Artist/Year/Time rather than
-MusicBee's Album/Genre/Rating).
+Two tabs split the collection by `Video.media_type` - **Music Videos** and
+**Movies** (anything under a "Movies" folder, see
+services/video_scanner.py:media_type_for_path) - each showing its count.
+Within a tab, two layouts:
 
-Deliberately just one presentation (no Artists/Genres chips like the Library
-view) - a video is a flat row, not a Master/Release/Track hierarchy to browse
-several ways (see Video's docstring in db/models.py). A Library search match
-(Albums/Artists/Tracks/Title Details) that's a video routes here too, via
-ctx.playVideoRequested/focusVideoArtistRequested - see
-LibraryView._activate_video/_activate_video_group.
+* **Grid** (the default) - 16:9 thumbnail tiles with the running time on
+  each, sortable by Title / Artist / Year / Recently added
+  (ui/widgets/video_grid.py).
+* **List** - the sortable, groupable table (ui/widgets/video_table.py).
+
+Both get the same "Search this view…" + Space/⌫/✕ row (matching title OR
+artist) and the A-Z jump bar, as LibraryView has. Tap a video and it plays
+in the embedded player pane, with the browse chrome hidden so the picture
+gets the height.
+
+"‹ Back" from the player returns to the grid/list when the video was
+opened here; when it was opened from somewhere else (a Library search
+match, routed via ctx.playVideoRequested) it goes back to that section
+instead - see ctx.videosBackRequested and MainWindow._go_back_from_videos.
+A collapsed "N videos" Library search tile (ctx.focusVideoArtistRequested)
+lands on the List layout grouped by artist, scrolled to that artist.
 
 Watched folders are managed from Settings ("Watched video folders"), the same
 split Library uses between browsing (here) and folder bookkeeping (Settings).
@@ -20,20 +31,35 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QStackedWidget, QWidget
+from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLineEdit, QStackedWidget, QWidget
 
 from ...db.models import Video
 from ...services import videos as vid_svc
 from ...services.library import format_duration
 from ..context import AppContext
-from ..widgets.common import TouchButton, dim_label
+from ..widgets.common import ChipButton, TouchButton, dim_label
 from ..widgets.cover_grid import JumpBar
+from ..widgets.video_grid import VideoGrid
 from ..widgets.video_panel import VideoPlayerPanel
 from ..widgets.video_table import VideoRow, VideoTable
 from .base import BaseView
 
-PANE_TABLE = 0
+#: self.panes - browsing (grid or list, see LAYOUT_*) or the player
+PANE_BROWSE = 0
 PANE_PLAYER = 1
+
+#: self.layouts, inside PANE_BROWSE
+LAYOUT_GRID = 0
+LAYOUT_LIST = 1
+
+TAB_MUSIC_VIDEOS = Video.MEDIA_MUSIC_VIDEO
+TAB_MOVIES = Video.MEDIA_MOVIE
+
+#: tab -> (chip label, singular noun, plural noun)
+TAB_NAMES = {
+    TAB_MUSIC_VIDEOS: ("Music Videos", "music video", "music videos"),
+    TAB_MOVIES: ("Movies", "movie", "movies"),
+}
 
 
 class VideosView(BaseView):
@@ -42,18 +68,51 @@ class VideosView(BaseView):
     def __init__(self, ctx: AppContext, parent=None) -> None:
         super().__init__(ctx, parent)
         self._loaded = False
+        self._all_rows: list[VideoRow] = []
+        self._tab = TAB_MUSIC_VIDEOS
+        #: True while the player pane shows a video opened from this page's
+        #: own grid/list - "‹ Back" then returns here rather than to
+        #: whichever section a search match came from
+        self._opened_here = False
 
         self.stats = dim_label("")
         self.header.insertWidget(1, self.stats)
 
-        # no always-on hint row: the embedded player's height is whatever
-        # body() leaves, so every row here costs the picture.
+        # Music Videos / Movies tabs on the left, Grid / List on the right
+        self.tab_row = QWidget()
+        tab_row = QHBoxLayout(self.tab_row)
+        tab_row.setContentsMargins(0, 0, 0, 0)
+        tab_row.setSpacing(8)
+        self._tab_group = QButtonGroup(self)
+        self._tab_group.setExclusive(True)
+        self.tab_chips: dict[str, ChipButton] = {}
+        for tab in (TAB_MUSIC_VIDEOS, TAB_MOVIES):
+            chip = ChipButton(TAB_NAMES[tab][0])
+            chip.setProperty("tab", tab)
+            chip.setChecked(tab == self._tab)
+            self._tab_group.addButton(chip)
+            self.tab_chips[tab] = chip
+            tab_row.addWidget(chip)
+        self._tab_group.buttonClicked.connect(lambda b: self.set_tab(b.property("tab")))
+        tab_row.addStretch(1)
+        tab_row.addWidget(dim_label("View"))
+        self._layout_group = QButtonGroup(self)
+        self._layout_group.setExclusive(True)
+        self.grid_chip = ChipButton("Grid")
+        self.grid_chip.setChecked(True)
+        self.list_chip = ChipButton("List")
+        for idx, chip in ((LAYOUT_GRID, self.grid_chip), (LAYOUT_LIST, self.list_chip)):
+            chip.setProperty("layout", idx)
+            self._layout_group.addButton(chip)
+            tab_row.addWidget(chip)
+        self._layout_group.buttonClicked.connect(
+            lambda b: self.set_layout(b.property("layout")))
+        self.body().addWidget(self.tab_row)
+
         # same "Search this view…" + Space/⌫/✕ shape as LibraryView's own
-        # search row. Matches by title OR artist (see
-        # VideoTable.set_filter_text) rather than a "search by" picker.
-        # In a widget of its own so the whole row can be hidden in one call
-        # while the player pane is up - Qt reclaims a hidden widget's space,
-        # but a layout of individually-hidden widgets leaves its spacing.
+        # search row. Matches by title OR artist rather than a "search by"
+        # picker. In a widget of its own so the whole row can be hidden in
+        # one call while the player pane is up.
         self.search_row = QWidget()
         search_row = QHBoxLayout(self.search_row)
         search_row.setContentsMargins(0, 0, 0, 0)
@@ -95,32 +154,38 @@ class VideosView(BaseView):
         self.jump_bar.letterTyped.connect(self._on_letter_typed)
         self.body().addWidget(self.jump_bar)
 
+        self.layouts = QStackedWidget()
+        self.layouts.addWidget(self._build_grid())   # LAYOUT_GRID
+        self.layouts.addWidget(self._build_table())  # LAYOUT_LIST
         self.panes = QStackedWidget()
-        self.panes.addWidget(self._build_table())   # 0
-        self.panes.addWidget(self._build_player())  # 1
+        self.panes.addWidget(self.layouts)            # PANE_BROWSE
+        self.panes.addWidget(self._build_player())    # PANE_PLAYER
         self.body().addWidget(self.panes, 1)
-        self.table.updated.connect(self._refresh_jump_bar)
 
         ctx.videosChanged.connect(self._on_videos_changed)
-        ctx.playVideoRequested.connect(self._open_video)
+        ctx.playVideoRequested.connect(self._open_video_from_elsewhere)
         ctx.focusVideoArtistRequested.connect(self._focus_artist)
 
     # -- construction -----------------------------------------------------
 
+    def _build_grid(self):
+        self.grid = VideoGrid()
+        self.grid.rowActivated.connect(self._open_video)
+        self.grid.updated.connect(self._refresh_jump_bar)
+        return self.grid
+
     def _build_table(self):
         self.table = VideoTable()
         self.table.rowActivated.connect(self._open_video)
+        self.table.updated.connect(self._refresh_jump_bar)
         return self.table
 
     def _build_player(self):
         self.player_panel = VideoPlayerPanel(self.ctx)
-        # "‹ Back" asks MainWindow to return to whatever section was active
-        # before a search match routed here (ctx.videosBackRequested - see
-        # its docstring), not to this view's table: a single-video match
-        # (_open_video) never visited the table. Doesn't stop playback, same
-        # as leaving Now Playing doesn't stop music - the persistent
-        # PlayerBar keeps transport (see video_panel.py's docstring).
-        self.player_panel.backRequested.connect(self.ctx.videosBackRequested.emit)
+        # "‹ Back" doesn't stop playback, same as leaving Now Playing
+        # doesn't stop music - the persistent PlayerBar keeps transport
+        # (see video_panel.py's docstring).
+        self.player_panel.backRequested.connect(self._on_player_back)
         return self.player_panel
 
     # -- data loading -------------------------------------------------------
@@ -135,31 +200,72 @@ class VideosView(BaseView):
 
     def _load_videos(self) -> None:
         rows: list[VideoRow] = []
-        total_ms = 0
         with self.ctx.session() as session:
-            for video in vid_svc.list_videos(session):
-                total_ms += video.duration_ms or 0
+            for v in vid_svc.list_videos_for_search(session):
                 rows.append(VideoRow(
-                    key=video.id,
-                    title=video.title,
-                    artist=video.artist_display or "",
-                    year=video.year,
-                    duration_ms=video.duration_ms,
-                    sort_key=video.title_key or video.title.lower(),
-                    thumb=video.thumbnail_path or None,
+                    key=v["video_id"],
+                    title=v["title"],
+                    artist=v["artist_name"] or "",
+                    year=v["year"],
+                    duration_ms=v["duration_ms"],
+                    sort_key=v["sort_key"],
+                    thumb=v["thumbnail_path"],
+                    fallback_art=v["artist_image_path"],
+                    media_type=v["media_type"],
+                    added_rank=v["added_rank"],
                 ))
-        self.table.set_rows(rows)
-        plural = "" if len(rows) == 1 else "s"
-        self.stats.setText(f"{len(rows)} video{plural} · {format_duration(total_ms)}")
+        self._all_rows = rows
         self._loaded = True
+        self._show_tab()
+
+    def _tab_rows(self, tab: str) -> list[VideoRow]:
+        return [r for r in self._all_rows if r.media_type == tab]
+
+    def _show_tab(self) -> None:
+        """Feed the active tab's videos to both layouts and update the
+        counts - the tab labels carry each tab's size, the stats line the
+        active tab's count and total running time."""
+        for tab, chip in self.tab_chips.items():
+            chip.setText(f"{TAB_NAMES[tab][0]} ({len(self._tab_rows(tab)):,})")
+        rows = self._tab_rows(self._tab)
+        self.grid.set_rows(rows)
+        self.table.set_rows(rows)
+        total_ms = sum(r.duration_ms or 0 for r in rows)
+        _label, one, many = TAB_NAMES[self._tab]
+        self.stats.setText(
+            f"{len(rows):,} {one if len(rows) == 1 else many} · {format_duration(total_ms)}")
+        self._refresh_jump_bar()
+
+    def set_tab(self, tab: str) -> None:
+        """Music Videos / Movies. The search text carries over."""
+        self._tab = tab
+        for t, chip in self.tab_chips.items():
+            chip.setChecked(t == tab)
+        self._show_tab()
+
+    @property
+    def tab(self) -> str:
+        return self._tab
+
+    def set_layout(self, layout: int) -> None:
+        """Grid / List."""
+        self.layouts.setCurrentIndex(layout)
+        self.grid_chip.setChecked(layout == LAYOUT_GRID)
+        self.list_chip.setChecked(layout == LAYOUT_LIST)
+        self._refresh_jump_bar()
+
+    def _browser(self):
+        """Whichever of the grid / list is showing."""
+        return self.grid if self.layouts.currentIndex() == LAYOUT_GRID else self.table
 
     def _on_search_changed(self, text: str) -> None:
+        self.grid.set_filter_text(text)
         self.table.set_filter_text(text)
 
     def _on_letter_key(self, letter: str) -> None:
-        """JumpBar.letterPicked - scrolls the table straight to this
-        letter (see VideoTable.scroll_to_letter)."""
-        self.table.scroll_to_letter(letter)
+        """JumpBar.letterPicked - scrolls the grid/list straight to this
+        letter."""
+        self._browser().scroll_to_letter(letter)
 
     def _on_letter_typed(self, letter: str) -> None:
         """JumpBar.letterTyped - the literal letter tapped, spelled into
@@ -171,23 +277,25 @@ class VideosView(BaseView):
             self.search_box.insert(letter)
 
     def _refresh_jump_bar(self) -> None:
-        letters = self.table.jump_letters()
+        if self.panes.currentIndex() == PANE_PLAYER:
+            return  # stays hidden with the rest of the browse chrome
+        letters = self._browser().jump_letters()
         self.jump_bar.setVisible(bool(letters))
         if letters:
             self.jump_bar.set_available(letters)
 
     def _set_browse_chrome_visible(self, visible: bool) -> None:
         """Show/hide everything above the panes - the page title, the
-        "N videos · H:MM:SS" stats, the search row and the A-Z jump bar.
+        stats, the tab row, the search row and the A-Z jump bar.
 
-        All four exist to browse the *table*, which isn't on screen while
-        the player pane is up, so hiding them hands that height to
-        `video_widget` (hidden widgets don't reserve space in Qt).
-        Everything comes back on the way out (`_focus_artist`, or the next
-        visit to the table).
+        All of it exists to browse, which isn't on screen while the player
+        pane is up, so hiding it hands that height to the video (hidden
+        widgets don't reserve space in Qt). Everything comes back on the
+        way out (`_show_browse`).
         """
         self.title.setVisible(visible)
         self.stats.setVisible(visible)
+        self.tab_row.setVisible(visible)
         self.search_row.setVisible(visible)
         if visible:
             # not a bare setVisible(True) - the jump bar has its own reason
@@ -197,28 +305,57 @@ class VideosView(BaseView):
         else:
             self.jump_bar.setVisible(False)
 
+    def _show_browse(self) -> None:
+        self._opened_here = False
+        self.panes.setCurrentIndex(PANE_BROWSE)
+        self._set_browse_chrome_visible(True)
+
     # -- navigation -----------------------------------------------------------
 
     def _open_video(self, video_id: int) -> None:
+        """A tile/row tapped on this page."""
+        if self._play(video_id):
+            self._opened_here = True
+
+    def _open_video_from_elsewhere(self, video_id: int) -> None:
+        """ctx.playVideoRequested - a Library search match. "‹ Back" goes
+        back there, not to this page's grid."""
+        if self._play(video_id):
+            self._opened_here = False
+
+    def _play(self, video_id: int) -> bool:
         with self.ctx.session() as session:
             video = session.get(Video, video_id)
             if video is None:
-                return
+                return False
             missing, path = video.is_missing, video.path
             title, artist, vid = video.title, video.artist_display, video.id
 
         if missing or not os.path.exists(path):
             self.ctx.notify("That video file is missing")
-            return
+            return False
         self.player_panel.play(vid, path, title, artist)
         self.panes.setCurrentIndex(PANE_PLAYER)
         self._set_browse_chrome_visible(False)
+        return True
+
+    def _on_player_back(self) -> None:
+        if self._opened_here:
+            self._show_browse()
+        else:
+            # leave the page ready to browse for its next visit
+            self._show_browse()
+            self.ctx.videosBackRequested.emit()
 
     def _focus_artist(self, artist: str) -> None:
-        """A collapsed "N videos" tile from a Library search -
-        no single video to play, so this lands on the table itself, grouped
-        by Artist and scrolled to that artist's section, rather than the
-        player pane `_open_video` uses."""
-        self.panes.setCurrentIndex(PANE_TABLE)
-        self._set_browse_chrome_visible(True)
+        """A collapsed "N videos" tile from a Library search - no single
+        video to play, so this lands on the List layout, grouped by Artist
+        and scrolled to that artist's section, on whichever tab has their
+        videos (Music Videos first)."""
+        self.refresh()
+        kinds = {r.media_type for r in self._all_rows if r.artist == artist}
+        if kinds and self._tab not in kinds:
+            self.set_tab(TAB_MUSIC_VIDEOS if TAB_MUSIC_VIDEOS in kinds else TAB_MOVIES)
+        self.set_layout(LAYOUT_LIST)
+        self._show_browse()
         self.table.focus_artist(artist)

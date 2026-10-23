@@ -851,6 +851,14 @@ class Video(Base):
 
     __tablename__ = "videos"
 
+    #: `media_type` values. What *kind* of video this is - kept as its own
+    #: column rather than borrowing a genre ("Video"), so a video's genre is
+    #: free to be a real one and the Videos page can split its tabs on it.
+    MEDIA_MUSIC_VIDEO = "music_video"
+    #: a full-length film / concert film / DVD rip - anything kept under a
+    #: "Movies" folder (see services/video_scanner.py:media_type_for_path)
+    MEDIA_MOVIE = "movie"
+
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(500), index=True)
     title_key: Mapped[str] = mapped_column(String(500), index=True)
@@ -866,6 +874,12 @@ class Video(Base):
     size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
     mtime: Mapped[Optional[float]] = mapped_column(Float)
     codec: Mapped[Optional[str]] = mapped_column(String(40))
+    #: MEDIA_MUSIC_VIDEO or MEDIA_MOVIE - set from the file's folder on
+    #: every scan (services/video_scanner.py:media_type_for_path); older
+    #: libraries are filled in once at startup (ui/app.py)
+    media_type: Mapped[str] = mapped_column(
+        String(20), default=MEDIA_MUSIC_VIDEO, server_default=MEDIA_MUSIC_VIDEO, index=True
+    )
     #: a picture beside the video, its embedded cover, or a grabbed frame -
     #: see services/video_details.py. NULL = not tried yet,
     #: "" = tried, nothing found. A video without one falls back to its

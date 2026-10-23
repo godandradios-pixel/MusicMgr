@@ -32,10 +32,13 @@ from Now Playing's toggle or the Jukebox page's "+ Add to jukebox" picker.
 
 A search match can also be a video (see `LibraryView._load_details` and the
 module docstring in `views/library.py`), woven in as an ordinary
-`TrackDetailRow` with `is_video=True`, genre "Video", and no rating.
+`TrackDetailRow` with `is_video=True`, a blank genre (a video's kind is
+`media_type`, never a made-up "Video" genre), and no rating.
 `RatingDelegate` refuses to paint or edit stars for one, and tapping the row
 plays it (`_on_clicked`, `videoActivated`). Video rows only appear as search
-matches (or with "Videos only" checked), never in the default table.
+matches, never in the default table - browsing videos is the Videos page's
+job (ui/views/videos.py), which replaced this table's old "Videos only"
+checkbox.
 
 A "Group by" chip bar (None / Genre / Artist / Album) mirrors `VideoTable`'s.
 Genre adds one level of `GroupHeaderRow` dividers, alphabetical, with header
@@ -67,7 +70,6 @@ from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
-    QCheckBox,
     QHBoxLayout,
     QHeaderView,
     QMenu,
@@ -136,6 +138,12 @@ def _first_letter(text: str) -> str:
     return first if first in string.ascii_uppercase else "#"
 
 
+def _media_label(media_type: str) -> str:
+    """What a search for a video row's kind matches - "movie" or
+    "music video" (see TrackDetailRow.media_type)."""
+    return "movie" if media_type == "movie" else "music video"
+
+
 @dataclass
 class TrackDetailRow:
     track_id: int
@@ -165,12 +173,15 @@ class TrackDetailRow:
     #: one, else the number (services/tracknum.py)
     track_label: str = ""
     #: True for a video woven in as a search match (see
-    #: `LibraryView._load_details`) - `genre` is "Video", there's no rating
+    #: `LibraryView._load_details`) - `genre` is blank, there's no rating
     #: (RatingDelegate skips these), and a tap plays the video. `video_id` is
     #: the video's primary key; `track_id` is the sentinel 0 (never a real
     #: Track id).
     is_video: bool = False
     video_id: Optional[int] = None
+    #: a video row's Video.media_type ("music_video"/"movie"); "" for a
+    #: track. Searching "movie" or "music video" finds those rows.
+    media_type: str = ""
     #: True if this track is loaded onto the jukebox board (independent of
     #: `rating`). No column shows it; `_row_matches` lets a search for
     #: "jukebox" find these tracks. Always False for a video row.
@@ -626,17 +637,6 @@ class TrackDetailsTable(QWidget):
     `_play_from_details`) - the table only emits, the view acts, as with
     `ratingChanged`/`videoActivated`. A video row plays on a single tap
     (`_on_clicked`) instead.
-
-    A "Videos only" `QCheckBox` (`self.videos_only_checkbox`) is backed by
-    local state (`self._videos_only`). `_apply_filter` ANDs it with the
-    search text: checked with no text shows every video; checked with text
-    narrows to matching videos; unchecked hides videos unless searched for.
-    It has an explicit stylesheet (a bordered square that fills with the
-    accent color when checked) because the native indicator was unreadable.
-    This class builds and wires the checkbox but does not place it:
-    `LibraryView._build_details()` reparents it into the shared search
-    header, right-aligned, and shows/hides it per presentation (see that
-    method's docstring).
     """
 
     ratingChanged = Signal(int, int)  # track_id, new rating
@@ -655,49 +655,15 @@ class TrackDetailsTable(QWidget):
         super().__init__(parent)
         self._all_rows: list[TrackDetailRow] = []
         self._filter_text = ""
-        #: "Videos only" checkbox state - see the class docstring.
-        self._videos_only = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
 
-        # owned here (styling, toggle wiring) but not added to `root` -
-        # `LibraryView._build_details()` reparents it into its shared
-        # search header (see class docstring)
-        self.videos_only_checkbox = QCheckBox("Videos only")
-        self.videos_only_checkbox.setToolTip(
-            "Show only music videos, hiding every audio track - the same "
-            "video rows normally surfaced here only as a search match"
-        )
-        # drawn explicitly because the native indicator can render as a
-        # bare caret with no box: an always-visible bordered square that
-        # fills with the jukebox_key_hi accent when checked - the fill *is*
-        # the checked state
-        self.videos_only_checkbox.setStyleSheet(
-            f"""
-            QCheckBox {{ color: {COLORS['text']}; spacing: 8px; }}
-            QCheckBox::indicator {{
-                width: 22px;
-                height: 22px;
-                border: 2px solid {COLORS['text_dim']};
-                border-radius: 4px;
-                background: {COLORS['surface_alt']};
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {COLORS['jukebox_key_hi']};
-            }}
-            QCheckBox::indicator:checked {{
-                background: {COLORS['jukebox_key_hi']};
-                border-color: {COLORS['jukebox_key_hi']};
-            }}
-            """
-        )
-        self.videos_only_checkbox.toggled.connect(self._on_videos_only_toggled)
 
         # "Group by: None / Genre / Artist / Album" - same chip-bar shape as
-        # VideoTable's. Kept in this table's own layout (unlike the
-        # checkbox above) since it only affects this table's row list.
+        # VideoTable's. Kept in this table's own layout since it only
+        # affects this table's row list.
         group_bar = QHBoxLayout()
         group_bar.setSpacing(8)
         group_bar.addWidget(dim_label("Group by"))
@@ -909,28 +875,17 @@ class TrackDetailsTable(QWidget):
             or (row.rating is not None and needle in str(row.rating))
             or (row.on_jukebox and needle in "jukebox")
             or needle in row.comment.lower()
+            or (row.is_video and needle in _media_label(row.media_type))
         )
-
-    def _on_videos_only_toggled(self, checked: bool) -> None:
-        self._videos_only = checked
-        self._apply_filter()
 
     def _apply_filter(self) -> None:
         needle = self._filter_text
-        candidates = self._all_rows
-        if self._videos_only:
-            # narrow the pool before the text filter, so a search with the
-            # checkbox on matches only within videos
-            candidates = [r for r in candidates if r.is_video]
         if not needle:
-            if self._videos_only:
-                rows = candidates
-            else:
-                # video rows only ever appear as search matches - see
-                # TrackDetailRow.is_video and the module docstring
-                rows = [r for r in candidates if not r.is_video]
+            # video rows only ever appear as search matches - see
+            # TrackDetailRow.is_video and the module docstring
+            rows = [r for r in self._all_rows if not r.is_video]
         else:
-            rows = [r for r in candidates if self._row_matches(r, needle)]
+            rows = [r for r in self._all_rows if self._row_matches(r, needle)]
         self.model.set_rows(rows)
 
     def count(self) -> int:

@@ -17,7 +17,15 @@ from __future__ import annotations
 import pytest
 
 from musicmgr.db.models import Video
-from musicmgr.ui.views.videos import PANE_PLAYER, PANE_TABLE, VideosView
+from musicmgr.ui.views.videos import (
+    LAYOUT_GRID,
+    LAYOUT_LIST,
+    PANE_BROWSE,
+    PANE_PLAYER,
+    TAB_MOVIES,
+    TAB_MUSIC_VIDEOS,
+    VideosView,
+)
 
 
 @pytest.fixture
@@ -105,7 +113,7 @@ class TestLoadVideos:
 
         view.refresh()
 
-        assert view.stats.text() == "2 videos · 3:00"
+        assert view.stats.text() == "2 music videos · 3:00"
 
     def test_stats_label_is_singular_for_exactly_one_video(self, ctx, view):
         with ctx.session() as session:
@@ -113,12 +121,12 @@ class TestLoadVideos:
 
         view.refresh()
 
-        assert view.stats.text() == "1 video · 1:00"
+        assert view.stats.text() == "1 music video · 1:00"
 
     def test_an_empty_library_reports_zero_videos(self, ctx, view):
         view.refresh()
 
-        assert view.stats.text() == "0 videos · --:--"
+        assert view.stats.text() == "0 music videos · --:--"
 
     def test_videos_with_no_duration_do_not_count_toward_the_total(self, ctx, view):
         with ctx.session() as session:
@@ -127,7 +135,7 @@ class TestLoadVideos:
 
         view.refresh()
 
-        assert view.stats.text() == "2 videos · 1:00"
+        assert view.stats.text() == "2 music videos · 1:00"
 
 
 class TestOpenVideo:
@@ -167,7 +175,7 @@ class TestOpenVideo:
         view._open_video(video_id)
 
         assert calls == []
-        assert view.panes.currentIndex() == PANE_TABLE
+        assert view.panes.currentIndex() == PANE_BROWSE
         assert notifications and "missing" in notifications[0].lower()
 
     def test_a_video_whose_file_no_longer_exists_on_disk_notifies(
@@ -186,7 +194,7 @@ class TestOpenVideo:
         view._open_video(video_id)
 
         assert calls == []
-        assert view.panes.currentIndex() == PANE_TABLE
+        assert view.panes.currentIndex() == PANE_BROWSE
         assert notifications and "missing" in notifications[0].lower()
 
     def test_an_unknown_video_id_is_a_no_op(self, ctx, view, monkeypatch):
@@ -199,7 +207,7 @@ class TestOpenVideo:
 
         assert calls == []
         assert notifications == []
-        assert view.panes.currentIndex() == PANE_TABLE
+        assert view.panes.currentIndex() == PANE_BROWSE
 
 
 class TestBrowseChrome:
@@ -251,7 +259,7 @@ class TestBrowseChrome:
 
         view._focus_artist("A Song")
 
-        assert view.panes.currentIndex() == PANE_TABLE
+        assert view.panes.currentIndex() == PANE_BROWSE
         assert view.title.isHidden() is False
         assert view.stats.isHidden() is False
         assert view.search_row.isHidden() is False
@@ -290,7 +298,7 @@ class TestFocusArtist:
 
         view._focus_artist("Target Artist")
 
-        assert view.panes.currentIndex() == PANE_TABLE
+        assert view.panes.currentIndex() == PANE_BROWSE
         assert calls == ["Target Artist"]
 
 
@@ -326,11 +334,25 @@ class TestJumpBar:
 
         assert view.search_box.text() == ""
 
-    def test_tapping_a_letter_scrolls_the_table_to_it(self, ctx, view, monkeypatch):
+    def test_tapping_a_letter_scrolls_the_grid_to_it(self, ctx, view, monkeypatch):
         with ctx.session() as session:
             for i in range(10):
                 make_video(session, f"{chr(65 + i)} Song")
         view.refresh()
+
+        calls = []
+        monkeypatch.setattr(view.grid, "scroll_to_letter", calls.append)
+
+        view._on_letter_key("C")
+
+        assert calls == ["C"]
+
+    def test_in_the_list_layout_it_scrolls_the_table(self, ctx, view, monkeypatch):
+        with ctx.session() as session:
+            for i in range(10):
+                make_video(session, f"{chr(65 + i)} Song")
+        view.refresh()
+        view.set_layout(LAYOUT_LIST)
 
         calls = []
         monkeypatch.setattr(view.table, "scroll_to_letter", calls.append)
@@ -359,3 +381,117 @@ class TestJumpBar:
         view.refresh()
 
         assert view.jump_bar.isHidden() is False
+
+
+class TestTabs:
+    """2026-10-23: Music Videos / Movies tabs, split on Video.media_type."""
+
+    def _seed(self, ctx):
+        with ctx.session() as session:
+            make_video(session, "Clip", artist="Band", duration_ms=200_000)
+            make_video(session, "Concert", artist="Band", duration_ms=5_400_000,
+                       media_type=Video.MEDIA_MOVIE)
+            make_video(session, "Film", artist="Other", media_type=Video.MEDIA_MOVIE)
+
+    def test_opens_on_music_videos(self, ctx, view):
+        self._seed(ctx)
+        view.refresh()
+
+        assert view.tab == TAB_MUSIC_VIDEOS
+        assert view.grid.titles() == ["Clip"]
+        assert [r.title for r in view.table._rows] == ["Clip"]
+
+    def test_movies_tab_shows_only_movies(self, ctx, view):
+        self._seed(ctx)
+        view.refresh()
+
+        view.set_tab(TAB_MOVIES)
+
+        assert sorted(view.grid.titles()) == ["Concert", "Film"]
+        assert view.stats.text() == "2 movies · 1:30:00"
+
+    def test_tab_labels_carry_their_counts(self, ctx, view):
+        self._seed(ctx)
+        view.refresh()
+
+        assert view.tab_chips[TAB_MUSIC_VIDEOS].text() == "Music Videos (1)"
+        assert view.tab_chips[TAB_MOVIES].text() == "Movies (2)"
+
+    def test_search_carries_across_tabs(self, ctx, view):
+        self._seed(ctx)
+        view.refresh()
+        view.search_box.setText("other")
+
+        view.set_tab(TAB_MOVIES)
+
+        assert view.grid.titles() == ["Film"]
+
+    def test_focusing_an_artist_with_only_movies_switches_to_movies(self, ctx, view, monkeypatch):
+        self._seed(ctx)
+        view.refresh()
+        calls = []
+        monkeypatch.setattr(view.table, "focus_artist", calls.append)
+
+        view._focus_artist("Other")
+
+        assert view.tab == TAB_MOVIES
+        assert view.layouts.currentIndex() == LAYOUT_LIST
+        assert calls == ["Other"]
+
+
+class TestLayouts:
+    def test_grid_is_the_default(self, ctx, view):
+        assert view.layouts.currentIndex() == LAYOUT_GRID
+        assert view.grid_chip.isChecked() and not view.list_chip.isChecked()
+
+    def test_list_switch(self, ctx, view):
+        view.set_layout(LAYOUT_LIST)
+
+        assert view.layouts.currentIndex() == LAYOUT_LIST
+        assert view.list_chip.isChecked() and not view.grid_chip.isChecked()
+
+    def test_search_filters_the_grid_by_title_or_artist(self, ctx, view):
+        with ctx.session() as session:
+            make_video(session, "Take On Me", artist="a-ha")
+            make_video(session, "Chiquitita", artist="ABBA")
+        view.refresh()
+
+        view.search_box.setText("abba")
+        assert view.grid.titles() == ["Chiquitita"]
+
+        view.search_box.setText("take")
+        assert view.grid.titles() == ["Take On Me"]
+
+
+class TestBack:
+    def _play(self, ctx, view, tmp_path, monkeypatch, opener):
+        real_file = tmp_path / "clip.mp4"
+        real_file.write_bytes(b"fake video bytes")
+        with ctx.session() as session:
+            video_id = make_video(session, "Playable", path=str(real_file)).id
+        view.refresh()
+        monkeypatch.setattr(view.player_panel, "play", lambda *a: None)
+        opener(video_id)
+
+    def test_back_from_a_video_opened_here_returns_to_the_grid(
+        self, ctx, view, tmp_path, monkeypatch
+    ):
+        backs = []
+        ctx.videosBackRequested.connect(lambda: backs.append(1))
+        self._play(ctx, view, tmp_path, monkeypatch, view.grid.rowActivated.emit)
+
+        view.player_panel.backRequested.emit()
+
+        assert view.panes.currentIndex() == PANE_BROWSE
+        assert view.search_row.isHidden() is False
+        assert backs == []
+
+    def test_back_from_a_search_match_leaves_the_page(self, ctx, view, tmp_path, monkeypatch):
+        backs = []
+        ctx.videosBackRequested.connect(lambda: backs.append(1))
+        self._play(ctx, view, tmp_path, monkeypatch, ctx.playVideoRequested.emit)
+
+        view.player_panel.backRequested.emit()
+
+        assert backs == [1]
+        assert view.panes.currentIndex() == PANE_BROWSE

@@ -144,7 +144,7 @@ class LibraryView(BaseView):
         self.header.insertWidget(1, self.stats)
 
         # just the search controls (the modes are in the sidebar). Kept on
-        # self so _build_details() can add the "Videos only" checkbox to it.
+        # self so the panes' count labels can be added to it (see below).
         header_controls = QHBoxLayout()
         self.header_controls = header_controls
         header_controls.setSpacing(8)
@@ -210,8 +210,8 @@ class LibraryView(BaseView):
         self.body().addWidget(self.panes, 1)
 
         # The grids' "N albums" / "N artists" count and Tracks' "N albums ·
-        # N tracks" sit at the right end of the search row, like Title
-        # Details' "Videos only" checkbox, and the panes' own header rows
+        # N tracks" sit at the right end of the search row, and the panes'
+        # own header rows
         # (and Tracks' heading) are hidden, freeing a row for content.
         for grid in (self.album_grid, self.artist_grid, self.track_panel):
             self.header_controls.addWidget(grid.count_label)
@@ -381,18 +381,6 @@ class LibraryView(BaseView):
         # track_details_table.py's module docstring); tracks are added to
         # the board from Now Playing's toggle or the Jukebox page's picker.
 
-        # TrackDetailsTable owns the "Videos only" checkbox (styling and
-        # wiring into its `_apply_filter`); this reparents it into the
-        # shared search header so it doesn't take a row of its own.
-        # `header_controls` already ends with `__init__`'s addStretch(1),
-        # so a plain addWidget lands it flush right.
-        self.header_controls.addWidget(self.details_table.videos_only_checkbox)
-        # Title Details is the only presentation this checkbox means
-        # anything for, so it starts hidden (the header's `_mode` is still
-        # whatever it was before Title Details was first built) and
-        # `_on_mode_changed` below shows/hides it alongside every other
-        # Title-Details-only sync it already does for the A-Z bar.
-        self.details_table.videos_only_checkbox.setVisible(self._mode == BROWSE_DETAILS)
 
         # no heading above the table, like every other pane - the count is
         # already in `self.stats` at the top of the page.
@@ -450,10 +438,6 @@ class LibraryView(BaseView):
                 self._load_details()
             else:
                 self._apply_search()
-        # the "Videos only" checkbox lives in the shared search header (see
-        # _build_details), so it's shown/hidden by hand on a mode switch,
-        # like the A-Z bar below.
-        self.details_table.videos_only_checkbox.setVisible(self._mode == BROWSE_DETAILS)
         self._refresh_jump_bar()
 
     def _on_search_changed(self, text: str) -> None:
@@ -819,7 +803,8 @@ class LibraryView(BaseView):
         details.extend(
             TrackDetailRow(
                 track_id=0,
-                genre="Video",
+                # a video's kind lives in media_type, not a fake genre
+                genre="",
                 album_artist=v["artist_name"],
                 album="",
                 track_no=None,
@@ -830,6 +815,7 @@ class LibraryView(BaseView):
                 sort_key=v["sort_key"],
                 is_video=True,
                 video_id=v["video_id"],
+                media_type=v["media_type"],
             )
             for v in video_rows
         )

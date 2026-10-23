@@ -129,6 +129,46 @@ def repair_video_artists(session: Session) -> int:
     return changed
 
 
+#: a folder with one of these names (any depth, any capitalization) holds
+#: movies - full-length films, concert films and DVD rips - rather than
+#: music videos. D:\\Movies is where James keeps them.
+MOVIE_FOLDER_NAMES = frozenset({"movies"})
+
+
+def _as_path(path: PurePath | str) -> PurePath:
+    """A stored path read the way it was written - a library made on
+    Windows keeps its "D:\\Movies\\..." paths on the Mint PC too."""
+    text = str(path)
+    return PureWindowsPath(text) if "\\" in text else PurePath(text)
+
+
+def media_type_for_path(path: PurePath | str) -> str:
+    """Video.MEDIA_MOVIE for a file anywhere under a "Movies" folder,
+    Video.MEDIA_MUSIC_VIDEO otherwise. Decided by folder alone so it's the
+    same answer on every PC and after every USB sync, with nothing to keep
+    in step - moving a file between Videos and Movies re-files it on the
+    next scan."""
+    folders = _as_path(path).parts[:-1]
+    if any(part.lower() in MOVIE_FOLDER_NAMES for part in folders):
+        return Video.MEDIA_MOVIE
+    return Video.MEDIA_MUSIC_VIDEO
+
+
+def classify_media_types(session: Session) -> int:
+    """Set every video's media_type from its folder (media_type_for_path).
+    No file is opened. Returns how many rows changed. One-time per data
+    folder for libraries scanned before the column existed (ui/app.py);
+    scans keep it right from then on."""
+    changed = 0
+    for video in session.scalars(select(Video)):
+        kind = media_type_for_path(video.path)
+        if video.media_type != kind:
+            video.media_type = kind
+            changed += 1
+    session.flush()
+    return changed
+
+
 def read_video_duration(path: Path) -> Optional[int]:
     """mutagen only understands the moov/atom layout of the mp4 family, so
     this comes back None for mkv/avi/webm/etc. - never a hard failure."""
@@ -164,6 +204,9 @@ def import_video_file(
         if existing is not None:
             existing.path = str(path)
     if existing is not None:
+        # cheap (no file read), so kept up to date even on the unchanged-file
+        # shortcut below
+        existing.media_type = media_type_for_path(path)
         if not force and existing.mtime == stat.st_mtime and existing.size_bytes == stat.st_size:
             existing.is_missing = False
             existing.last_seen_at = _now()
@@ -188,6 +231,7 @@ def import_video_file(
     video.size_bytes = stat.st_size
     video.mtime = stat.st_mtime
     video.codec = path.suffix.lstrip(".").lower()
+    video.media_type = media_type_for_path(path)
     video.is_missing = False
     video.last_seen_at = _now()
     if existing is None:
