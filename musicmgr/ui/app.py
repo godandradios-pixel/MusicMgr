@@ -32,6 +32,7 @@ from ..services import playlists as pl_svc
 from ..services import scanner as scanner_svc
 from ..services import library_backup
 from ..services import updater
+from ..services import video_details
 from ..services import video_scanner
 from ..services.player import PlayerController, stop_background_measuring
 from .context import AppContext
@@ -435,6 +436,9 @@ CREDIT_RESPLIT_V2_PREF = "credit_resplit_v2_done"
 VIDEO_ARTIST_REPAIR_PREF = "video_artist_repair_done"
 #: music video vs. movie for videos scanned before Video.media_type existed
 VIDEO_MEDIA_TYPE_PREF = "video_media_type_done"
+#: thumbnails that are a generic cover built into many videos ("MUSIC
+#: VIDEOS") put back to be grabbed from the video instead
+VIDEO_GENERIC_COVER_PREF = "video_generic_cover_done"
 #: albums split in two by a catalog number stored as
 #: "88697187522, 88697187522"
 SPLIT_RELEASE_REPAIR_PREF = "split_release_repair_done"
@@ -545,6 +549,9 @@ def bootstrap_database() -> None:
                   lambda: lib_svc.merge_split_releases(session), "put %d split albums back together")
         _run_once(session, VIDEO_MEDIA_TYPE_PREF, "video media types",
                   lambda: video_scanner.classify_media_types(session), "filed %d videos as movies")
+        _run_once(session, VIDEO_GENERIC_COVER_PREF, "generic video covers",
+                  lambda: video_details.find_generic_covers(session),
+                  "%d videos had a generic cover - frames will be grabbed instead")
 
 
 def _run_once(session, pref: str, label: str, work, message: str) -> None:

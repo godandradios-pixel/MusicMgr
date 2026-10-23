@@ -24,6 +24,14 @@ matching (`clean_title`).
    `grab` - ffmpeg when it's on this PC's PATH, otherwise Qt's own player
    (see ui/video_details_worker.py).
 
+A **generic embedded cover** - the same picture built into many videos,
+like the "MUSIC VIDEOS" placeholder a tagging tool put in 300 of James's
+files - says nothing about any one video, so it's skipped and a frame is
+grabbed instead. `find_generic_covers` spots one as the same saved cover
+on GENERIC_COVER_MIN or more videos; its hash is remembered
+(GENERIC_COVERS_PREF) so later videos skip it straight away, and the
+videos that got it are put back to "not tried" to be grabbed.
+
 Thumbnails live in data\\video_thumbs, outside the artwork folders, so they
 never travel in USB sync - each PC makes its own. `Video.thumbnail_path`
 is NULL until a video has been tried and "" when nothing could be found,
@@ -34,6 +42,7 @@ so a video is only ever tried once; a changed file is tried again
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -59,6 +68,12 @@ THUMB_DIR_NAME = "video_thumbs"
 #: thumbnail_path for "tried, nothing found"
 NO_THUMB = ""
 GRAB_WIDTH = 480
+
+#: the same embedded cover on this many videos is a generic placeholder,
+#: not a real picture of any of them
+GENERIC_COVER_MIN = 3
+#: settings key: JSON list of generic covers' sha1 (cover_hash)
+GENERIC_COVERS_PREF = "video_generic_covers"
 
 #: (video path, output .jpg) -> True grabbed / False no picture / None stuck
 GrabFn = Callable[[Path, Path, Optional[int]], Optional[bool]]
@@ -244,6 +259,63 @@ def ffmpeg_grabber() -> Optional[GrabFn]:
 
 
 # --------------------------------------------------------------------------
+# generic covers
+# --------------------------------------------------------------------------
+
+
+def cover_hash(data: bytes) -> str:
+    return hashlib.sha1(data).hexdigest()
+
+
+def generic_covers(session: Session) -> set[str]:
+    from .updater import get_pref
+
+    try:
+        return set(json.loads(get_pref(session, GENERIC_COVERS_PREF) or "[]"))
+    except (ValueError, TypeError):
+        return set()
+
+
+def find_generic_covers(session: Session) -> int:
+    """Find saved covers (in data\\video_thumbs) that are the same picture
+    on GENERIC_COVER_MIN+ videos: remember their hashes, delete the copies
+    and put those videos back to "not tried", so the next fill grabs a
+    frame for each. Reads only the small thumbnail files. Returns how many
+    videos were reset."""
+    from .updater import set_pref
+
+    folder = str(thumb_dir()).casefold()
+    by_hash: dict[str, list[Video]] = {}
+    for video in session.scalars(select(Video).where(Video.thumbnail_path.is_not(None),
+                                                     Video.thumbnail_path != NO_THUMB)):
+        path = Path(video.thumbnail_path)
+        if not str(path.parent).casefold() == folder:
+            continue  # a picture beside the video - the owner's own choice
+        try:
+            digest = cover_hash(path.read_bytes())
+        except OSError:
+            continue
+        by_hash.setdefault(digest, []).append(video)
+    known = generic_covers(session)
+    reset = 0
+    for digest, videos in by_hash.items():
+        if len(videos) < GENERIC_COVER_MIN and digest not in known:
+            continue
+        known.add(digest)
+        for video in videos:
+            try:
+                Path(video.thumbnail_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            video.thumbnail_path = None
+            reset += 1
+    if reset:
+        set_pref(session, GENERIC_COVERS_PREF, json.dumps(sorted(known)))
+        session.flush()
+    return reset
+
+
+# --------------------------------------------------------------------------
 # filling in
 # --------------------------------------------------------------------------
 
@@ -269,12 +341,28 @@ def fill_video_details(
     committed on its own, after its slow file work, so the app's own
     writes never wait behind this; a stop keeps what's done. A grabber
     that reports itself stuck (None) ends the frame grabs for this run;
-    those videos are tried again next time."""
+    those videos are tried again next time.
+
+    A cover found to be generic along the way (find_generic_covers, run
+    at the end) sends its videos round once more for a frame grab."""
+    years, thumbs = _fill_pass(session, grab, should_stop, progress)
+    reset = find_generic_covers(session)
+    if reset:
+        session.commit()
+        more_years, more_thumbs = _fill_pass(session, grab, should_stop, progress,
+                                             thumbs_only=True)
+        # the generic ones counted in the first pass were taken back
+        years, thumbs = years + more_years, max(0, thumbs - reset) + more_thumbs
+    return years, thumbs
+
+
+def _fill_pass(session, grab, should_stop, progress,
+               thumbs_only: bool = False) -> tuple[int, int]:
+    generic = generic_covers(session)
+    wanted = (Video.thumbnail_path.is_(None) if thumbs_only
+              else Video.thumbnail_path.is_(None) | Video.year.is_(None))
     ids = list(session.scalars(
-        select(Video.id).where(
-            Video.is_missing.is_(False),
-            Video.thumbnail_path.is_(None) | Video.year.is_(None),
-        ).order_by(Video.id)
+        select(Video.id).where(Video.is_missing.is_(False), wanted).order_by(Video.id)
     ))
     years = thumbs = 0
     grabbing = grab
@@ -301,7 +389,7 @@ def fill_video_details(
             side = sidecar_image(path)
             if side is not None:
                 found = str(side)
-            elif cover:
+            elif cover and cover_hash(cover) not in generic:
                 found = save_cover(path, cover, suffix)
             elif grabbing is not None:
                 out = thumb_file(path)

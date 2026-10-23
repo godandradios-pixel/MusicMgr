@@ -206,3 +206,85 @@ def test_no_write_lock_is_held_while_a_frame_is_grabbed(qapp, tmp_path, monkeypa
     with db_session.session_scope() as s:
         vd.fill_video_details(s, grab=grabber)
     assert len(writes) == 3
+
+
+class TestGenericCovers:
+    """2026-10-23: 300 of James's videos carry the same "MUSIC VIDEOS"
+    placeholder as their embedded cover - a frame is grabbed instead."""
+
+    def _grabber(self, grabbed):
+        def grab(path, out, duration):
+            grabbed.append(path.name)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"frame of " + path.name.encode())
+            return True
+        return grab
+
+    def _videos(self, session, tmp_path, monkeypatch, covers):
+        paths = []
+        for name in covers:
+            p = tmp_path / f"A - {name}.mp4"
+            p.write_bytes(b"x")
+            paths.append(p)
+        monkeypatch.setattr(vd, "read_file_details",
+                            lambda p: (60_000, None, covers[p.stem[4:]], ".jpg"))
+        vs = [video(session, p, p.stem, "A", year=2000) for p in paths]
+        session.commit()
+        return vs
+
+    def test_a_cover_shared_by_three_videos_is_replaced_by_frames(self, session, tmp_path, monkeypatch):
+        covers = {"One": b"GENERIC", "Two": b"GENERIC", "Three": b"GENERIC", "Own": b"OWN COVER"}
+        vs = self._videos(session, tmp_path, monkeypatch, covers)
+        grabbed = []
+
+        _, thumbs = vd.fill_video_details(session, grab=self._grabber(grabbed))
+
+        assert sorted(grabbed) == ["A - One.mp4", "A - Three.mp4", "A - Two.mp4"]
+        assert [Path(v.thumbnail_path).read_bytes()[:8] for v in vs[:3]] == [b"frame of"] * 3
+        assert Path(vs[3].thumbnail_path).read_bytes() == b"OWN COVER"
+        assert thumbs == 4
+        assert vd.cover_hash(b"GENERIC") in vd.generic_covers(session)
+        assert vd.pending_count(session) == 0
+
+    def test_two_videos_sharing_a_cover_keep_it(self, session, tmp_path, monkeypatch):
+        vs = self._videos(session, tmp_path, monkeypatch, {"One": b"PAIR", "Two": b"PAIR"})
+        grabbed = []
+
+        vd.fill_video_details(session, grab=self._grabber(grabbed))
+
+        assert grabbed == []
+        assert all(Path(v.thumbnail_path).read_bytes() == b"PAIR" for v in vs)
+
+    def test_a_known_generic_cover_is_skipped_on_later_videos(self, session, tmp_path, monkeypatch):
+        from musicmgr.services import updater
+        import json
+
+        updater.set_pref(session, vd.GENERIC_COVERS_PREF, json.dumps([vd.cover_hash(b"GENERIC")]))
+        vs = self._videos(session, tmp_path, monkeypatch, {"New": b"GENERIC"})
+        grabbed = []
+
+        vd.fill_video_details(session, grab=self._grabber(grabbed))
+
+        assert grabbed == ["A - New.mp4"]
+        assert Path(vs[0].thumbnail_path).read_bytes().startswith(b"frame of")
+
+    def test_existing_library_reset_by_the_one_time_pass(self, session, tmp_path):
+        # what an older run left: the same cover saved for three videos
+        vs = []
+        for i in range(3):
+            p = tmp_path / f"A - {i}.mp4"
+            p.write_bytes(b"x")
+            thumb = vd.save_cover(p, b"GENERIC")
+            vs.append(video(session, p, str(i), "A", year=2000, thumbnail_path=thumb))
+        side = tmp_path / "A - side.jpg"
+        side.write_bytes(b"GENERIC")  # a picture beside a video is the owner's choice
+        own = video(session, tmp_path / "A - side.mp4", "side", "A", year=2000,
+                    thumbnail_path=str(side))
+        session.commit()
+
+        assert vd.find_generic_covers(session) == 3
+
+        assert [v.thumbnail_path for v in vs] == [None, None, None]
+        assert own.thumbnail_path == str(side)
+        assert not any(vd.thumb_dir().glob("*.jpg"))
+        assert vd.pending_count(session) == 3
