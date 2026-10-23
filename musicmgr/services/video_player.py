@@ -87,6 +87,9 @@ class VideoController(QObject):
     def duration(self) -> int:
         return self._player.duration()
 
+    def position(self) -> int:
+        return self._player.position()
+
     def is_playing(self) -> bool:
         return self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
 
