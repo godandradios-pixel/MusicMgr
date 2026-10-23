@@ -495,3 +495,62 @@ class TestBack:
 
         assert backs == [1]
         assert view.panes.currentIndex() == PANE_BROWSE
+
+
+class TestDetailsProgress:
+    """2026-10-23: pictures appear as the background filler finds them."""
+
+    def test_progress_reloads_and_shows_the_count(self, ctx, view):
+        with ctx.session() as session:
+            video = make_video(session, "Clip", duration_ms=60_000)
+            vid = video.id
+        view.refresh()
+        assert view.grid._rows[0].thumb is None
+
+        with ctx.session() as session:
+            session.get(Video, vid).thumbnail_path = "/thumbs/clip.jpg"
+        ctx.videoDetailsProgress.emit(25, 769)
+
+        assert view.grid._rows[0].thumb == "/thumbs/clip.jpg"
+        assert view.stats.text() == "1 music video · 1:00 · finding pictures 25 of 769"
+
+    def test_finishing_clears_the_count(self, ctx, view):
+        with ctx.session() as session:
+            make_video(session, "Clip", duration_ms=60_000)
+        view.refresh()
+        ctx.videoDetailsProgress.emit(25, 769)
+
+        ctx.videoDetailsProgress.emit(0, 0)
+
+        assert view.stats.text() == "1 music video · 1:00"
+
+    def test_progress_before_the_first_visit_does_not_load(self, ctx, view):
+        ctx.videoDetailsProgress.emit(25, 769)
+
+        assert view._loaded is False
+
+
+class TestTitleLines:
+    def _metrics(self, qapp):
+        from PySide6.QtGui import QFont, QFontMetrics
+        return QFontMetrics(QFont())
+
+    def test_a_short_title_is_one_line(self, qapp):
+        from musicmgr.ui.widgets.video_grid import title_lines
+        assert title_lines("7 Things", self._metrics(qapp), 256) == ["7 Things"]
+
+    def test_a_long_title_wraps_onto_two_lines_without_losing_words(self, qapp):
+        from musicmgr.ui.widgets.video_grid import title_lines
+        m = self._metrics(qapp)
+        title = "2112 The Temples Of Syrinx Live"
+        width = m.horizontalAdvance("2112 The Temples Of") + 4
+        lines = title_lines(title, m, width)
+        assert len(lines) == 2
+        assert " ".join(lines) == title
+
+    def test_a_very_long_title_ends_in_an_ellipsis(self, qapp):
+        from musicmgr.ui.widgets.video_grid import title_lines
+        m = self._metrics(qapp)
+        lines = title_lines("word " * 60, m, 200)
+        assert len(lines) == 2
+        assert lines[1].endswith("…")

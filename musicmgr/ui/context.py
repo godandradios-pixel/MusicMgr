@@ -18,6 +18,11 @@ class AppContext(QObject):
     #: emitted after a video scan so the Videos view (and Settings' stats
     #: card) can refresh
     videosChanged = Signal()
+    #: the background thumbnail/year filler (ui/video_details_worker.py)
+    #: has worked through (done, total) videos; (0, 0) when it finishes.
+    #: The Videos page shows the count and picks up new pictures as they
+    #: land rather than only at the end.
+    videoDetailsProgress = Signal(int, int)
     #: emitted when playlists are created/edited
     playlistsChanged = Signal()
     #: transient message for the status area
@@ -43,9 +48,10 @@ class AppContext(QObject):
     #: the embedded video player's "‹ Back" button asking to return to
     #: whatever section was active before Videos was reached - the same
     #: "ask, don't know the target yourself" contract as
-    #: nowPlayingBackRequested below, since Videos has no sidebar entry of
-    #: its own to fall back to (see NAV_ITEMS in ui/app.py,
-    #: VideosView._build_player and MainWindow._go_back_from_videos).
+    #: nowPlayingBackRequested below. Only used for a video opened from a
+    #: Library search match; one opened on the Videos page itself returns
+    #: to its grid (see VideosView._on_player_back and
+    #: MainWindow._go_back_from_videos).
     videosBackRequested = Signal()
     #: Now Playing's "‹ Back" button asking to return to whatever section was
     #: active before Now Playing was opened. NowPlayingView doesn't hold a

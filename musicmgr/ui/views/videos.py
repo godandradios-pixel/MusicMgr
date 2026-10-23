@@ -23,6 +23,11 @@ instead - see ctx.videosBackRequested and MainWindow._go_back_from_videos.
 A collapsed "N videos" Library search tile (ctx.focusVideoArtistRequested)
 lands on the List layout grouped by artist, scrolled to that artist.
 
+Pictures come from the background filler (ui/video_details_worker.py),
+started when this page opens; while it works the stats line reads
+"finding pictures N of M" and new pictures appear every 25 videos
+(ctx.videoDetailsProgress) without losing the scroll position.
+
 Watched folders are managed from Settings ("Watched video folders"), the same
 split Library uses between browsing (here) and folder bookkeeping (Settings).
 """
@@ -74,6 +79,8 @@ class VideosView(BaseView):
         #: own grid/list - "‹ Back" then returns here rather than to
         #: whichever section a search match came from
         self._opened_here = False
+        #: "finding pictures N of M" while the background filler runs
+        self._details_status = ""
 
         self.stats = dim_label("")
         self.header.insertWidget(1, self.stats)
@@ -163,6 +170,7 @@ class VideosView(BaseView):
         self.body().addWidget(self.panes, 1)
 
         ctx.videosChanged.connect(self._on_videos_changed)
+        ctx.videoDetailsProgress.connect(self._on_details_progress)
         ctx.playVideoRequested.connect(self._open_video_from_elsewhere)
         ctx.focusVideoArtistRequested.connect(self._focus_artist)
 
@@ -198,7 +206,16 @@ class VideosView(BaseView):
         self._loaded = False
         self.refresh()
 
-    def _load_videos(self) -> None:
+    def _on_details_progress(self, done: int, total: int) -> None:
+        """ctx.videoDetailsProgress - pick up the pictures found so far
+        (only if this page has been loaded; otherwise its first visit
+        reads them anyway). (0, 0) = finished."""
+        self._details_status = (
+            f"finding pictures {done:,} of {total:,}" if total and done < total else "")
+        if self._loaded:
+            self._load_videos(keep_scroll=True)
+
+    def _load_videos(self, keep_scroll: bool = False) -> None:
         rows: list[VideoRow] = []
         with self.ctx.session() as session:
             for v in vid_svc.list_videos_for_search(session):
@@ -216,24 +233,26 @@ class VideosView(BaseView):
                 ))
         self._all_rows = rows
         self._loaded = True
-        self._show_tab()
+        self._show_tab(keep_scroll)
 
     def _tab_rows(self, tab: str) -> list[VideoRow]:
         return [r for r in self._all_rows if r.media_type == tab]
 
-    def _show_tab(self) -> None:
+    def _show_tab(self, keep_scroll: bool = False) -> None:
         """Feed the active tab's videos to both layouts and update the
         counts - the tab labels carry each tab's size, the stats line the
         active tab's count and total running time."""
         for tab, chip in self.tab_chips.items():
             chip.setText(f"{TAB_NAMES[tab][0]} ({len(self._tab_rows(tab)):,})")
         rows = self._tab_rows(self._tab)
-        self.grid.set_rows(rows)
-        self.table.set_rows(rows)
+        self.grid.set_rows(rows, keep_scroll=keep_scroll)
+        self.table.set_rows(rows, keep_scroll=keep_scroll)
         total_ms = sum(r.duration_ms or 0 for r in rows)
         _label, one, many = TAB_NAMES[self._tab]
-        self.stats.setText(
-            f"{len(rows):,} {one if len(rows) == 1 else many} · {format_duration(total_ms)}")
+        text = f"{len(rows):,} {one if len(rows) == 1 else many} · {format_duration(total_ms)}"
+        if self._details_status:
+            text += f" · {self._details_status}"
+        self.stats.setText(text)
         self._refresh_jump_bar()
 
     def set_tab(self, tab: str) -> None:

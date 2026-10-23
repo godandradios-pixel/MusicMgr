@@ -342,6 +342,13 @@ class MainWindow(QMainWindow):
         # without a button of its own - see ctx.videosBackRequested.
         if key == "videos" and self._current_key not in (None, "videos"):
             self._videos_back_key = self._current_key
+        if key == "videos":
+            # pictures for any video that hasn't been tried yet, now rather
+            # than at the two-minute launch timer (a cheap COUNT first, so
+            # it's a no-op once they're all done)
+            from . import video_details_worker
+
+            video_details_worker.start(self.ctx, only_if_pending=True)
         self._current_key = key
         self.stack.setCurrentWidget(view)
         if key == "library":

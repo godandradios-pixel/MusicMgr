@@ -1,9 +1,11 @@
 """Fills in video thumbnails and years in the background - see services/video_details.py for where each comes from.
 
 `start(ctx)` runs `VideoDetailsThread` unless one is already running. The
-main window calls it a couple of minutes after launch (only when a cheap
-count says some video still needs it, so an ordinary start does no work)
-and Settings calls it after every library scan.
+main window calls it a couple of minutes after launch and whenever the
+Videos page is opened (only when a cheap count says some video still
+needs it, so an ordinary start does no work), and Settings calls it after
+every library scan. Progress goes out on ctx.videoDetailsProgress every
+25 videos, so the Videos page fills in pictures as they're found.
 
 Frames are grabbed with ffmpeg when it's on the PATH; otherwise with Qt's
 own player (`QtFrameGrabber`), created inside this thread with no audio
@@ -99,6 +101,7 @@ class QtFrameGrabber:
 
 class VideoDetailsThread(QThread):
     done = Signal(int, int)  # years found, thumbnails found
+    progress = Signal(int, int)  # videos worked through, total
 
     def run(self) -> None:  # pragma: no cover - exercised interactively
         try:
@@ -111,7 +114,8 @@ class VideoDetailsThread(QThread):
                     grab = None
             with session_scope() as session:
                 years, thumbs = video_details.fill_video_details(
-                    session, grab=grab, should_stop=self.isInterruptionRequested)
+                    session, grab=grab, should_stop=self.isInterruptionRequested,
+                    progress=self.progress.emit)
             if years or thumbs:
                 log.info("videos: %d years and %d thumbnails filled in", years, thumbs)
             self.done.emit(years, thumbs)
@@ -149,9 +153,11 @@ def start(ctx, *, only_if_pending: bool = False) -> Optional[VideoDetailsThread]
     thread = VideoDetailsThread()
 
     def finished(years: int, thumbs: int) -> None:
+        ctx.videoDetailsProgress.emit(0, 0)
         if years or thumbs:
             ctx.videosChanged.emit()
 
+    thread.progress.connect(ctx.videoDetailsProgress.emit)
     thread.done.connect(finished)
     ctx._video_details_thread = thread
     thread.start(QThread.LowestPriority)

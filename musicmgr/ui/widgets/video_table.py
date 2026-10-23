@@ -166,9 +166,13 @@ class VideoTable(QWidget):
 
     # -- data -----------------------------------------------------------
 
-    def set_rows(self, rows: Sequence[VideoRow]) -> None:
+    def set_rows(self, rows: Sequence[VideoRow], keep_scroll: bool = False) -> None:
+        bar = self.tree.verticalScrollBar()
+        at = bar.value()
         self._rows = list(rows)
         self._rebuild()
+        if keep_scroll:  # see VideoGrid.set_rows
+            bar.setValue(at)
 
     def set_filter_text(self, text: str) -> None:
         """Narrow to videos whose title OR artist matches `text` - both,

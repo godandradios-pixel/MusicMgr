@@ -49,7 +49,9 @@ ROLE_ROW = Qt.UserRole + 5
 
 #: picture size, 16:9
 THUMB_W, THUMB_H = 256, 144
-CAPTION_H = 56
+#: room for a title wrapped onto two lines, then "artist · year"
+CAPTION_H = 80
+TITLE_LINE_H = 21
 PAD = 10
 
 SORT_TITLE = "title"
@@ -96,6 +98,23 @@ def video_thumb_pixmap(row: VideoRow, width: int = THUMB_W, height: int = THUMB_
     painter.end()
     _THUMB_CACHE[key] = pix
     return pix
+
+
+def title_lines(text: str, metrics: QFontMetrics, width: int, max_lines: int = 2) -> list[str]:
+    """`text` word-wrapped to `width`, at most `max_lines` lines, the last
+    one elided with "…" if the title still doesn't fit. A single word too
+    long for a line is elided rather than split mid-word."""
+    words = text.split()
+    lines: list[str] = []
+    while words and len(lines) < max_lines:
+        if len(lines) == max_lines - 1:
+            lines.append(metrics.elidedText(" ".join(words), Qt.ElideRight, width))
+            break
+        line = words.pop(0)
+        while words and metrics.horizontalAdvance(f"{line} {words[0]}") <= width:
+            line = f"{line} {words.pop(0)}"
+        lines.append(metrics.elidedText(line, Qt.ElideRight, width))
+    return lines or [""]
 
 
 class VideoTileDelegate(QStyledItemDelegate):
@@ -162,14 +181,16 @@ class VideoTileDelegate(QStyledItemDelegate):
             painter.setBrush(QColor("#ffffff"))
             painter.drawPath(tri)
 
-        text_y = y + THUMB_H + 8
+        text_y = y + THUMB_H + 6
         font.setPixelSize(TOUCH["font_base"])
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(QColor(COLORS["text"]))
         metrics = QFontMetrics(font)
-        painter.drawText(x, text_y, THUMB_W, 22, Qt.AlignLeft | Qt.AlignVCenter,
-                         metrics.elidedText(row.title, Qt.ElideRight, THUMB_W))
+        lines = title_lines(row.title, metrics, THUMB_W)
+        for i, line in enumerate(lines):
+            painter.drawText(x, text_y + i * TITLE_LINE_H, THUMB_W, TITLE_LINE_H,
+                             Qt.AlignLeft | Qt.AlignVCenter, line)
 
         font.setPixelSize(TOUCH["font_base"] - 3)
         font.setBold(False)
@@ -177,7 +198,9 @@ class VideoTileDelegate(QStyledItemDelegate):
         painter.setPen(QColor(COLORS["text_dim"]))
         metrics = QFontMetrics(font)
         caption = " · ".join(p for p in (row.artist, str(row.year) if row.year else "") if p)
-        painter.drawText(x, text_y + 22, THUMB_W, 20, Qt.AlignLeft | Qt.AlignVCenter,
+        # right under the title, one line or two
+        painter.drawText(x, text_y + len(lines) * TITLE_LINE_H + 1, THUMB_W, 20,
+                         Qt.AlignLeft | Qt.AlignVCenter,
                          metrics.elidedText(caption, Qt.ElideRight, THUMB_W))
         painter.restore()
 
@@ -238,9 +261,16 @@ class VideoGrid(QWidget):
 
     # -- data -------------------------------------------------------------
 
-    def set_rows(self, rows: Sequence[VideoRow]) -> None:
+    def set_rows(self, rows: Sequence[VideoRow], keep_scroll: bool = False) -> None:
+        """`keep_scroll`: the same videos refreshed (new pictures from the
+        background filler) - stay where the viewer is rather than jumping
+        back to the top."""
+        bar = self.view.verticalScrollBar()
+        at = bar.value()
         self._rows = list(rows)
         self._rebuild()
+        if keep_scroll:
+            bar.setValue(at)
 
     def set_filter_text(self, text: str) -> None:
         text = text.strip().lower()
