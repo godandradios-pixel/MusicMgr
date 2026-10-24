@@ -431,7 +431,12 @@ def playlist_tracks(session: Session, playlist_id: int) -> list[Track]:
         .where(PlaylistItem.playlist_id == playlist_id)
         .order_by(PlaylistItem.position)
     )
-    return list(session.scalars(stmt).unique())
+    # No .unique() here: it collapses repeated Track objects, so a song a
+    # playlist holds twice (two chart positions matched to one library
+    # track, say) showed once and a 100-song chart playlist read "99
+    # songs". selectinload doesn't duplicate rows, so nothing else needs
+    # de-duping - every PlaylistItem gets its own row, in position order.
+    return list(session.scalars(stmt))
 
 
 def playlist_duration_ms(session: Session, playlist_id: int) -> int:

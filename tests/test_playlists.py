@@ -200,6 +200,18 @@ class TestManualPlaylistItems:
     def test_playlist_tracks_for_an_unknown_id_is_empty(self, session):
         assert lib_pl.playlist_tracks(session, 999_999) == []
 
+    def test_playlist_tracks_keeps_a_track_listed_twice(self, session):
+        # e.g. a chart saved as a playlist where two positions matched the
+        # same library track - the playlist must still show every position
+        playlist = lib_pl.create_playlist(session, "Chart")
+        t1, t2 = make_track(session, "One"), make_track(session, "Two")
+        for pos, track in enumerate((t1, t2, t1)):
+            session.add(PlaylistItem(playlist_id=playlist.id, track_id=track.id, position=pos))
+        session.flush()
+
+        ordered = lib_pl.playlist_tracks(session, playlist.id)
+        assert [t.id for t in ordered] == [t1.id, t2.id, t1.id]
+
 
 class TestSmartPlaylistRules:
     def test_numeric_gte(self, session):
