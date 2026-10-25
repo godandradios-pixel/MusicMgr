@@ -227,6 +227,12 @@ def primary_artist(text: Optional[str]) -> str:
     return parts[0] if parts else (text or "")
 
 
+def _contains_words(a: str, b: str) -> bool:
+    """True when the shorter string appears in the longer as whole words."""
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    return bool(short) and f" {short} " in f" {long_} "
+
+
 def similarity(a: str, b: str) -> float:
     """0.0-1.0 similarity of two already-normalised strings."""
     if not a or not b:
@@ -234,8 +240,10 @@ def similarity(a: str, b: str) -> float:
     if a == b:
         return 1.0
     ratio = difflib.SequenceMatcher(None, a, b).ratio()
-    # containment bonus: "billie jean" vs "billie jean single version"
-    if a in b or b in a:
+    # containment bonus: "gladys knight" vs "gladys knight and the pips".
+    # Whole words only - as plain substrings "men" was "in" "instrumental",
+    # "sing" in "missing" and "m" in "fair to midland", which scored 0.9
+    if _contains_words(a, b):
         ratio = max(ratio, 0.9)
     # token overlap catches word reordering
     ta, tb = set(a.split()), set(b.split())
@@ -248,6 +256,102 @@ def similarity(a: str, b: str) -> float:
 #: below this artist similarity a chart entry never matches, however exact
 #: the title (see score_pair)
 MIN_ARTIST_SIMILARITY = 0.45
+#: ...and below this title similarity it never matches, however exact the
+#: artist: a one-hit wonder ("Hurricane" by MS MR) mustn't land on another
+#: song by the same act ("Beautiful Hurricane"), and title and artist
+#: weighted together let a perfect artist carry a title only 57% alike
+MIN_TITLE_SIMILARITY = 0.8
+
+#: words a library title may carry beyond the chart's without being a
+#: different song: "Billie Jean (Single Version)", "Crush Original Version",
+#: "Billionaire ft. Bruno Mars"
+_VERSION_WORDS = frozenset(
+    "single version album radio edit mix remix original mono stereo remaster "
+    "remastered extended long short live demo take recording recorded digital "
+    "re inch lp ep vocal orchestra soundtrack from the "
+    "official video audio bonus track explicit clean freestyle part pt i ii".split()
+)
+_FEAT_WORD = re.compile(r"^(?:feat|ft|featuring|with|prod)$")
+#: a title's version note: anything in brackets, or after " - "
+_TITLE_NOTE = re.compile(r"\s*[\(\[][^)\]]*[\)\]]|\s+-\s+.*$")
+
+
+def _title_core(title: str) -> str:
+    """The title without its bracketed or " - " version notes - for
+    "Kiss Me (Official Paris Version)" just "kiss me"."""
+    return normalize(_TITLE_NOTE.sub("", title or "")) or normalize(title)
+
+
+def _extra_is_note(short: str, long_: str) -> bool:
+    """Whether `long_` is `short` plus only version-note words (or a
+    featured credit) before or after it."""
+    if not _contains_words(short, long_):
+        return False
+    i = f" {long_} ".index(f" {short} ")
+    extra = (long_[:i] + " " + long_[i + len(short):]).split()
+    if not extra:
+        return True
+    if any(_FEAT_WORD.match(w) for w in extra):
+        # everything from "ft"/"with" on is a credit, not part of the title
+        head = []
+        for w in extra:
+            if _FEAT_WORD.match(w):
+                break
+            head.append(w)
+        extra = head
+    return all(w in _VERSION_WORDS or re.fullmatch(r"(?:19|20)\d\d", w) for w in extra)
+
+
+def title_similarity(title_a: str, title_b: str) -> float:
+    """0.0-1.0 similarity of two song titles (raw, not normalised).
+
+    Stricter than `similarity`: one title found inside another only counts
+    when what's left over is a version note, so "Billie Jean" matches
+    "Billie Jean (Single Version)" but "Hurricane" doesn't match "Beautiful
+    Hurricane" and "Men" doesn't match "Midnight Train to Georgia
+    (instrumental)"."""
+    # a double A-side charts as "Moody Blue/She Thinks I Still Care" -
+    # either side is the record
+    if "/" in (title_a or "") or "/" in (title_b or ""):
+        parts_a = _sides(title_a)
+        parts_b = _sides(title_b)
+        if len(parts_a) > 1 or len(parts_b) > 1:
+            return max(_title_similarity(title_a, title_b),
+                       *(_title_similarity(x, y) for x in parts_a for y in parts_b))
+    return _title_similarity(title_a, title_b)
+
+
+def _sides(title: str) -> list[str]:
+    """"A/B" as its two sides - only when both are words, so "24/7" and
+    "AC/DC" stay whole."""
+    # a "/" inside a version note - "(Live At ..., NY / January 27, 2017)"
+    # - doesn't make two sides
+    parts = re.sub(r"[\(\[][^)\]]*[\)\]]", " ", title or "").split("/")
+    if len(parts) > 1 and all(re.search(r"[^\W\d_]{2}", p) for p in parts):
+        return parts
+    return [title or ""]
+
+
+def _title_similarity(title_a: str, title_b: str) -> float:
+    a, b = normalize(title_a), normalize(title_b)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    ca, cb = _title_core(title_a), _title_core(title_b)
+    if ca and ca == cb:
+        return 0.95
+    best = 0.0
+    for x, y in ((a, b), (ca, cb)):
+        ratio = difflib.SequenceMatcher(None, x, y).ratio()
+        tx, ty = set(x.split()), set(y.split())
+        if tx and ty:
+            ratio = max(ratio, len(tx & ty) / len(tx | ty) * 0.95)
+        short, long_ = (x, y) if len(x) <= len(y) else (y, x)
+        if _extra_is_note(short, long_):
+            ratio = max(ratio, 0.9)
+        best = max(best, ratio)
+    return best
 #: comparing individual names out of "A featuring B" / "A & B" credits must
 #: be this close to count - two different people sharing a surname
 #: ("Chuck Jackson" / "Jermaine Jackson") shouldn't
@@ -272,9 +376,13 @@ def score_pair(
     The artist always has to be reasonably close (MIN_ARTIST_SIMILARITY),
     even for an exact title: otherwise a chart entry links to someone
     else's song of the same name, e.g. a hit that charted for two artists
-    at once collapsing onto one record.
+    at once collapsing onto one record. Likewise the title on its own has
+    to be close (MIN_TITLE_SIMILARITY, `title_similarity`), however exact
+    the artist: otherwise it links to another song by the same act.
     """
-    t = similarity(normalize(title_a), normalize(title_b))
+    t = title_similarity(title_a, title_b)
+    if t < MIN_TITLE_SIMILARITY:
+        return 0.0
     a = artist_similarity(artist_a, artist_b)
     if a < MIN_ARTIST_SIMILARITY:
         return 0.0
