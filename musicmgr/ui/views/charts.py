@@ -45,9 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sqlalchemy import select
-
-from ...db.models import Chart, ChartEntry, ChartFolder, ChartIssue, Playlist, Track
+from ...db.models import Chart, ChartEntry, ChartFolder, ChartIssue, Track
 from ...services import charts as chart_svc
 from ...services import playlists as pl_svc
 from ...services import scanner as scanner_svc
@@ -454,6 +452,7 @@ class ChartsView(BaseView):
         nodes: list[ChartIssueNode] = []
         with self.ctx.session() as session:
             issues = chart_svc.list_issues(session, chart_id)
+            style = chart_svc.edition_style(i.chart_date for i in issues)
             coverage = chart_svc.issue_coverage_by_chart(session, chart_id)
             for issue in issues:
                 owned, total = coverage.get(issue.id, (0, 0))
@@ -462,7 +461,7 @@ class ChartsView(BaseView):
                     ChartIssueNode(
                         id=issue.id,
                         chart_id=chart_id,
-                        label=issue.chart_date.strftime("%d %b %Y"),
+                        label=chart_svc.edition_label(issue.chart_date, style),
                         coverage_pct=pct,
                         detail=f"{owned}/{total} in library" if total else "no entries",
                     )
@@ -746,12 +745,9 @@ class ChartsView(BaseView):
             chart = session.get(Chart, issue.chart_id) if issue else None
             if issue is None or chart is None:
                 return
-            name = f"{chart.name} - {issue.chart_date.isoformat()}"
-            existing = session.scalar(
-                select(Playlist).where(
-                    Playlist.name == name, Playlist.kind == Playlist.KIND_CHART
-                )
-            )
+            existing = chart_svc.find_edition_playlist(session, issue, chart)
+            name = existing.name if existing is not None else chart_svc.chart_playlist_name(
+                session, issue, chart)
             current = (
                 existing.folder_id
                 if existing is not None

@@ -74,6 +74,8 @@ class SettingsView(
         self._loudness_thread: Optional[LoudnessAnalyzeThread] = None
         #: Settings › Duplicates (services/duplicates.py)
         self._duplicates_thread = None
+        #: Settings › Library health (services/library_health.py)
+        self._health_thread = None
         #: last "Missing metadata" scan, reused so reopening the dashboard
         #: (e.g. right after fixing one item) doesn't rerun the whole thing
         #: - see view_missing_metadata's own docstring. Cleared (forcing a
@@ -195,6 +197,7 @@ class SettingsView(
             (self._rematch_thread, "Charts are re-matching — wait for it to finish first"),
             (self._loudness_thread, "Volume levels are being analyzed — wait for it to finish first"),
             (self._duplicates_thread, "Duplicates are being searched for — wait for it to finish first"),
+            (self._health_thread, "The library is being checked — wait for it to finish first"),
             (getattr(self, "_usb_compare_thread", None), "The USB is being checked — wait for it to finish first"),
             (getattr(self, "_usb_sync_thread", None), "The USB is syncing — wait for it to finish first"),
         ):
@@ -221,6 +224,7 @@ class SettingsView(
         "_rematch_thread",
         "_loudness_thread",
         "_duplicates_thread",
+        "_health_thread",
         "_usb_compare_thread",
         "_usb_sync_thread",
     )

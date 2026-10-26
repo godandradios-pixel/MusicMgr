@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 from ....services import updater
+from ....services import library_backup
 from ....services import library_state
 from ....services import usb_sync
 from ... import skins
@@ -67,6 +68,15 @@ class UsbSection:
             lambda on: self._save_update_pref(usb_sync.PREF_AUTO_CHECK, on)
         )
         usb_layout.addWidget(self.usb_auto_cb)
+        self.usb_snapshot_cb = QCheckBox("Save a copy of the library on the drive after each sync")
+        self.usb_snapshot_cb.setToolTip(
+            "Leaves MusicMgr\\data-<date> on the drive (the newest two are kept), which "
+            "Install-MusicMgr.bat and Copy-USB-to-D.bat use to set up a PC with "
+            "this library")
+        self.usb_snapshot_cb.toggled.connect(
+            lambda on: self._save_update_pref(library_backup.PREF_DRIVE_SNAPSHOT, on)
+        )
+        usb_layout.addWidget(self.usb_snapshot_cb)
         # which library data rides along, per PC; see
         # services/library_state.py:sync_library_state's `include`. A grid,
         # as there are too many for one row.
@@ -162,10 +172,14 @@ class UsbSection:
         self._usb_pending_plan: Optional[usb_sync.ComparePlan] = None
         with self.ctx.session() as db:
             auto = updater.get_bool_pref(db, usb_sync.PREF_AUTO_CHECK, True)
+            snapshot = updater.get_bool_pref(db, library_backup.PREF_DRIVE_SNAPSHOT, True)
             chosen = library_state.enabled_categories(db)
         self.usb_auto_cb.blockSignals(True)
         self.usb_auto_cb.setChecked(auto)
         self.usb_auto_cb.blockSignals(False)
+        self.usb_snapshot_cb.blockSignals(True)
+        self.usb_snapshot_cb.setChecked(snapshot)
+        self.usb_snapshot_cb.blockSignals(False)
         for cat, cb in self.usb_data_cbs.items():
             cb.blockSignals(True)
             cb.setChecked(cat in chosen)

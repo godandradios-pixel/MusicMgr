@@ -100,6 +100,9 @@ class ScanResult:
     #: rows for a file already in the library under another capitalization
     #: (see merge_case_duplicate_files)
     case_duplicates_removed: int = 0
+    #: unmatched chart positions this scan's new songs filled (see
+    #: _match_new_songs)
+    charts_matched: int = 0
     errors: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -112,6 +115,9 @@ class ScanResult:
         if self.case_duplicates_removed:
             skipped += (f", {self.case_duplicates_removed} duplicate entries "
                         "differing only in capitalization removed")
+        if self.charts_matched:
+            skipped += (f", {self.charts_matched} chart position"
+                        f"{'s' if self.charts_matched != 1 else ''} matched to new songs")
         return (
             f"{self.scanned} files scanned - {self.added} added, "
             f"{self.updated} updated, {self.unchanged} unchanged, "
@@ -1138,9 +1144,13 @@ def _import_files(
         ))
 
     regroup_set = set(regroup)
+    #: files that came in new (or, outside a forced rescan, changed) - their
+    #: songs are tried against the charts' unmatched positions at the end
+    arrived: list[Path] = []
     for idx, path in enumerate(files, start=1):
         if should_stop and should_stop():
             break
+        counts = (result.added, result.updated)
         try:
             if path in regroup_set:
                 _reimport_on_same_album(session, path, result)
@@ -1177,6 +1187,8 @@ def _import_files(
             hidden = hide_retitled(session, [(p, tags_cache[p]) for p in files[idx:]
                                              if p in tags_cache])
         result.scanned += 1
+        if result.added != counts[0] or (not force and result.updated != counts[1]):
+            arrived.append(path)
         if progress and (idx % 5 == 0 or idx == total):
             progress(idx, total, path.name)
         if idx % 200 == 0:
@@ -1188,6 +1200,66 @@ def _import_files(
         purge_empty_releases(session, left_releases)
     if result.separated_from and not (should_stop and should_stop()):
         _rematch_separated(session, result, progress)
+    if arrived and not (should_stop and should_stop()):
+        result.charts_matched += _match_new_songs(session, arrived, progress)
+
+
+def _match_new_songs(session: Session, paths: list[Path],
+                     progress: Optional[ProgressFn] = None) -> int:
+    """Try the songs these new files belong to against the charts'
+    *unmatched* positions with the same title, so new music shows up in
+    charts (and in chart playlists saved again) without Settings' Re-match,
+    which re-checks every position and takes over half an hour on a big
+    library. Only positions with no song and not fixed by hand are looked
+    at, and only by title key - the title as given and without its version
+    note ("Billie Jean (Single Version)" also tries "billie jean"); a title
+    spelled differently waits for a full re-match. 2026-10-25.
+
+    Returns how many positions got a song."""
+    from . import charts as chart_svc  # charts imports nothing from here
+    from .matching import _title_core
+
+    session.flush()
+    keys: set[str] = set()
+    names = [str(p) for p in paths]
+    for start in range(0, len(names), 500):
+        for title, key in session.execute(
+            select(Track.title, Track.title_key)
+            .join(MediaFile, MediaFile.track_id == Track.id)
+            .where(MediaFile.path.in_(names[start:start + 500]))
+        ):
+            for k in (key, _title_core(title or "")):
+                if k:
+                    keys.add(k)
+    if not keys:
+        return 0
+    keys_list = sorted(keys)
+    entries: list[ChartEntry] = []
+    for start in range(0, len(keys_list), 500):
+        entries.extend(session.scalars(select(ChartEntry).where(
+            ChartEntry.track_id.is_(None),
+            ChartEntry.match_locked.is_not(True),
+            ChartEntry.title_key.in_(keys_list[start:start + 500]),
+        )))
+    # a weekly chart lists the same record for weeks on end: match each
+    # title-and-artist once and give its other weeks the same answer
+    groups: dict[tuple[str, str], list[ChartEntry]] = {}
+    for entry in entries:
+        groups.setdefault((entry.title or "", entry.artist_name or ""), []).append(entry)
+    matched = 0
+    total = len(groups)
+    for idx, same in enumerate(groups.values(), start=1):
+        first = same[0]
+        if chart_svc.match_entry(session, first):
+            for entry in same:
+                entry.track_id, entry.match_score = first.track_id, first.match_score
+            matched += len(same)
+        if progress and (idx % 20 == 0 or idx == total):
+            progress(idx, total, "Matching new songs to the charts")
+        if idx % 200 == 0:
+            session.flush()
+    session.flush()
+    return matched
 
 
 def _move_locked_to_version(session: Session, entry: ChartEntry, artist_similarity) -> None:

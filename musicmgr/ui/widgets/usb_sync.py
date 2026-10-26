@@ -126,11 +126,40 @@ class UsbSyncThread(QThread):
                 message = us.update_library(db, result)
             if not result.cancelled:
                 message = self._sync_library_state(result, message)
+                message = self._save_snapshot(message)
         except Exception as exc:
             log.exception("USB sync failed")
             self.finished_with.emit(None, "", str(exc))
             return
         self.finished_with.emit(result, message, None)
+
+    def _save_snapshot(self, message: str) -> str:
+        """Step 4: leave a copy of the library on the drive for the
+        installer and Copy-USB-to-D.bat (services/library_backup.py:
+        save_drive_snapshot). Taken after step 3, so the copy's sync bases
+        match it. Settings' "Save a copy of the library on the drive"."""
+        import platform
+
+        from ... import __version__, config
+        from ...services import library_backup, updater
+
+        from ...db.session import get_engine
+
+        # the database this app is running on (not a test's in-memory one)
+        db_file = get_engine().url.database
+        if not db_file or db_file == ":memory:":
+            return message
+        with session_scope() as db:
+            if not updater.get_bool_pref(db, library_backup.PREF_DRIVE_SNAPSHOT, True):
+                return message
+        self.stage.emit("Saving a copy of your library on the drive…")
+        snap = library_backup.save_drive_snapshot(
+            config.DATA_DIR, self.plan.drive.root / "MusicMgr",
+            pc_name=platform.node(), version=__version__, db_path=Path(db_file),
+        )
+        note = (f"Library copy saved on the drive ({snap.path.name})" if snap.path
+                else f"Library copy not saved on the drive: {snap.error}")
+        return f"{message} · {note}" if message else note
 
     def _sync_library_state(self, result, message: str) -> str:
         """Step 3: plays, ratings, playlists and the Jukebox

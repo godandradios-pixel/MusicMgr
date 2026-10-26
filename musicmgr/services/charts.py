@@ -850,6 +850,68 @@ def folder_counts(session: Session, folder_id: int) -> tuple[int, int]:
     return charts, subfolders
 
 
+#: how a chart's editions are dated - see edition_style
+EDITION_YEAR, EDITION_DECADE, EDITION_DATE = "year", "decade", "date"
+
+
+def edition_style(dates: Iterable[dt.date]) -> str:
+    """How to name a chart's editions, from all their dates: a Year End
+    chart files each year as 31 December (parse_date's bare-year rule), so
+    "2025" says it better than "31 Dec 2025"; the One-Hit Wonders lists are
+    one edition per decade dated 1 January 1980, 1990..., so "1980s".
+    Anything else - a weekly chart - keeps its full date. 2026-10-25."""
+    dates = list(dates)
+    if not dates:
+        return EDITION_DATE
+    if all((d.month, d.day) == (12, 31) for d in dates):
+        return EDITION_YEAR
+    if all((d.month, d.day) == (1, 1) and d.year % 10 == 0 for d in dates):
+        return EDITION_DECADE
+    return EDITION_DATE
+
+
+def edition_label(chart_date: dt.date, style: str) -> str:
+    if style == EDITION_YEAR:
+        return str(chart_date.year)
+    if style == EDITION_DECADE:
+        return f"{chart_date.year}s"
+    return chart_date.strftime("%d %b %Y")
+
+
+def chart_edition_style(session: Session, chart_id: int) -> str:
+    return edition_style(session.scalars(
+        select(ChartIssue.chart_date).where(ChartIssue.chart_id == chart_id)))
+
+
+def issue_label(session: Session, issue: ChartIssue) -> str:
+    """One edition's name as the Charts page shows it ("2025", "1980s" or
+    "07 Oct 2026")."""
+    return edition_label(issue.chart_date, chart_edition_style(session, issue.chart_id))
+
+
+def chart_playlist_name(session: Session, issue: ChartIssue, chart: Chart) -> str:
+    """Default name for an edition saved as a playlist: "Year End - 2025"."""
+    return f"{chart.name} - {issue_label(session, issue)}"
+
+
+def find_edition_playlist(session: Session, issue: ChartIssue, chart: Chart) -> Optional[Playlist]:
+    """The playlist already saved from this edition, if any: by its link to
+    the edition first - it may have been renamed ("2025" in a decade folder)
+    - then by either default name (the full ISO date one used before
+    2026-10-25, or chart_playlist_name)."""
+    found = session.scalar(
+        select(Playlist).where(Playlist.source_issue_id == issue.id,
+                               Playlist.kind == Playlist.KIND_CHART)
+        .order_by(Playlist.id).limit(1))
+    if found is not None:
+        return found
+    names = {f"{chart.name} - {issue.chart_date.isoformat()}",
+             chart_playlist_name(session, issue, chart)}
+    return session.scalar(
+        select(Playlist).where(Playlist.name.in_(names), Playlist.kind == Playlist.KIND_CHART)
+        .order_by(Playlist.id).limit(1))
+
+
 def list_issues(session: Session, chart_id: int) -> list[ChartIssue]:
     return list(
         session.scalars(
@@ -1011,17 +1073,16 @@ def snapshot_to_playlist(
     if issue is None:
         raise ValueError(f"no chart issue {issue_id}")
     chart = session.get(Chart, issue.chart_id)
-    name = f"{chart.name} - {issue.chart_date.isoformat()}"
-    playlist = session.scalar(
-        select(Playlist).where(
-            Playlist.name == name, Playlist.kind == Playlist.KIND_CHART
-        )
-    )
+    # an edition saved before is updated in place - keeping its name,
+    # folder and tile even if renamed - rather than saved a second time
+    playlist = find_edition_playlist(session, issue, chart)
     if playlist is None:
-        playlist = Playlist(name=name, kind=Playlist.KIND_CHART, source_issue_id=issue.id)
+        playlist = Playlist(name=chart_playlist_name(session, issue, chart),
+                            kind=Playlist.KIND_CHART, source_issue_id=issue.id)
         session.add(playlist)
         session.flush()
     else:
+        playlist.source_issue_id = issue.id
         for item in list(playlist.items):
             session.delete(item)
         session.flush()
@@ -1037,6 +1098,9 @@ def snapshot_to_playlist(
         )
         pos += 1
     playlist.description = f"Positions 1-{pos} from {chart.name}, {issue.chart_date}"
+    # new songs alone don't touch the playlist row; USB sync's playlist
+    # merge goes by updated_at when both PCs changed one
+    playlist.updated_at = dt.datetime.now(dt.timezone.utc)
     if folder_id is not _KEEP_FOLDER:
         playlist.folder_id = folder_id
     session.flush()

@@ -1357,3 +1357,66 @@ def test_rescan_all_tidies_artist_sort_keys(session, tmp_path):
     scanner.rescan_all(session)
 
     assert artist.name_sort == "Romantics, The"
+
+
+class TestNewSongsFillChartPositions:
+    """2026-10-25: a scan (or a USB sync's import) tries its new songs
+    against the charts' unmatched positions, so new music shows up in the
+    charts without Settings' half-hour Re-match."""
+
+    def _chart(self, session, rows):
+        from musicmgr.services.matching import normalize
+
+        chart = Chart(name="Year End", slug="year-end")
+        session.add(chart)
+        session.flush()
+        issue = ChartIssue(chart_id=chart.id, chart_date=dt.date(1981, 12, 31))
+        session.add(issue)
+        session.flush()
+        out = []
+        for rank, (title, artist, extra) in enumerate(rows, start=1):
+            e = ChartEntry(issue_id=issue.id, rank=rank, title=title, artist_name=artist,
+                           title_key=normalize(title), artist_key=normalize(artist), **extra)
+            session.add(e)
+            out.append(e)
+        session.flush()
+        return out
+
+    def test_new_songs_fill_unmatched_positions(self, session, tmp_path):
+        hold, version, other, locked = self._chart(session, [
+            ("Hold On Loosely", ".38 Special", {}),
+            ("Caught Up In You", ".38 Special", {}),
+            ("Hold On Loosely", "Somebody Else", {}),
+            ("Fantasy Girl", ".38 Special", {"match_locked": True}),
+        ])
+        folder = tmp_path / ".38 Special" / "Wild-Eyed Southern Boys"
+        make_tagged_mp3(folder / "01 Hold On Loosely.mp3", "Hold On Loosely",
+                        ".38 Special", "Wild-Eyed Southern Boys")
+        make_tagged_mp3(folder / "02 Caught Up In You (Single Version).mp3",
+                        "Caught Up In You (Single Version)", ".38 Special",
+                        "Wild-Eyed Southern Boys")
+        make_tagged_mp3(folder / "03 Fantasy Girl.mp3", "Fantasy Girl", ".38 Special",
+                        "Wild-Eyed Southern Boys")
+
+        result = scanner.scan_folder(session, tmp_path)
+
+        assert hold.track_id is not None
+        assert version.track_id is not None        # found by the title without its note
+        assert other.track_id is None              # someone else's record
+        assert locked.track_id is None             # fixed by hand: left alone
+        assert result.charts_matched == 2
+        assert "2 chart positions matched to new songs" in result.summary()
+
+    def test_an_unchanged_rescan_matches_nothing_new(self, session, tmp_path, monkeypatch):
+        folder = tmp_path / "Rush" / "Moving Pictures"
+        make_tagged_mp3(folder / "01 Tom Sawyer.mp3", "Tom Sawyer", "Rush", "Moving Pictures")
+        scanner.scan_folder(session, tmp_path)
+        (entry,) = self._chart(session, [("Tom Sawyer", "Rush", {})])
+        calls = []
+        from musicmgr.services import charts as chart_svc
+        monkeypatch.setattr(chart_svc, "match_entry", lambda s, e, *a: calls.append(e) or False)
+
+        result = scanner.scan_folder(session, tmp_path)
+
+        assert calls == [] and result.charts_matched == 0
+        assert entry.track_id is None

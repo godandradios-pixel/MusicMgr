@@ -254,3 +254,114 @@ def _remove_quietly(path: Path) -> None:
         path.unlink()
     except OSError:
         pass
+
+
+# -- library snapshot on the USB drive -----------------------------------------
+#
+# 2026-10-25 (James): each USB sync also leaves a copy of this PC's library on
+# the drive, as <drive>\MusicMgr\data-YYYYMMDD - the folder the drive's
+# Install-MusicMgr.bat and Copy-USB-to-D.bat look for (the newest data*
+# folder holding a library.db). Before this the only copy there was one made
+# by hand, nine days old.
+#
+# What goes in, and why it's taken *after* the library data sync:
+# - library.db, consistent and checked (the same backup-API copy as the
+#   daily backup), as one self-contained file - no -wal to lose;
+# - sync\ - this PC's library-state and chart bases. A library and its
+#   bases have to travel together: a library restored with some other,
+#   newer base would read everything that base has and it lacks as
+#   deleted here, and the next sync would push those deletions to the drive.
+#   Taken right after sync_library_state, the two match;
+# - video_thumbs\ and stations\ (the database points at them; thumbnails
+#   need ffmpeg to make again), appearance.json and last_run_version.txt.
+# Covers and artist pictures already live on the drive (MusicMgr\artwork,
+# MusicMgr\artists), so they aren't copied again.
+
+SNAPSHOT_PREFIX = "data-"
+SNAPSHOT_MARKER = "snapshot.json"
+KEEP_SNAPSHOTS = 2
+PREF_DRIVE_SNAPSHOT = "usb_sync_library_snapshot"
+_SNAPSHOT_DIRS = ("sync", "stations", "video_thumbs")
+_SNAPSHOT_FILES = ("appearance.json", "last_run_version.txt")
+_IN_PROGRESS = ".snapshot-in-progress"   # doesn't start with "data", so no
+                                         # script ever mistakes it for one
+
+
+@dataclass
+class SnapshotResult:
+    path: Optional[Path] = None
+    error: str = ""
+
+
+def snapshot_folders(app_dir: Path) -> list[Path]:
+    """The snapshots this feature made in `app_dir` (newest first). Folders
+    without SNAPSHOT_MARKER - a data-YYYYMMDD copied by hand - aren't ours
+    and are never pruned."""
+    if not app_dir.is_dir():
+        return []
+    found = [p for p in app_dir.glob(f"{SNAPSHOT_PREFIX}*")
+             if p.is_dir() and (p / SNAPSHOT_MARKER).is_file()]
+    return sorted(found, key=lambda p: p.name, reverse=True)
+
+
+def save_drive_snapshot(
+    data_dir: Path, app_dir: Path, *, pc_name: str = "", version: str = "",
+    today: Optional[dt.date] = None, keep: int = KEEP_SNAPSHOTS,
+    db_path: Optional[Path] = None,
+) -> SnapshotResult:
+    """Copy this PC's library into `app_dir`\\data-YYYYMMDD (replacing
+    today's), then keep the newest `keep`. Built in a scratch folder and
+    renamed into place, so a pulled drive never leaves a half snapshot
+    under a data* name. Never raises: problems come back as `error`."""
+    import json
+
+    today = today or dt.date.today()
+    db_path = db_path or data_dir / "library.db"
+    dest = app_dir / f"{SNAPSHOT_PREFIX}{today:%Y%m%d}"
+    work = app_dir / _IN_PROGRESS
+    try:
+        if not db_path.is_file():
+            return SnapshotResult(error="there's no library to copy")
+        need = db_path.stat().st_size + sum(
+            f.stat().st_size for d in _SNAPSHOT_DIRS if (data_dir / d).is_dir()
+            for f in (data_dir / d).rglob("*") if f.is_file())
+        free = shutil.disk_usage(app_dir if app_dir.exists() else app_dir.parent).free
+        if free < need * 1.1:
+            return SnapshotResult(error=f"not enough space on the drive "
+                                        f"({free / 1_048_576:,.0f} MB free, about "
+                                        f"{need / 1_048_576:,.0f} MB needed)")
+        if work.exists():
+            shutil.rmtree(work)
+        work.mkdir(parents=True)
+        _copy_database(db_path, work / "library.db")
+        problem = check_database(work / "library.db")
+        if problem:
+            raise RuntimeError(problem)
+        for name in _SNAPSHOT_DIRS:
+            if (data_dir / name).is_dir():
+                shutil.copytree(data_dir / name, work / name,
+                                ignore=shutil.ignore_patterns("*.partial", "*.tmp"))
+        for name in _SNAPSHOT_FILES:
+            if (data_dir / name).is_file():
+                shutil.copy2(data_dir / name, work / name)
+        (work / SNAPSHOT_MARKER).write_text(json.dumps({
+            "created": dt.datetime.now().isoformat(timespec="seconds"),
+            "pc": pc_name, "version": version,
+        }, indent=1), encoding="utf-8")
+        if dest.exists():
+            if not (dest / SNAPSHOT_MARKER).is_file():
+                # a folder copied by hand under today's name: leave it alone
+                dest = dest.with_name(dest.name + "-1")
+                if dest.exists():
+                    shutil.rmtree(dest)
+            else:
+                shutil.rmtree(dest)
+        os.replace(work, dest)
+        for stale in snapshot_folders(app_dir)[keep:]:
+            shutil.rmtree(stale, ignore_errors=True)
+        log.info("library snapshot saved to %s", dest)
+        return SnapshotResult(path=dest)
+    except Exception as exc:  # never fail a sync over the snapshot
+        log.exception("library snapshot on the drive failed")
+        shutil.rmtree(work, ignore_errors=True)
+        return SnapshotResult(error=str(exc))

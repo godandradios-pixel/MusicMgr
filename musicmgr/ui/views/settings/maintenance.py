@@ -131,6 +131,15 @@ class MaintenanceSection:
             "Purge…",
             self.purge_missing_files,
         )
+        # one check-up of the library against the disk and itself, with a
+        # fix beside each finding - see services/library_health.py
+        add_tool_row(
+            "Library health",
+            "Check for missing files, files never imported, broken links, chart songs linked "
+            "to the wrong song, out-of-date chart playlists and charts with gaps.",
+            "Check…",
+            self.check_library_health,
+        )
         # identical-file duplicates, and moving playlist songs off chart-folder
         # copies onto album copies - see services/duplicates.py
         add_tool_row(
@@ -716,6 +725,59 @@ class MaintenanceSection:
     def _on_duplicates_switched(self, changed: int) -> None:
         self.ctx.notify(f"{changed} playlist song{'s' if changed != 1 else ''} now use album copies")
         self.ctx.playlistsChanged.emit()
+
+    def check_library_health(self) -> None:
+        """Settings › Library health - see services/library_health.py.
+        Read-only until a fix is pressed in the results; every fix backs the
+        library up first."""
+        from ...widgets.library_health import LibraryHealthThread
+
+        if self._health_thread is not None and self._health_thread.isRunning():
+            self.ctx.notify("Already checking the library")
+            return
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self.progress_label.setText("Checking your library…")
+        self._health_thread = LibraryHealthThread(parent=self)
+        self._health_thread.progress.connect(self._on_health_progress)
+        self._health_thread.finished_with.connect(self._on_health_done)
+        self._health_thread.start()
+        self._show_cancel()
+
+    def _on_health_progress(self, done: int, total: int, name: str) -> None:
+        if total <= 0:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, total)
+            self.progress.setValue(done)
+        self.progress_label.setText(f"{name}  ({done:,}/{total:,})" if total else name)
+
+    def _on_health_done(self, report) -> None:
+        from ...widgets.library_health import LibraryHealthDialog
+
+        self.progress.setVisible(False)
+        self.progress_label.setText("")
+        thread = self._health_thread
+        self._hide_cancel(thread)
+        if thread is not None:
+            thread.wait()
+        self._health_thread = None
+        dialog = LibraryHealthDialog(report, self)
+        dialog.fixed.connect(self._on_health_fixed)
+        if dialog.exec() == LibraryHealthDialog.RECHECK:
+            self.check_library_health()
+
+    def _on_health_fixed(self, key: str, message: str) -> None:
+        self.ctx.notify(message)
+        self._last_metadata_scan = None
+        self.ctx.libraryChanged.emit()
+        self.ctx.playlistsChanged.emit()
+        if key == "not_imported":
+            self.ctx.videosChanged.emit()
 
     def rematch_all(self) -> None:
         """Re-match every external chart on a background thread with the

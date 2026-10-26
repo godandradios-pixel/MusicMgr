@@ -12,7 +12,7 @@ import csv
 import datetime as dt
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from musicmgr.db.models import Chart, ChartEntry, ChartFolder, ChartIssue, Playlist, PlaylistItem
 from musicmgr.services import charts
@@ -723,3 +723,53 @@ class TestArtistMustMatch:
         target = make_owned_track(session, "Baby, It's Cold Outside", "Margaret Whiting & Johnny Mercer")
         ids = [c[0] for c in charts._candidate_tracks(session, normalize("Baby, It's Cold Outside"))]
         assert target.id in ids
+
+
+class TestEditionLabels:
+    """2026-10-25: Year End editions show as "2025" and the One-Hit Wonders
+    decade editions as "1980s", not "31 Dec 2025" / "01 Jan 1980"."""
+
+    def test_styles_and_labels(self):
+        import datetime as dt
+
+        ye = [dt.date(2024, 12, 31), dt.date(2025, 12, 31)]
+        dec = [dt.date(1980, 1, 1), dt.date(1990, 1, 1)]
+        weekly = [dt.date(2026, 9, 29), dt.date(2026, 10, 6)]
+        assert charts.edition_style(ye) == charts.EDITION_YEAR
+        assert charts.edition_style(dec) == charts.EDITION_DECADE
+        assert charts.edition_style(weekly) == charts.EDITION_DATE
+        assert charts.edition_style(weekly + ye) == charts.EDITION_DATE
+        assert charts.edition_style([dt.date(1985, 1, 1)]) == charts.EDITION_DATE
+        assert charts.edition_label(ye[1], charts.EDITION_YEAR) == "2025"
+        assert charts.edition_label(dec[0], charts.EDITION_DECADE) == "1980s"
+        assert charts.edition_label(weekly[0], charts.EDITION_DATE) == "29 Sep 2026"
+
+    def test_saving_again_updates_the_renamed_playlist(self, session, tmp_path):
+        """A saved edition, renamed and filed in a folder, is updated in
+        place by Save as playlist - not saved a second time."""
+        p = tmp_path / "ye.csv"
+        p.write_text("year,rank,title,artist\n2025,1,A,B\n", encoding="utf-8")
+        chart = charts.create_chart(session, "Year End")
+        charts.import_chart_csv(session, p, chart_id=chart.id, match=False)
+        issue = charts.list_issues(session, chart.id)[0]
+
+        first = charts.snapshot_to_playlist(session, issue.id, folder_id=None)
+        assert first.name == "Year End - 2025"
+        first.name = "2025"
+        session.flush()
+
+        again = charts.snapshot_to_playlist(session, issue.id)
+        assert again.id == first.id and again.name == "2025"
+        assert session.scalar(select(func.count()).select_from(Playlist)) == 1
+
+    def test_finds_a_playlist_saved_under_the_old_iso_name(self, session, tmp_path):
+        p = tmp_path / "ye.csv"
+        p.write_text("year,rank,title,artist\n2025,1,A,B\n", encoding="utf-8")
+        chart = charts.create_chart(session, "Year End")
+        charts.import_chart_csv(session, p, chart_id=chart.id, match=False)
+        issue = charts.list_issues(session, chart.id)[0]
+        old = Playlist(name="Year End - 2025-12-31", kind=Playlist.KIND_CHART)
+        session.add(old)
+        session.flush()
+
+        assert charts.snapshot_to_playlist(session, issue.id).id == old.id
