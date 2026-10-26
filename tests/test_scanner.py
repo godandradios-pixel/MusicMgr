@@ -19,6 +19,7 @@ import os
 import wave
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 
 from musicmgr.db.models import (
@@ -1261,13 +1262,31 @@ class TestEllipsisFoldersAndCaseOnlyRenames:
         album = tmp_path / "Phil Collins" / "...But Seriously" / "01 Hang in Long Enough.wav"
         song = tmp_path / "Taylor Swift" / "Reputation" / "...Ready for It.wav"
         hidden = tmp_path / ".hidden" / "01 Nope.wav"
-        dotfile = tmp_path / "Artist" / ".01 Nope.wav"
+        dotfile = tmp_path / "Artist" / "._01 Nope.wav"  # macOS resource fork
         for p in (album, song, hidden, dotfile):
             make_silent_wav(p)
 
         found = set(scanner.iter_audio_files(tmp_path))
 
         assert found == {album, song}
+
+    def test_a_name_starting_with_a_dot_and_a_digit_is_scanned(self, tmp_path):
+        # 2026-10-25: the band .38 Special
+        folder = tmp_path / ".38 Special" / "Wild-Eyed Southern Boys" / "01 Hold On Loosely.wav"
+        song = tmp_path / "Rock" / ".38 Special - Caught Up in You.wav"
+        for p in (folder, song):
+            make_silent_wav(p)
+
+        assert set(scanner.iter_audio_files(tmp_path)) == {folder, song}
+
+    @pytest.mark.parametrize("name, hidden", [
+        (".git", True), (".DS_Store", True), ("._Song.mp3", True),
+        (".Trash-1000", True), (".~lock.notes#", True), ("._gsdata_", True),
+        (".38 Special", False), (".38 Special - Second Chance.mp4", False),
+        ("...But Seriously", False), ("..", False), ("Rush", False),
+    ])
+    def test_is_hidden_name(self, name, hidden):
+        assert scanner.config.is_hidden_name(name) is hidden
 
     def test_usb_sync_does_not_skip_ellipsis_folders(self):
         from musicmgr.services import usb_sync

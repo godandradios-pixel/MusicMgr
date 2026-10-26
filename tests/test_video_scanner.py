@@ -65,6 +65,20 @@ class TestIterVideoFiles:
 
         assert found == [tmp_path / "visible.mp4"]
 
+    def test_a_name_starting_with_a_dot_and_a_digit_is_found(self, tmp_path):
+        # 2026-10-25: D:\\Videos\\.38 Special - Caught Up in You.mp4 was never imported
+        video = tmp_path / ".38 Special - Caught Up in You.mp4"
+        make_placeholder_video(video)
+
+        assert list(video_scanner.iter_video_files(tmp_path)) == [video]
+
+    def test_parses_the_artist_of_a_dot_and_digit_name(self):
+        title, artist = video_scanner._parse_video_title_artist(
+            Path("/videos/.38 Special - Hold On Loosely (Live).mp4"))
+
+        assert artist == ".38 Special"
+        assert title == "Hold On Loosely (Live)"
+
     def test_recurses_into_subfolders(self, tmp_path):
         nested = tmp_path / "Artist" / "Some Video.mkv"
         make_placeholder_video(nested)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -129,10 +130,18 @@ VIDEO_EXTENSIONS = {
 SKIP_SCAN_DIRS = {"_gsdata_", "$recycle.bin", "system volume information"}
 
 
+#: a hidden name: a dot and then a letter, "_" or "~" - ".git",
+#: ".DS_Store", "._Song.mp3" (macOS), ".Trash-1000", ".~lock.x#"
+_HIDDEN_NAME = re.compile(r"\.[^\W\d]|\.~")
+
+
 def is_hidden_name(name: str) -> bool:
-    """A dot-file or dot-folder (".git", ".DS_Store") - but not a name that
-    merely starts with an ellipsis, like the album "...But Seriously"."""
-    return name.startswith(".") and not name.startswith("..")
+    """A dot-file or dot-folder (".git", ".DS_Store", "._Song.mp3") - but
+    not a real name that just starts with a dot: the album "...But
+    Seriously" (an ellipsis) or the band ".38 Special" (a dot and a digit).
+    2026-10-25: three ".38 Special - ....mp4" videos in D:\\Videos had never
+    been imported."""
+    return bool(_HIDDEN_NAME.match(name))
 
 
 def is_skipped_dir(name: str) -> bool:
