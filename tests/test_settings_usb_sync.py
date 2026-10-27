@@ -463,6 +463,23 @@ class TestSyncDirection:
         with ctx.session() as db:
             assert us.get_mode(db) == us.MODE_FROM_USB
 
+    def test_shown_as_check_boxes_with_exactly_one_ticked(self, setup, ctx):
+        """James: "can you put a check mark denoting which sync option is
+        selected" - check boxes (the skins draw their tick), one at a time."""
+        from PySide6.QtWidgets import QCheckBox
+
+        view, *_ = setup
+        assert isinstance(view.usb_mode_from_usb, QCheckBox)
+        assert isinstance(view.usb_mode_two_way, QCheckBox)
+        view.usb_mode_from_usb.click()
+        assert view.usb_mode_from_usb.isChecked() and not view.usb_mode_two_way.isChecked()
+        view.usb_mode_from_usb.click()              # clicking the ticked one keeps it
+        assert view.usb_mode_from_usb.isChecked()
+        view.usb_mode_two_way.click()
+        assert view.usb_mode_two_way.isChecked() and not view.usb_mode_from_usb.isChecked()
+        with ctx.session() as db:
+            assert us.get_mode(db) == us.MODE_TWO_WAY
+
     def test_two_way_now_hidden_when_two_way_is_the_setting(self, setup):
         view, local, usb, drive, drives = setup
         view._usb_drive = drive

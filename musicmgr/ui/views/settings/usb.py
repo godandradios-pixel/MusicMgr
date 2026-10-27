@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QRadioButton,
     QVBoxLayout,
 )
 from ....services import updater
@@ -65,20 +64,24 @@ class UsbSection:
         self.usb_status = dim_label("")
         self.usb_status.setWordWrap(True)
         usb_layout.addWidget(self.usb_status)
-        # sync direction, per PC (services/usb_sync.py: PREF_MODE)
+        # sync direction, per PC (services/usb_sync.py: PREF_MODE). Check
+        # boxes in an exclusive group rather than radio buttons: the skins
+        # draw a clear check mark on a check box, while a radio button's dot
+        # barely showed (2026-10-27)
         mode_row = QHBoxLayout()
         mode_row.addWidget(dim_label("Sync direction:"))
-        self.usb_mode_from_usb = QRadioButton("One way: USB → this PC")
+        self.usb_mode_from_usb = QCheckBox("One way: USB → this PC")
         self.usb_mode_from_usb.setToolTip(
             "Only what's new or changed on the USB comes to this PC (music, videos, artwork, "
             "radio shows and the library data ticked below). Nothing is written to the USB "
             "and nothing is deleted on this PC. For the odd two-way sync, use "
             "\"Two-way sync now…\" below")
-        self.usb_mode_two_way = QRadioButton("Two-way")
+        self.usb_mode_two_way = QCheckBox("Two-way")
         self.usb_mode_two_way.setToolTip(
             "New and changed files go both ways, and deletions on either side are offered "
             "for review")
         self.usb_mode_group = QButtonGroup(usb_card)
+        self.usb_mode_group.setExclusive(True)   # exactly one is ticked
         for b in (self.usb_mode_from_usb, self.usb_mode_two_way):
             self.usb_mode_group.addButton(b)
             mode_row.addWidget(b)
