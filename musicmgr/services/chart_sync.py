@@ -593,7 +593,10 @@ def combine_contents(theirs: dict, ours: dict) -> dict:
     return {"issues": out}
 
 
-def sync_charts(db: Session, drive, idx, pc_id: str) -> ChartNotes:
+def sync_charts(db: Session, drive, idx, pc_id: str, pull_only: bool = False) -> ChartNotes:
+    """`pull_only` (one-way USB sync): take the drive's charts here but
+    write nothing to the drive and keep this PC's base as it was - see
+    library_state.sync_library_state."""
     from .library_state import _merge_dict, _parse
 
     notes = ChartNotes()
@@ -709,6 +712,13 @@ def sync_charts(db: Session, drive, idx, pc_id: str) -> ChartNotes:
         notes.charts_removed.append(key)
     db.flush()
     notes.folders_removed = here.folders.prune(touched_folders)
+
+    if pull_only:
+        notes.charts_total = len(merged)
+        notes.charts_in = sorted(set(notes.charts_in))
+        notes.charts_removed = sorted(notes.charts_removed)
+        _save_cache(db, here.cache)
+        return notes
 
     # contents the drive doesn't have yet (this PC's new or changed charts)
     for key, value in merged.items():

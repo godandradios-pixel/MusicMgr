@@ -57,17 +57,20 @@ class UsbCompareThread(QThread):
     progress = Signal(str)
     finished_with = Signal(object, object)
 
-    def __init__(self, drive: us.Drive, auto: bool = False, parent=None) -> None:
+    def __init__(self, drive: us.Drive, auto: bool = False, mode: Optional[str] = None,
+                 parent=None) -> None:
         super().__init__(parent)
         self.drive = drive
         self.auto = auto
+        #: us.MODE_TWO_WAY / MODE_FROM_USB; None = this PC's saved choice
+        self.mode = mode
 
     def run(self) -> None:  # pragma: no cover - exercised interactively / service tests
         try:
             with session_scope() as db:
                 plan = us.build_plan(
                     db, self.drive, progress=self.progress.emit,
-                    should_stop=self.isInterruptionRequested,
+                    should_stop=self.isInterruptionRequested, mode=self.mode,
                 )
         except Exception as exc:
             log.exception("USB compare failed")
@@ -126,7 +129,9 @@ class UsbSyncThread(QThread):
                 message = us.update_library(db, result)
             if not result.cancelled:
                 message = self._sync_library_state(result, message)
-                message = self._save_snapshot(message)
+                if not self.plan.one_way:
+                    # one way writes nothing to the drive
+                    message = self._save_snapshot(message)
         except Exception as exc:
             log.exception("USB sync failed")
             self.finished_with.emit(None, "", str(exc))
@@ -167,13 +172,16 @@ class UsbSyncThread(QThread):
         A failure here never undoes the file sync; it's just reported."""
         from ...services import library_state
 
-        self.stage.emit("Exchanging playlists, plays, ratings, the Jukebox and radio…")
+        one_way = self.plan.one_way
+        self.stage.emit("Bringing in playlists, plays, ratings, the Jukebox and radio…" if one_way
+                        else "Exchanging playlists, plays, ratings, the Jukebox and radio…")
         try:
             with session_scope() as db:
                 notes = library_state.sync_library_state(
                     db, self.plan.drive, us.get_pc_id(db),
                     confirm_removals=self._confirm_removals if self.confirm_removals else None,
                     stage=self.stage.emit,
+                    pull_only=one_way,
                 )
         except Exception as exc:
             log.exception("library data sync failed")
@@ -374,12 +382,21 @@ class UsbSyncDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        title = QLabel(f"{plan.drive.describe()}")
+        title = QLabel(f"{plan.drive.describe()}"
+                       + ("  →  this PC (one way)" if plan.one_way else ""))
         title.setObjectName("Crumb")
         layout.addWidget(title)
         self.totals = dim_label("")
         self.totals.setWordWrap(True)
         layout.addWidget(self.totals)
+        if plan.one_way:
+            note = dim_label(
+                "One way: only what's new or changed on the USB comes to this PC. Nothing is "
+                "copied to the USB and nothing is deleted here - switch Settings › USB sync › "
+                "Sync direction to two-way to send this PC's changes."
+            )
+            note.setWordWrap(True)
+            layout.addWidget(note)
         for pp in plan.pairs:
             notes = [f"⚠ {err}" for err in pp.errors]
             if pp.baseline_source == "none" and pp.items:
@@ -424,6 +441,11 @@ class UsbSyncDialog(QDialog):
                 b = TouchButton("Keep the USB's version")
                 b.clicked.connect(lambda: self._set_direction(us.TO_LOCAL))
                 row.addWidget(dim_label("For checked rows:"))
+                if plan.one_way:
+                    # nothing goes to the USB: an unchecked row leaves this
+                    # PC's copy alone instead
+                    a.setVisible(False)
+                    row.addWidget(dim_label("Unchecked rows keep this PC's copy"))
                 row.addWidget(a)
                 row.addWidget(b)
                 row.addStretch(1)
@@ -499,8 +521,9 @@ class UsbSyncDialog(QDialog):
         n_del = sum(1 for i in items if i.kind == us.DELETE)
         parts = [
             f"↓ {n_down:,} file{'' if n_down == 1 else 's'} · {human_size(need[us.TO_LOCAL])} to this PC",
-            f"↑ {n_up:,} file{'' if n_up == 1 else 's'} · {human_size(need[us.TO_USB])} to USB",
         ]
+        if not self.plan.one_way:
+            parts.append(f"↑ {n_up:,} file{'' if n_up == 1 else 's'} · {human_size(need[us.TO_USB])} to USB")
         if n_del:
             parts.append(f"{n_del:,} deletions/restores")
         text = "   ".join(parts)

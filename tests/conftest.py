@@ -53,6 +53,18 @@ def qapp():
     yield app
 
 
+@pytest.fixture(autouse=True)
+def _usb_sync_default_two_way(monkeypatch):
+    """USB sync ships defaulting to one way, USB → this PC (2026-10-27,
+    services/usb_sync.py DEFAULT_MODE). Most sync tests were written for
+    two-way and rely on build_plan's default; the one-way tests ask for
+    MODE_FROM_USB by name, and test_settings_usb_sync checks the shipped
+    default itself."""
+    from musicmgr.services import usb_sync
+
+    monkeypatch.setattr(usb_sync, "DEFAULT_MODE", usb_sync.MODE_TWO_WAY)
+
+
 @pytest.fixture
 def db(qapp):
     """A fresh, empty in-memory database, wired up as the app's global

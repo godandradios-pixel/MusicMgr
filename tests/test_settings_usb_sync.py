@@ -405,3 +405,134 @@ class TestSyncShowsWhatItsDoing:
         assert not view.progress.isVisibleTo(view) and view.progress_label.text() == ""
         view._sections["usb"].refresh_summary()
         assert view._sections["usb"].summary.text() == view.usb_drive_label.text()
+
+
+#: as shipped - conftest switches the default to two-way for the older tests
+SHIPPED_MODE = us.DEFAULT_MODE
+
+
+class TestSyncDirection:
+    """James (2026-10-27): "Give me the option of whether I want to 2 way
+    sync or just a one way from the USB to the D:" - then: "In most cases I
+    want the Sync to always be one way from USB to the D: drive. In very few
+    cases, I'll want a 2 way sync from D: back to the USB"."""
+
+    def test_ships_one_way(self):
+        assert SHIPPED_MODE == us.MODE_FROM_USB
+
+    def test_a_new_pc_starts_one_way(self, ctx, monkeypatch):
+        monkeypatch.setattr(us, "DEFAULT_MODE", SHIPPED_MODE)
+        view = SettingsView(ctx)
+        assert view.usb_mode_from_usb.isChecked() and view.usb_mode() == us.MODE_FROM_USB
+        with ctx.session() as db:
+            assert us.get_mode(db) == us.MODE_FROM_USB
+
+    def test_choice_is_saved_per_pc(self, setup, ctx):
+        view, local, usb, drive, drives = setup
+        view.usb_mode_from_usb.setChecked(True)
+        with ctx.session() as db:
+            assert us.get_mode(db) == us.MODE_FROM_USB
+        assert SettingsView(ctx).usb_mode_from_usb.isChecked()
+        view.usb_mode_two_way.setChecked(True)
+        assert SettingsView(ctx).usb_mode_two_way.isChecked()
+
+    def test_two_way_now_runs_one_two_way_check_and_keeps_the_setting(self, setup, ctx,
+                                                                     monkeypatch):
+        view, local, usb, drive, drives = setup
+        write(local / "mine.mp3")
+        write(usb / "theirs.mp3")
+        view._usb_drive = drive
+        view.usb_mode_from_usb.setChecked(True)
+        assert not view.usb_two_way_btn.isHidden() and view.usb_two_way_btn.isEnabled()
+        made, reviewed = [], []
+
+        class FakeDialog:
+            def exec(self):
+                return QDialog.Rejected
+
+        monkeypatch.setattr(UsbCompareThread, "start", lambda t: made.append(t))
+        monkeypatch.setattr(view, "_make_usb_dialog", lambda p: reviewed.append(p) or FakeDialog())
+        view.usb_two_way_btn.click()
+        (thread,) = made
+        assert thread.mode == us.MODE_TWO_WAY
+        thread.run()                 # -> _on_usb_compare_done -> the review
+        (plan,) = reviewed
+        assert not plan.one_way
+        assert sorted(i.rel for i in plan.all_items()) == ["mine.mp3", "theirs.mp3"]
+        assert view.usb_mode_from_usb.isChecked()
+        with ctx.session() as db:
+            assert us.get_mode(db) == us.MODE_FROM_USB
+
+    def test_two_way_now_hidden_when_two_way_is_the_setting(self, setup):
+        view, local, usb, drive, drives = setup
+        view._usb_drive = drive
+        view.usb_mode_two_way.setChecked(True)
+        assert view.usb_two_way_btn.isHidden()
+
+    def test_pairs_shown_as_usb_to_pc(self, setup):
+        view, local, usb, drive, drives = setup
+        view._usb_drive = drive
+        view.usb_mode_from_usb.setChecked(True)
+        assert f"USB\\Music → {local}" in view.usb_pairs_label.text()
+        view.usb_mode_two_way.setChecked(True)
+        assert f"{local} ↔ USB\\Music" in view.usb_pairs_label.text()
+
+    def test_check_uses_the_chosen_direction(self, setup, monkeypatch):
+        view, local, usb, drive, drives = setup
+        write(local / "mine.mp3")
+        write(usb / "theirs.mp3")
+        view._usb_drive = drive
+        view.usb_mode_from_usb.setChecked(True)
+        made = []
+        monkeypatch.setattr(UsbCompareThread, "start", lambda t: made.append(t))
+        view.check_usb(auto=True)
+        (thread,) = made
+        assert thread.mode == us.MODE_FROM_USB
+        out = {}
+        thread.finished_with.connect(lambda plan, err: out.update(plan=plan))
+        thread.run()
+        assert [i.rel for i in out["plan"].all_items()] == ["theirs.mp3"]
+        view._usb_compare_thread = None
+
+    def test_switching_direction_drops_a_waiting_plan(self, setup):
+        view, local, usb, drive, drives = setup
+        write(usb / "theirs.mp3")
+        view._usb_drive = drive
+        view._usb_pending_plan = run_compare(drive)     # two-way plan
+        view.usb_mode_from_usb.setChecked(True)
+        assert view._usb_pending_plan is None
+        assert "check the USB again" in view.usb_status.text()
+
+    def test_review_dialog_one_way(self, setup):
+        view, local, usb, drive, drives = setup
+        write(local / "a.mp3", b"1")
+        write(usb / "a.mp3", b"2", mtime=1_600_000_900)
+        write(usb / "b.mp3", b"bb")
+        with session_scope() as db:
+            plan = us.build_plan(db, drive, mode=us.MODE_FROM_USB)
+        dlg = UsbSyncDialog(plan, local_free=10**9, usb_free=10**9)
+        assert "one way" in dlg.windowTitle() or "one way" in dlg.findChild(
+            type(dlg.totals), "Crumb").text()
+        assert "↓" in dlg.totals.text() and "↑" not in dlg.totals.text()
+        assert not dlg.tabs.isTabEnabled(1)                 # To USB
+        (node, item), = list(dlg.conflicts.leaves())
+        assert item.direction == us.TO_LOCAL and node.checkState(0) == Qt.Checked
+        buttons = {b.text(): b for b in dlg.findChildren(type(dlg.sync_btn))}
+        assert buttons["Keep this PC's version"].isHidden()
+
+    def test_one_way_sync_leaves_no_snapshot_on_the_drive(self, setup, monkeypatch):
+        from tests.test_scanner import make_silent_wav
+
+        view, local, usb, drive, drives = setup
+        make_silent_wav(usb / "theirs.wav")
+        with session_scope() as db:
+            plan = us.build_plan(db, drive, mode=us.MODE_FROM_USB)
+        saved = []
+        monkeypatch.setattr(UsbSyncThread, "_save_snapshot", lambda self, m: saved.append(1) or m)
+        out = {}
+        t = UsbSyncThread(plan)
+        t.finished_with.connect(lambda r, m, e: out.update(r=r, m=m, e=e))
+        t.run()
+        assert out["e"] is None and out["r"].copied_to_local == 1
+        assert saved == []
+        assert (local / "theirs.wav").exists()

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QRadioButton,
     QVBoxLayout,
 )
 from ....services import updater
@@ -63,6 +65,26 @@ class UsbSection:
         self.usb_status = dim_label("")
         self.usb_status.setWordWrap(True)
         usb_layout.addWidget(self.usb_status)
+        # sync direction, per PC (services/usb_sync.py: PREF_MODE)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(dim_label("Sync direction:"))
+        self.usb_mode_from_usb = QRadioButton("One way: USB → this PC")
+        self.usb_mode_from_usb.setToolTip(
+            "Only what's new or changed on the USB comes to this PC (music, videos, artwork, "
+            "radio shows and the library data ticked below). Nothing is written to the USB "
+            "and nothing is deleted on this PC. For the odd two-way sync, use "
+            "\"Two-way sync now…\" below")
+        self.usb_mode_two_way = QRadioButton("Two-way")
+        self.usb_mode_two_way.setToolTip(
+            "New and changed files go both ways, and deletions on either side are offered "
+            "for review")
+        self.usb_mode_group = QButtonGroup(usb_card)
+        for b in (self.usb_mode_from_usb, self.usb_mode_two_way):
+            self.usb_mode_group.addButton(b)
+            mode_row.addWidget(b)
+        mode_row.addStretch(1)
+        self.usb_mode_from_usb.toggled.connect(self._on_usb_mode_toggled)
+        usb_layout.addLayout(mode_row)
         self.usb_auto_cb = QCheckBox("Check when the USB drive is plugged in")
         self.usb_auto_cb.toggled.connect(
             lambda on: self._save_update_pref(usb_sync.PREF_AUTO_CHECK, on)
@@ -142,6 +164,14 @@ class UsbSection:
         self.usb_check_btn = TouchButton("Check USB now", primary=True)
         self.usb_check_btn.setObjectName("PrimaryWarm")
         self.usb_check_btn.clicked.connect(lambda: self.check_usb(auto=False))
+        # the odd sync from this PC back to the USB, without changing the
+        # usual direction (2026-10-27)
+        self.usb_two_way_btn = TouchButton("Two-way sync now…")
+        self.usb_two_way_btn.setToolTip(
+            "Check and sync both ways this once - this PC's new and changed files go to the "
+            "USB too. The sync direction above stays as it is")
+        self.usb_two_way_btn.clicked.connect(
+            lambda: self.check_usb(auto=False, mode=usb_sync.MODE_TWO_WAY))
         self.usb_review_btn = TouchButton("Review…", primary=True)
         self.usb_review_btn.setObjectName("PrimaryWarm")
         self.usb_review_btn.clicked.connect(self.review_usb_plan)
@@ -154,7 +184,7 @@ class UsbSection:
         self.usb_empty_btn = TouchButton("Empty _deleted…")
         self.usb_empty_btn.clicked.connect(self.empty_usb_deleted)
         for b in (
-            self.usb_check_btn, self.usb_review_btn, self.usb_cancel_btn,
+            self.usb_check_btn, self.usb_two_way_btn, self.usb_review_btn, self.usb_cancel_btn,
             self.usb_setup_btn, self.usb_pairs_btn, self.usb_empty_btn,
         ):
             usb_buttons.addWidget(b)
@@ -174,6 +204,13 @@ class UsbSection:
             auto = updater.get_bool_pref(db, usb_sync.PREF_AUTO_CHECK, True)
             snapshot = updater.get_bool_pref(db, library_backup.PREF_DRIVE_SNAPSHOT, True)
             chosen = library_state.enabled_categories(db)
+            mode = usb_sync.get_mode(db)
+        for b in (self.usb_mode_two_way, self.usb_mode_from_usb):
+            b.blockSignals(True)
+        (self.usb_mode_from_usb if mode == usb_sync.MODE_FROM_USB
+         else self.usb_mode_two_way).setChecked(True)
+        for b in (self.usb_mode_two_way, self.usb_mode_from_usb):
+            b.blockSignals(False)
         self.usb_auto_cb.blockSignals(True)
         self.usb_auto_cb.setChecked(auto)
         self.usb_auto_cb.blockSignals(False)
@@ -191,6 +228,20 @@ class UsbSection:
         self._usb_timer.start()
         self._refresh_usb_controls()
         QTimer.singleShot(1500, self.poll_usb)
+
+    def usb_mode(self) -> str:
+        return (usb_sync.MODE_FROM_USB if self.usb_mode_from_usb.isChecked()
+                else usb_sync.MODE_TWO_WAY)
+
+    def _on_usb_mode_toggled(self, _on: bool) -> None:
+        with self.ctx.session() as db:
+            usb_sync.set_mode(db, self.usb_mode())
+            db.commit()
+        # a waiting plan was made for the other direction
+        if self._usb_pending_plan is not None and self._usb_pending_plan.mode != self.usb_mode():
+            self._usb_pending_plan = None
+            self.usb_status.setText("Sync direction changed — check the USB again")
+        self._refresh_usb_controls()
 
     def _save_usb_data_choice(self, category: str, on: bool) -> None:
         with self.ctx.session() as db:
@@ -255,10 +306,13 @@ class UsbSection:
             self.usb_pairs_label.setText(
                 "Plug in the USB drive, or choose \"Set up this drive…\" to make one."
             )
-            for b in (self.usb_check_btn, self.usb_pairs_btn, self.usb_empty_btn):
+            for b in (self.usb_check_btn, self.usb_two_way_btn, self.usb_pairs_btn,
+                      self.usb_empty_btn):
                 b.setEnabled(False)
+            self.usb_two_way_btn.setVisible(self.usb_mode() == usb_sync.MODE_FROM_USB)
             return
         self.usb_drive_label.setText(f"USB drive: {drive.describe()}")
+        arrow = "→" if self.usb_mode() == usb_sync.MODE_FROM_USB else "↔"
         with self.ctx.session() as db:
             pairs = [p for p in usb_sync.ensure_default_pairs(db, drive) if p.enabled]
             names = []
@@ -269,21 +323,29 @@ class UsbSection:
                 if usb_sync.on_drive(pair.local_path, drive):
                     # a PC folder on the USB itself would sync with itself
                     when = "  ⚠ on the USB drive itself - not synced; change it in Folder pairs…"
-                names.append(f"{pair.local_path} ↔ USB\\{pair.usb_rel_path}{when}")
+                if arrow == "→":
+                    names.append(f"USB\\{pair.usb_rel_path} → {pair.local_path}{when}")
+                else:
+                    names.append(f"{pair.local_path} ↔ USB\\{pair.usb_rel_path}{when}")
         self.usb_pairs_label.setText(
             "\n".join(names) if names else
             "No folder pairs yet - choose \"Folder pairs…\" to add one."
         )
         self.usb_check_btn.setEnabled(not running and bool(names))
+        self.usb_two_way_btn.setEnabled(not running and bool(names))
+        # only needed while the usual direction is one way
+        self.usb_two_way_btn.setVisible(arrow == "→")
         self.usb_pairs_btn.setEnabled(not running)
         deleted = usb_sync.usb_deleted_dir(drive)
         has_deleted = deleted.is_dir() and any(deleted.iterdir())
         self.usb_empty_btn.setEnabled(not running and has_deleted)
         self.usb_empty_btn.setVisible(has_deleted)
 
-    def check_usb(self, auto: bool = False) -> None:
+    def check_usb(self, auto: bool = False, mode: Optional[str] = None) -> None:
         """"Check USB now" (auto=False, opens the review straight away) or
-        the plug-in check (auto=True, leaves a "Review…" button)."""
+        the plug-in check (auto=True, leaves a "Review…" button). `mode` -
+        default: the Sync direction setting; "Two-way sync now…" passes
+        MODE_TWO_WAY for that one sync."""
         if self._usb_running():
             if not auto:
                 self.ctx.notify("The USB is already being checked")
@@ -301,11 +363,12 @@ class UsbSection:
                 self.ctx.notify("No MusicMgr USB drive found — plug it in, or set it up first")
             return
         self._usb_pending_plan = None
-        thread = UsbCompareThread(drive, auto=auto, parent=self)
+        thread = UsbCompareThread(drive, auto=auto, mode=mode or self.usb_mode(), parent=self)
         thread.progress.connect(lambda text: self._usb_show(text))
         thread.finished_with.connect(lambda plan, error: self._on_usb_compare_done(plan, error, auto))
         self._usb_compare_thread = thread
-        self._usb_show("Checking the USB…")
+        self._usb_show("Checking the USB (two-way)…" if mode == usb_sync.MODE_TWO_WAY
+                       and self.usb_mode() != usb_sync.MODE_TWO_WAY else "Checking the USB…")
         self._show_cancel()
         thread.start()
         self._refresh_usb_controls()
@@ -368,12 +431,13 @@ class UsbSection:
             # the files are done; the quiet sync below still exchanges
             # playlists, plays, ratings and the Jukebox, and replaces this
             # line with what it did
+            nothing = "nothing new on the USB" if plan.one_way else "everything is in sync"
             self.usb_status.setText(
-                "Files: everything is in sync · checking playlists and library data…"
+                f"Files: {nothing} · checking playlists and library data…"
                 + (f" · {'; '.join(problems)}" if problems else "")
             )
             if not auto:
-                self.ctx.notify("USB: everything is in sync")
+                self.ctx.notify(f"USB: {nothing}")
             # Still run a quiet sync: a first sync of identical folders has a
             # file list to record, and plays/ratings/playlists/the Jukebox
             # (services/library_state.py) are exchanged on every sync.
@@ -429,6 +493,8 @@ class UsbSection:
         here."""
         names = "\n".join(f"  • {f.label()}" for f in folders)
         many = len(folders) != 1
+        radio = getattr(self, "usb_mode_from_usb", None)
+        one_way = radio is not None and radio.isChecked()
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Warning)
         box.setWindowTitle("USB sync")
@@ -437,7 +503,9 @@ class UsbSection:
         box.setInformativeText(
             f"The USB drive no longer has {'them' if many else 'it'}, so another PC may have "
             f"deleted {'them' if many else 'it'}:\n\n{names}\n\n"
-            "Keep puts them back on the drive, so your other PCs get them again.")
+            + ("Keep leaves them on this PC; the next two-way sync asks about them again."
+               if one_way else
+               "Keep puts them back on the drive, so your other PCs get them again."))
         keep = box.addButton("Keep", QMessageBox.RejectRole)
         box.addButton("Remove", QMessageBox.DestructiveRole)
         box.setDefaultButton(keep)
@@ -465,7 +533,9 @@ class UsbSection:
         if not error:
             # "Everything is in sync" covers the playlists too: the files
             # and the library data each get their own say, both directions
-            files = "Files: " + ("everything is in sync" if quiet else result.summary())
+            one_way = thread is not None and thread.plan.one_way
+            files = "Files: " + (("nothing new on the USB" if one_way else "everything is in sync")
+                                 if quiet else result.summary())
             other = message
             if notes is not None and message:
                 # update_library's own note (tracks added…) without the

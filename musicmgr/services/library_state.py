@@ -71,7 +71,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -1696,7 +1696,8 @@ ConfirmRemovals = Callable[[list[FolderRemoval]], bool]
 def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[SyncPair]] = None,
                        include: Optional[frozenset] = None,
                        confirm_removals: Optional[ConfirmRemovals] = None,
-                       stage: Optional[Callable[[str], None]] = None) -> MergeNotes:
+                       stage: Optional[Callable[[str], None]] = None,
+                       pull_only: bool = False) -> MergeNotes:
     """Merge this library with the drive's state, apply it here, and write
     the result back to the drive and to this library's base copy.
 
@@ -1709,7 +1710,13 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     choices). A category left out is passed through untouched: this PC
     neither sends its own nor takes the drive's, the drive keeps what the
     other PCs agreed on, and this PC's base for it stays where it was - so
-    switching it back on later is an ordinary three-way merge."""
+    switching it back on later is an ordinary three-way merge.
+
+    `pull_only` - Settings › USB sync › one way from the USB: take the
+    drive's changes here, but write nothing to the drive and leave this
+    library's base where it was. The next two-way sync is then an ordinary
+    three-way merge again: what was taken now is already the same on both
+    sides, and this PC's own changes since the base still go out."""
     if include is None:
         include = enabled_categories(db)
     if pairs is None:
@@ -1825,12 +1832,23 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     if notes.lost_board is not None:
         from .usb_sync import usb_deleted_dir
 
-        keep = usb_deleted_dir(drive) / dt.date.today().isoformat() / (
+        # one way: the replaced board is kept on this PC, not the drive
+        folder = (config.DATA_DIR / "sync" / "_deleted") if pull_only else usb_deleted_dir(drive)
+        keep = folder / dt.date.today().isoformat() / (
             f"jukebox-board-{dt.datetime.now():%H%M%S}.json"
         )
         keep.parent.mkdir(parents=True, exist_ok=True)
         keep.write_text(json.dumps(notes.lost_board, indent=1), encoding="utf-8")
     db.flush()
+    if pull_only:
+        _nothing_sent(notes)
+        if CHARTS in include:
+            from .chart_sync import sync_charts
+
+            if stage is not None:
+                stage("Bringing in charts…")
+            notes.charts = sync_charts(db, drive, idx, pc_id, pull_only=True)
+        return notes
     # the merged state is what the drive and this library now agree on
     # (plays for tracks this PC doesn't have stay in it for the others)
     save_state(usb_state_path(drive), merged, pc_id)
@@ -1860,6 +1878,14 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
             stage("Exchanging charts…")
         notes.charts = sync_charts(db, drive, idx, pc_id)
     return notes
+
+
+def _nothing_sent(notes: MergeNotes) -> None:
+    """A one-way sync sends nothing: clear the "sent to the drive" counts so
+    the status line doesn't claim otherwise."""
+    for f in dataclass_fields(notes):
+        if f.name.endswith("_out"):
+            setattr(notes, f.name, False if isinstance(getattr(notes, f.name), bool) else 0)
 
 
 def count_plays(db: Session) -> int:

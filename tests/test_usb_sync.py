@@ -584,3 +584,119 @@ class TestEditPairs:
             pairs = us.ensure_default_pairs(s, drive)
             arts = [p for p in pairs if p.usb_rel_path == "MusicMgr/artwork"]
             assert len(arts) == 1 and arts[0].local_path == str(tmp_path / "D" / "data" / "artwork")
+
+
+# --------------------------------------------------------------------------
+# one way: USB -> this PC (2026-10-27)
+# --------------------------------------------------------------------------
+
+
+def _tree(root: Path) -> dict[str, tuple[int, int]]:
+    return {str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns)
+            for p in root.rglob("*") if p.is_file()}
+
+
+def one_way_plan(drive):
+    with db_session.session_scope() as s:
+        return us.build_plan(s, drive, mode=us.MODE_FROM_USB)
+
+
+class TestOneWay:
+    def test_unset_mode_follows_the_default_and_is_saved(self, db, monkeypatch):
+        monkeypatch.setattr(us, "DEFAULT_MODE", us.MODE_FROM_USB)
+        with db_session.session_scope() as s:
+            assert us.get_mode(s) == us.MODE_FROM_USB
+            us.set_mode(s, us.MODE_TWO_WAY)
+        with db_session.session_scope() as s:
+            assert us.get_mode(s) == us.MODE_TWO_WAY
+            us.set_mode(s, us.MODE_FROM_USB)
+        with db_session.session_scope() as s:
+            assert us.get_mode(s) == us.MODE_FROM_USB
+            assert us.build_plan(s, us.Drive(Path("nowhere"), "x", "x"), pairs=[]).one_way
+            with pytest.raises(ValueError):
+                us.set_mode(s, "sideways")
+
+    def test_new_on_usb_comes_down_new_here_stays_put(self, env):
+        local, usb, drive = env
+        write(usb / "Rush" / "a.mp3", b"usb", 1_600_000_000)
+        write(local / "Kinks" / "b.mp3", b"pc", 1_600_000_000)
+        plan = one_way_plan(drive)
+        assert plan.one_way
+        assert [(i.kind, i.direction, i.rel) for i in plan.all_items()] == [
+            (COPY, TO_LOCAL, "Rush/a.mp3")]
+        before = _tree(drive.root)
+        result, _ = run(drive, plan)
+        assert result.copied_to_local == 1 and result.copied_to_usb == 0
+        assert (local / "Rush" / "a.mp3").read_bytes() == b"usb"
+        assert _tree(drive.root) == before                       # nothing written to the USB
+        assert not (drive.sync_dir / "baselines").exists()
+        # the PC's own file is still waiting for a two-way sync
+        plan = plan_for(drive)
+        assert [(i.kind, i.direction, i.rel) for i in plan.all_items()] == [
+            (COPY, TO_USB, "Kinks/b.mp3")]
+
+    def test_never_deletes_here_and_never_restores_what_was_deleted_here(self, env):
+        local, usb, drive = env
+        write(local / "keep.mp3", b"1", 1_600_000_000)
+        write(local / "gone-here.mp3", b"2", 1_600_000_000)
+        sync_all(drive)                                          # both sides have both
+        (usb / "keep.mp3").unlink()                              # deleted on another PC
+        (local / "gone-here.mp3").unlink()                       # deleted on this PC
+        plan = one_way_plan(drive)
+        assert plan.all_items() == []
+        assert plan.summary() == "Nothing new on the USB"
+        run(drive, plan)
+        assert (local / "keep.mp3").exists() and not (local / "gone-here.mp3").exists()
+        assert (usb / "gone-here.mp3").exists()
+        # two-way still knows about both deletions
+        kinds = sorted((i.kind, i.remaining_side) for i in plan_for(drive).all_items())
+        assert kinds == [(DELETE, "local"), (DELETE, "usb")]
+
+    def test_changed_on_usb_comes_down_changed_here_does_not_go_up(self, env):
+        local, usb, drive = env
+        write(local / "a.mp3", b"1", 1_600_000_000)
+        write(local / "b.mp3", b"1", 1_600_000_000)
+        sync_all(drive)
+        write(usb / "a.mp3", b"usb edit", 1_600_000_500)
+        write(local / "b.mp3", b"pc edit", 1_600_000_500)
+        plan = one_way_plan(drive)
+        assert [(i.kind, i.direction, i.rel) for i in plan.all_items()] == [(COPY, TO_LOCAL, "a.mp3")]
+        run(drive, plan)
+        assert (local / "a.mp3").read_bytes() == b"usb edit"
+        assert (usb / "b.mp3").read_bytes() == b"1"
+
+    def test_conflict_keeps_the_usb_copy_checked_only_when_newer(self, env):
+        local, usb, drive = env
+        write(local / "old-here.mp3", b"1", 1_600_000_000)
+        write(local / "new-here.mp3", b"1", 1_600_000_000)
+        sync_all(drive)
+        write(local / "old-here.mp3", b"pc", 1_600_000_100)
+        write(usb / "old-here.mp3", b"usb!", 1_600_000_900)
+        write(local / "new-here.mp3", b"pc", 1_600_000_900)
+        write(usb / "new-here.mp3", b"usb!", 1_600_000_100)
+        plan = one_way_plan(drive)
+        items = {i.rel: i for i in plan.all_items()}
+        assert {i.kind for i in items.values()} == {CONFLICT}
+        assert all(i.direction == TO_LOCAL for i in items.values())
+        assert items["old-here.mp3"].selected and not items["new-here.mp3"].selected
+        before = _tree(drive.root)
+        _, trashed = run(drive, plan)
+        assert (local / "old-here.mp3").read_bytes() == b"usb!"
+        assert (local / "new-here.mp3").read_bytes() == b"pc"
+        assert trashed == [local / "old-here.mp3"]
+        assert _tree(drive.root) == before
+
+    def test_apply_refuses_anything_aimed_at_the_usb(self, env):
+        """Even if a row is flipped to "keep this PC's" by hand."""
+        local, usb, drive = env
+        write(local / "a.mp3", b"1", 1_600_000_000)
+        sync_all(drive)
+        write(local / "a.mp3", b"pc", 1_600_000_100)
+        write(usb / "a.mp3", b"usb!", 1_600_000_900)
+        plan = one_way_plan(drive)
+        (item,) = plan.all_items()
+        item.direction = TO_USB
+        before = _tree(drive.root)
+        result, _ = run(drive, plan)
+        assert result.copied_to_usb == 0
+        assert _tree(drive.root) == before

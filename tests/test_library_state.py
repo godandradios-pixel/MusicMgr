@@ -1389,3 +1389,52 @@ class TestRadioDial:
         pc1.use()
         with db_session.session_scope() as s:   # PC1 still where it was left
             assert self._setting(s, "tuner_last") == f"station|{kdka.id}"
+
+
+def _drive_files(root: Path) -> dict[str, tuple[int, int]]:
+    """Every file under `root` with its size and modified time."""
+    return {str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns)
+            for p in root.rglob("*") if p.is_file()}
+
+
+class TestOneWayFromUsb:
+    """Settings › USB sync › "One way: USB → this PC" (2026-10-27): the
+    library data comes in, nothing goes out, and a later two-way sync still
+    sends this PC's own changes."""
+
+    def pull(self, pc) -> ls.MergeNotes:
+        pc.use()
+        with db_session.session_scope() as s:
+            plan = us.build_plan(s, pc.drive, mode=us.MODE_FROM_USB)
+            result = us.apply(s, plan, trash=lambda p: None)
+            us.update_library(s, result)
+            return ls.sync_library_state(s, pc.drive, us.get_pc_id(s), pull_only=True)
+
+    def test_takes_the_drives_changes_and_writes_nothing_to_it(self, two_pcs):
+        pc1, pc2, drive = two_pcs
+        pc1.use()
+        with db_session.session_scope() as s:
+            s.add(Playlist(name="From PC1", kind=Playlist.KIND_MANUAL))
+            pc1.track(s, SONGS[0]).rating = 4
+        pc1.sync()
+        pc2.use()
+        with db_session.session_scope() as s:
+            s.add(Playlist(name="Only on PC2", kind=Playlist.KIND_MANUAL))
+        before = _drive_files(drive.root)
+        notes = self.pull(pc2)
+        assert _drive_files(drive.root) == before            # the drive is untouched
+        assert notes.playlists_in == ["From PC1"] and notes.ratings_in == 1
+        assert notes.playlists_out == 0 and not notes.board_out
+        with db_session.session_scope() as s:
+            names = set(s.scalars(select(Playlist.name)))
+            assert {"From PC1", "Only on PC2"} <= names
+            assert pc2.track(s, SONGS[0]).rating == 4
+        # switching back to two-way: PC2's own playlist goes out, and what
+        # came in one way isn't taken twice
+        notes = pc2.sync()
+        assert notes.playlists_in == []
+        assert notes.playlists_out >= 1
+        notes = pc1.sync()
+        assert notes.playlists_in == ["Only on PC2"]
+        with db_session.session_scope() as s:
+            assert {"From PC1", "Only on PC2"} <= set(s.scalars(select(Playlist.name)))

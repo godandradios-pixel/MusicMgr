@@ -29,6 +29,12 @@ Pieces (no Qt in here - the Settings page drives it through two QThreads):
   pulled drive never leaves half a file. Deletions are recoverable: local
   files go to the Recycle Bin / Trash, USB files move to
   `MusicMgr\\sync\\_deleted\\<date>\\`.
+- **Direction.** Settings › USB sync › "Sync direction" (`PREF_MODE`, per
+  PC): one way from the USB to this PC (`MODE_FROM_USB`, the default since
+  2026-10-27 - James: "In most cases I want the Sync to always be one way
+  from USB to the D: drive") or two-way. "Two-way sync now…" runs a single
+  two-way sync without changing the setting. See `make_one_way`: one way
+  never writes to the USB and never deletes anything on this PC.
 """
 
 from __future__ import annotations
@@ -65,6 +71,14 @@ DELETED_DIR = "_deleted"
 #: settings-table keys
 PREF_PC_ID = "sync_pc_id"
 PREF_AUTO_CHECK = "usb_sync_auto_check"
+#: "from_usb" or "two_way" - see make_one_way
+PREF_MODE = "usb_sync_mode"
+
+MODE_TWO_WAY = "two_way"
+MODE_FROM_USB = "from_usb"
+MODES = (MODE_TWO_WAY, MODE_FROM_USB)
+#: until a PC picks one in Settings: one way, USB -> this PC (2026-10-27)
+DEFAULT_MODE = MODE_FROM_USB
 
 #: FAT/exFAT keep times to 2 seconds, and FAT can be off by exactly an hour
 #: across a DST change - both count as "the same time".
@@ -223,6 +237,24 @@ def find_drives(roots: Optional[Iterable[Path]] = None) -> list[Drive]:
         seen.add(drive.drive_id)
         found.append(drive)
     return found
+
+
+def get_mode(db: Session) -> str:
+    """This PC's sync direction (Settings › USB sync)."""
+    row = db.get(Setting, PREF_MODE)
+    value = row.value if row is not None else None
+    return value if value in MODES else DEFAULT_MODE
+
+
+def set_mode(db: Session, mode: str) -> None:
+    if mode not in MODES:
+        raise ValueError(f"unknown USB sync mode {mode!r}")
+    row = db.get(Setting, PREF_MODE)
+    if row is None:
+        db.add(Setting(key=PREF_MODE, value=mode))
+    else:
+        row.value = mode
+    db.flush()
 
 
 def get_pc_id(db: Session) -> str:
@@ -713,6 +745,12 @@ class ComparePlan:
     drive: Drive
     pairs: list[PairPlan] = field(default_factory=list)
     cancelled: bool = False
+    #: MODE_TWO_WAY or MODE_FROM_USB - how this plan was made and is applied
+    mode: str = MODE_TWO_WAY
+
+    @property
+    def one_way(self) -> bool:
+        return self.mode == MODE_FROM_USB
 
     def all_items(self) -> list[SyncItem]:
         return [i for p in self.pairs for i in p.items]
@@ -740,7 +778,9 @@ class ComparePlan:
             parts.append(f"{c['deletions']:,} deletions")
         if c["renames"]:
             parts.append(f"{c['renames']:,} renames")
-        return " · ".join(parts) if parts else "Everything is in sync"
+        if not parts:
+            return "Nothing new on the USB" if self.one_way else "Everything is in sync"
+        return " · ".join(parts)
 
 
 def _index(files: dict[str, FileStat]) -> dict[str, tuple[str, FileStat]]:
@@ -842,6 +882,35 @@ def compare(
                                            old_rel=brel))
         else:
             plan.forget.append(brel)
+    return plan
+
+
+def make_one_way(plan: PairPlan) -> PairPlan:
+    """Turn a two-way plan into "USB → this PC only".
+
+    Kept: files new or changed on the USB (copied here), USB-side case
+    renames, and conflicts - as "keep the USB's version" (this PC's copy
+    goes to the Recycle Bin), checked only when the USB's copy is the newer
+    one. Dropped: everything that would write to the USB, and every
+    deletion - one way never deletes on this PC, and never brings back a
+    file deleted here on purpose.
+
+    The sync list is only updated for what is actually copied or found
+    identical, so whatever is left out stays pending: switching back to
+    two-way later still sends this PC's new files to the USB and asks
+    about the deletions."""
+    kept = []
+    for item in plan.items:
+        if item.kind == COPY and item.direction == TO_LOCAL:
+            kept.append(item)
+        elif item.kind == RENAME and item.direction == TO_LOCAL:
+            kept.append(item)
+        elif item.kind == CONFLICT:
+            item.selected = item.usb.mtime_ns >= item.local.mtime_ns
+            item.direction = TO_LOCAL
+            item.rel = item.usb_rel or item.rel
+            kept.append(item)
+    plan.items = kept
     return plan
 
 
@@ -950,13 +1019,17 @@ def build_plan(
     pairs: Optional[list[SyncPair]] = None,
     progress: Optional[ProgressFn] = None,
     should_stop: Optional[StopFn] = None,
+    mode: Optional[str] = None,
 ) -> ComparePlan:
     """Walk and compare every enabled pair of `drive`. Read-only apart from
-    creating this PC's id and the default pairs."""
+    creating this PC's id and the default pairs. `mode` - default: this
+    PC's Settings choice (get_mode)."""
     pc_id = get_pc_id(db)
+    if mode is None:
+        mode = get_mode(db)
     if pairs is None:
         pairs = [p for p in ensure_default_pairs(db, drive) if p.enabled and not is_removed(p)]
-    result = ComparePlan(drive)
+    result = ComparePlan(drive, mode=mode)
     for pair in pairs:
         if should_stop and should_stop():
             result.cancelled = True
@@ -995,6 +1068,8 @@ def build_plan(
         if progress:
             progress(f"Comparing {label}…")
         plan = compare(local_root, usb_root, local_files, usb_files, baseline, pair_id=pair.id, label=label)
+        if mode == MODE_FROM_USB:
+            make_one_way(plan)
         plan.baseline_source = source
         plan.temp_files = temps
         result.pairs.append(plan)
@@ -1215,6 +1290,8 @@ def apply(
         if pair is None or pp.errors and not pp.items and not pp.record:
             continue
         for tmp in pp.temp_files:
+            if plan.one_way and _is_under(tmp, drive.root):
+                continue  # one way leaves the USB exactly as it is
             _remove_quietly(tmp)
         base = _BaselineWriter(db, pp.pair_id, load_baseline(db, pair))
         for rel in pp.forget:
@@ -1223,6 +1300,9 @@ def apply(
         result.recorded += len(pp.record)
 
         items = [i for i in pp.items if i.selected]
+        if plan.one_way:
+            # belt and braces: nothing reaches the USB, nothing is deleted
+            items = [i for i in items if i.kind != DELETE and i.direction == TO_LOCAL]
         order = {RENAME: 0, COPY: 1, CONFLICT: 1, DELETE: 2}
         items.sort(key=lambda i: order[i.kind])
         for item in items:
@@ -1238,7 +1318,7 @@ def apply(
                 log.exception("usb sync failed on %s", item.rel)
                 result.errors.append(f"{item.rel}: {exc}")
         db.flush()
-        if not result.cancelled or base.current:
+        if (not result.cancelled or base.current) and not plan.one_way:
             try:
                 save_usb_baseline(drive, pc_id, pair, base.current)
             except OSError as exc:
@@ -1249,6 +1329,14 @@ def apply(
         if result.cancelled:
             break
     return result
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        Path(path).relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _apply_item(pp: PairPlan, item: SyncItem, drive: Drive, base: _BaselineWriter,
