@@ -811,6 +811,8 @@ class ChartsView(BaseView):
             return
         with self.ctx.session() as session:
             matched, total = chart_svc.rematch_issue(session, self._issue_id)
+        # rematch_issue also updates this edition's saved playlist, if any
+        self.ctx.playlistsChanged.emit()
         self.ctx.notify(f"Matched {matched} of {total} songs in this edition to your library")
         self._load_entries()
 
@@ -846,13 +848,25 @@ class ChartsView(BaseView):
         if not dialog.clear_requested and dialog.chosen_track_id is None:
             return
         track_id = None if dialog.clear_requested else dialog.chosen_track_id
+        playlist_name = None
         with self.ctx.session() as session:
-            chart_svc.set_entry_track(session, entry_id, track_id)
+            entry = chart_svc.set_entry_track(session, entry_id, track_id)
+            # set_entry_track also fixes this edition's saved playlist
+            # (chart_svc.sync_edition_playlist), if it has one
+            if track_id != current_track_id:
+                issue = session.get(ChartIssue, entry.issue_id)
+                chart = session.get(Chart, issue.chart_id) if issue else None
+                playlist = (chart_svc.find_edition_playlist(session, issue, chart)
+                            if chart is not None else None)
+                playlist_name = playlist.name if playlist is not None else None
         # A pick made via "Browse for file..." may have just scanned a
         # brand-new track into the library - cheap to always emit this,
         # and every other view that cares (Tracks, Artists, search) is
         # already set up to react to it (see import_csv's own use below).
         self.ctx.libraryChanged.emit()
+        if playlist_name is not None:
+            self.ctx.playlistsChanged.emit()
+            self.ctx.notify(f"Also fixed in playlist “{playlist_name}”")
         self._load_entries()
 
     # -- editing positions ----------------------------------------------------
@@ -916,6 +930,9 @@ class ChartsView(BaseView):
         if values is None:
             return
         if self._save_entry(entry_id, values) is not None:
+            # a renamed song is re-matched, which also updates this
+            # edition's saved playlist (chart_svc.update_entry)
+            self.ctx.playlistsChanged.emit()
             self._after_entry_change(entry_id)
 
     def _save_entry(self, entry_id: Optional[int], values: dict) -> Optional[int]:

@@ -247,10 +247,12 @@ def _rematch_entries(
     the fuzzy lookups."""
     matched = 0
     seen: dict[tuple[str, str], tuple[Optional[int], Optional[float]]] = {}
+    changed: dict[int, list[tuple[ChartEntry, Optional[int]]]] = {}
     total = len(entries)
     for i, entry in enumerate(entries, start=1):
         if should_stop and should_stop():
             break
+        before = entry.track_id
         key = (entry.title_key, entry.artist_key)
         if entry.match_locked:
             hit = entry.track_id is not None
@@ -260,10 +262,17 @@ def _rematch_entries(
         else:
             hit = match_entry(session, entry, threshold)
             seen[key] = (entry.track_id, entry.match_score)
+        if entry.track_id != before:
+            changed.setdefault(entry.issue_id, []).append((entry, before))
         if hit:
             matched += 1
         if progress and (i % 50 == 0 or i == total):
             progress(i, total, "")
+    if changed:
+        # editions already saved as playlists pick up the new matches
+        session.flush()
+        for issue_id, changes in changed.items():
+            sync_edition_playlist(session, issue_id, changes)
     return matched
 
 
@@ -349,14 +358,20 @@ def set_entry_track(session: Session, entry_id: int, track_id: Optional[int]) ->
     "Re-match library" never overwrites a manual pick (`match_entry` skips
     locked entries). Clearing it (`track_id=None`) unlocks the entry - "not
     this one", not "never try again" - so automatic re-matching considers
-    it again."""
+    it again.
+
+    If this edition was already saved as a playlist ("Save as playlist"),
+    that playlist gets the same fix - see sync_edition_playlist."""
     entry = session.get(ChartEntry, entry_id)
     if entry is None:
         raise ValueError(f"no chart entry {entry_id}")
+    old_track_id = entry.track_id
     entry.track_id = track_id
     entry.match_score = 1.0 if track_id is not None else None
     entry.match_locked = track_id is not None
     session.flush()
+    # a playlist already saved from this edition gets the same fix
+    sync_edition_playlist(session, entry.issue_id, [(entry, old_track_id)])
     return entry
 
 
@@ -496,12 +511,16 @@ def update_entry(
                 moves.update({e: e.rank - 1 for e in rows if old < e.rank <= rank})
         _renumber(session, moves)
     renamed = (title, artist) != (entry.title, entry.artist_name)
+    old_track_id = entry.track_id
     entry.title, entry.artist_name = title, artist
     entry.title_key, entry.artist_key = normalize(title), normalize(artist)
     entry.last_week, entry.peak_pos, entry.weeks_on_chart = last_week, peak_pos, weeks_on_chart
     session.flush()
     if renamed and not entry.match_locked:
         match_entry(session, entry, threshold)
+        session.flush()
+        if entry.track_id != old_track_id:
+            sync_edition_playlist(session, entry.issue_id, [(entry, old_track_id)])
     _after_edit(session, entry.issue_id, rank)
     return entry
 
@@ -910,6 +929,94 @@ def find_edition_playlist(session: Session, issue: ChartIssue, chart: Chart) -> 
     return session.scalar(
         select(Playlist).where(Playlist.name.in_(names), Playlist.kind == Playlist.KIND_CHART)
         .order_by(Playlist.id).limit(1))
+
+
+def sync_edition_playlist(
+    session: Session,
+    issue_id: int,
+    changes: Sequence[tuple[ChartEntry, Optional[int]]],
+) -> Optional[Playlist]:
+    """Carry match changes in one edition over to the playlist already saved
+    from it ("Save as playlist"), if there is one - so "Fix match…" and
+    "Re-match library" don't leave that playlist playing the old, wrong
+    song. Returns the playlist touched, or None when the edition was never
+    saved as one (nothing is created here).
+
+    `changes` is (entry, track_id before the change) for each entry whose
+    match changed; each entry already holds its new track_id. Only those
+    songs are touched - the playlist keeps its name, folder, tile and any
+    songs added, removed or reordered by hand:
+
+    * wrong song -> right song: swapped in place, same position
+    * unmatched -> matched: inserted where its chart rank puts it
+    * match cleared: that song is taken out
+
+    The playlist row to change is found at the position the chart rank puts
+    it first (so a song on the chart twice swaps the right copy), else by
+    the old track anywhere in the playlist (it was reordered by hand)."""
+    changes = [(e, old) for e, old in changes if e.track_id != old]
+    if not changes:
+        return None
+    issue = session.get(ChartIssue, issue_id)
+    chart = session.get(Chart, issue.chart_id) if issue is not None else None
+    if issue is None or chart is None:
+        return None
+    playlist = find_edition_playlist(session, issue, chart)
+    if playlist is None:
+        return None
+
+    items = list(
+        session.scalars(
+            select(PlaylistItem)
+            .where(PlaylistItem.playlist_id == playlist.id)
+            .order_by(PlaylistItem.position, PlaylistItem.id)
+        )
+    )
+    # every entry's match as it is now (the changes are already on the rows)
+    ranks_tracks = list(
+        session.execute(
+            select(ChartEntry.rank, ChartEntry.track_id).where(ChartEntry.issue_id == issue_id)
+        )
+    )
+    touched = False
+    # top of the chart first, so the songs above each change are already in
+    # their final state when its position is worked out
+    for entry, old in sorted(changes, key=lambda c: c[0].rank):
+        new = entry.track_id
+        # where "Save as playlist" puts this song: one slot per matched
+        # position above it
+        expected = sum(1 for rank, tid in ranks_tracks
+                       if rank < entry.rank and tid is not None)
+        current = [item.track_id for item in items]
+        idx = None
+        if old is not None:
+            if expected < len(items) and current[expected] == old:
+                idx = expected
+            elif old in current:
+                idx = current.index(old)
+        if idx is not None:
+            if new is None or new in current:
+                # cleared, or the right song is already in there (added by
+                # hand) - just take the wrong one out
+                session.delete(items.pop(idx))
+            else:
+                items[idx].track_id = new
+            touched = True
+        elif new is not None and new not in current:
+            item = PlaylistItem(playlist_id=playlist.id, track_id=new)
+            session.add(item)
+            items.insert(min(expected, len(items)), item)
+            touched = True
+
+    if not touched:
+        return None
+    for pos, item in enumerate(items):
+        item.position = pos
+    # USB sync's playlist merge goes by updated_at when both PCs changed one
+    playlist.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.flush()
+    session.expire(playlist, ["items"])
+    return playlist
 
 
 def list_issues(session: Session, chart_id: int) -> list[ChartIssue]:
