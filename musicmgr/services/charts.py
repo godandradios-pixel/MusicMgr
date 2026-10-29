@@ -159,6 +159,83 @@ def _read_csv_text(path: Path) -> str:
 # --------------------------------------------------------------------------
 
 
+#: session.info key for _TrackIndex while a bulk re-match runs
+_INDEX_KEY = "chart_track_index"
+#: ...and for the answers already worked out in it, by the entry's exact
+#: (title, artist, title_key) - all match_entry looks at - so a song on
+#: several charts is matched once, with the same result every time
+_ANSWERS_KEY = "chart_match_answers"
+
+
+class _TrackIndex:
+    """Every track's (id, title, artist, title_key) in memory, for
+    _candidate_tracks during a bulk re-match.
+
+    Without it each distinct chart song ran its own `title_key LIKE
+    '%word%'` - a scan of the whole tracks table, since no index can serve
+    a leading wildcard - so re-matching ~30,000 distinct songs scanned the
+    table ~30,000 times. Here the same two lookups are answered from memory
+    and remembered per word, giving exactly the rows the SQL gave, in the
+    same order - which matters, since the first of several equally good
+    copies of a song wins. Those queries scan the table, so their rows come
+    by track id; LIKE ignores ASCII case and treats "_" as any one
+    character. (The exact-title query stays in SQL: it's a quick indexed
+    lookup, and which index SQLite picks for it - so the order of its rows -
+    differs from one database to another.)
+
+    Only built for the length of _rematch_entries (see _track_index), so
+    tracks added later in the same session are never missed."""
+
+    def __init__(self, session: Session) -> None:
+        self.rows: list[tuple[int, str, str, str]] = []
+        for track_id, title, artist, key in session.execute(
+            select(Track.id, Track.title, Track.artist_display, Track.title_key)
+            .order_by(Track.id)
+        ):
+            if key is not None:
+                self.rows.append((track_id, title, artist or "", key.lower()))
+        # each word of every title -> the rows (indexes into self.rows) that
+        # have it: a title containing "love" must have a word containing
+        # "love", so a word lookup only checks the ~30,000 distinct words
+        self._word_rows: dict[str, list[int]] = {}
+        for i, (_, _, _, key) in enumerate(self.rows):
+            for word in set(key.split()):
+                self._word_rows.setdefault(word, []).append(i)
+        self._like: dict[tuple[str, str], list[tuple[int, str, str]]] = {}
+
+    def like(self, kind: str, text: str) -> list[tuple[int, str, str]]:
+        """`kind` "contains" is LIKE '%text%', "prefix" is LIKE 'text%'."""
+        cache_key = (kind, text)
+        hit = self._like.get(cache_key)
+        if hit is None:
+            needle = text.lower()
+            if kind == "contains" and needle and not ({"_", "%", " "} & set(needle)):
+                found: set[int] = set()
+                for word, rows in self._word_rows.items():
+                    if needle in word:
+                        found.update(rows)
+                hit = [self.rows[i][:3] for i in sorted(found)[:400]]
+                self._like[cache_key] = hit
+                return hit
+            if "_" in needle or "%" in needle:
+                body = "".join("." if ch == "_" else ".*" if ch == "%" else re.escape(ch)
+                               for ch in needle)
+                rx = re.compile(("" if kind == "prefix" else ".*") + body, re.DOTALL)
+                test = lambda key: rx.match(key) is not None  # noqa: E731
+            elif kind == "prefix":
+                test = lambda key: key.startswith(needle)  # noqa: E731
+            else:
+                test = lambda key: needle in key  # noqa: E731
+            hit = []
+            for track_id, title, artist, key in self.rows:
+                if test(key):
+                    hit.append((track_id, title, artist))
+                    if len(hit) == 400:
+                        break
+            self._like[cache_key] = hit
+        return hit
+
+
 def _candidate_tracks(session: Session, title_key: str) -> list[tuple[int, str, str]]:
     """Cheap prefilter: tracks with exactly this title, then tracks sharing
     a leading token with it.
@@ -172,6 +249,15 @@ def _candidate_tracks(session: Session, title_key: str) -> list[tuple[int, str, 
     if title_key:
         for r in session.execute(cols.where(Track.title_key == title_key).limit(400)):
             rows[r[0]] = (r[0], r[1], r[2] or "")
+    index = session.info.get(_INDEX_KEY)
+    if index is not None:
+        # the word search from memory (see _TrackIndex), same rows as below
+        first = title_key.split(" ")[0] if title_key else ""
+        found = (index.like("contains", first) if len(first) >= 3
+                 else index.like("prefix", title_key or ""))
+        for r in found:
+            rows.setdefault(r[0], r)
+        return list(rows.values())
     first_word = title_key.split(" ")[0] if title_key else ""
     if len(first_word) >= 3:
         stmt = cols.where(Track.title_key.like(f"%{first_word}%"))
@@ -206,6 +292,7 @@ def rematch_chart(
     threshold: float = 0.72,
     progress: Optional[Callable[[int, int, str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    seen: Optional[dict] = None,
 ) -> int:
     """Re-run matching for a whole chart, e.g. after adding music.
 
@@ -224,7 +311,7 @@ def rematch_chart(
         .where(ChartIssue.chart_id == chart_id)
     )
     return _rematch_entries(session, session.scalars(stmt).all(), threshold,
-                            progress, should_stop)
+                            progress, should_stop, seen)
 
 
 def rematch_issue(session: Session, issue_id: int, threshold: float = 0.72) -> tuple[int, int]:
@@ -241,13 +328,38 @@ def _rematch_entries(
     threshold: float = 0.72,
     progress: Optional[Callable[[int, int, str], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    seen: Optional[dict] = None,
 ) -> int:
     """Match each row, but each distinct title + artist only once: a weekly
     chart repeats the same song for weeks - the Hot 100 has ~30,000
     distinct songs across ~355,000 rows - so this does roughly a tenth of
-    the fuzzy lookups."""
+    the fuzzy lookups.
+
+    The library's tracks are held in memory while this runs (_TrackIndex),
+    so the lookups don't each scan the tracks table."""
+    seen = {} if seen is None else seen
+    own_index = _INDEX_KEY not in session.info
+    if own_index:
+        session.flush()   # tracks added in this session are in the index too
+        session.info[_INDEX_KEY] = _TrackIndex(session)
+        session.info[_ANSWERS_KEY] = {}
+    try:
+        return _rematch_loop(session, entries, threshold, progress, should_stop, seen)
+    finally:
+        if own_index:
+            session.info.pop(_INDEX_KEY, None)
+            session.info.pop(_ANSWERS_KEY, None)
+
+
+def _rematch_loop(
+    session: Session,
+    entries: Sequence[ChartEntry],
+    threshold: float,
+    progress: Optional[Callable[[int, int, str], None]],
+    should_stop: Optional[Callable[[], bool]],
+    seen: dict,
+) -> int:
     matched = 0
-    seen: dict[tuple[str, str], tuple[Optional[int], Optional[float]]] = {}
     changed: dict[int, list[tuple[ChartEntry, Optional[int]]]] = {}
     total = len(entries)
     for i, entry in enumerate(entries, start=1):
@@ -261,7 +373,15 @@ def _rematch_entries(
             entry.track_id, entry.match_score = seen[key]
             hit = entry.track_id is not None
         else:
-            hit = match_entry(session, entry, threshold)
+            answers = session.info.get(_ANSWERS_KEY)
+            exact = (entry.title, entry.artist_name, entry.title_key, threshold)
+            if answers is not None and exact in answers:
+                entry.track_id, entry.match_score = answers[exact]
+                hit = entry.track_id is not None
+            else:
+                hit = match_entry(session, entry, threshold)
+                if answers is not None:
+                    answers[exact] = (entry.track_id, entry.match_score)
             seen[key] = (entry.track_id, entry.match_score)
         if entry.track_id != before:
             changed.setdefault(entry.issue_id, []).append((entry, before))
@@ -270,11 +390,41 @@ def _rematch_entries(
         if progress and (i % 50 == 0 or i == total):
             progress(i, total, "")
     if changed:
-        # editions already saved as playlists pick up the new matches
+        # editions already saved as playlists pick up the new matches - a
+        # weekly chart can have thousands of changed editions, so look up
+        # which ones have a playlist at all once, not edition by edition
         session.flush()
+        linked, names = _chart_playlist_refs(session)
+        prefixes: dict[int, bool] = {}   # chart id -> any unlinked default-named playlist
         for issue_id, changes in changed.items():
+            if issue_id not in linked:
+                if not names:
+                    continue
+                issue = session.get(ChartIssue, issue_id)
+                chart = session.get(Chart, issue.chart_id) if issue is not None else None
+                if chart is None:
+                    continue
+                if chart.id not in prefixes:
+                    prefixes[chart.id] = any(n.startswith(f"{chart.name} - ") for n in names)
+                if not prefixes[chart.id]:
+                    continue
             sync_edition_playlist(session, issue_id, changes)
     return matched
+
+
+def _chart_playlist_refs(session: Session) -> tuple[set[int], set[str]]:
+    """(editions with a linked chart playlist, names of the chart playlists
+    that aren't linked) - what sync_edition_playlist can find."""
+    linked: set[int] = set()
+    names: set[str] = set()
+    for issue_id, name in session.execute(
+        select(Playlist.source_issue_id, Playlist.name).where(Playlist.kind == Playlist.KIND_CHART)
+    ):
+        if issue_id is not None:
+            linked.add(issue_id)
+        elif name:
+            names.add(name)
+    return linked, names
 
 
 def rematch_all_charts(
@@ -303,14 +453,22 @@ def rematch_all_charts(
             )
         ]
         total = 0
-        for chart_id, name in chart_ids_and_names:
-            if should_stop and should_stop():
-                break
-            if progress:
-                progress(0, 0, f"Re-matching {name}…")
-            total += rematch_chart(
-                session, chart_id, threshold, progress=progress, should_stop=should_stop
-            )
+        # one in-memory copy of the library, and one answer per song, for
+        # every chart (_TrackIndex, _ANSWERS_KEY)
+        session.info[_INDEX_KEY] = _TrackIndex(session)
+        session.info[_ANSWERS_KEY] = {}
+        try:
+            for chart_id, name in chart_ids_and_names:
+                if should_stop and should_stop():
+                    break
+                if progress:
+                    progress(0, 0, f"Re-matching {name}…")
+                total += rematch_chart(
+                    session, chart_id, threshold, progress=progress, should_stop=should_stop
+                )
+        finally:
+            session.info.pop(_INDEX_KEY, None)
+            session.info.pop(_ANSWERS_KEY, None)
         return total
 
 
