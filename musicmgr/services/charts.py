@@ -39,6 +39,7 @@ from ..db.models import (
     ChartFolder,
     ChartIssue,
     Playlist,
+    PlaylistFolder,
     PlaylistItem,
     Setting,
     Track,
@@ -1188,23 +1189,7 @@ def snapshot_to_playlist(
                             kind=Playlist.KIND_CHART, source_issue_id=issue.id)
         session.add(playlist)
         session.flush()
-    else:
-        playlist.source_issue_id = issue.id
-        for item in list(playlist.items):
-            session.delete(item)
-        session.flush()
-
-    pos = 0
-    for entry in issue_entries(session, issue_id):
-        if entry.track_id is None:
-            if owned_only:
-                continue
-            continue
-        session.add(
-            PlaylistItem(playlist_id=playlist.id, track_id=entry.track_id, position=pos)
-        )
-        pos += 1
-    playlist.description = f"Positions 1-{pos} from {chart.name}, {issue.chart_date}"
+    _fill_from_edition(session, playlist, issue, chart)
     # new songs alone don't touch the playlist row; USB sync's playlist
     # merge goes by updated_at when both PCs changed one
     playlist.updated_at = dt.datetime.now(dt.timezone.utc)
@@ -1212,3 +1197,259 @@ def snapshot_to_playlist(
         playlist.folder_id = folder_id
     session.flush()
     return playlist
+
+
+def _edition_track_ids(session: Session, issue_id: int) -> list[int]:
+    """The edition's matched songs, top of the chart first - what "Save as
+    playlist" puts in its playlist (unmatched positions are left out)."""
+    return list(session.scalars(
+        select(ChartEntry.track_id)
+        .where(ChartEntry.issue_id == issue_id, ChartEntry.track_id.is_not(None))
+        .order_by(ChartEntry.rank)
+    ))
+
+
+def _fill_from_edition(
+    session: Session, playlist: Playlist, issue: ChartIssue, chart: Chart
+) -> bool:
+    """Make `playlist`'s songs exactly the edition's matched songs, in chart
+    order, and link it to the edition. Returns True if its songs changed.
+    The name, folder and tile are left alone."""
+    wanted = _edition_track_ids(session, issue.id)
+    items = list(session.scalars(
+        select(PlaylistItem).where(PlaylistItem.playlist_id == playlist.id)
+        .order_by(PlaylistItem.position, PlaylistItem.id)
+    ))
+    playlist.source_issue_id = issue.id
+    playlist.description = f"Positions 1-{len(wanted)} from {chart.name}, {issue.chart_date}"
+    if [item.track_id for item in items] == wanted:
+        session.flush()
+        return False
+    for item in items:
+        session.delete(item)
+    session.flush()
+    for pos, track_id in enumerate(wanted):
+        session.add(PlaylistItem(playlist_id=playlist.id, track_id=track_id, position=pos))
+    session.flush()
+    session.expire(playlist, ["items"])
+    return True
+
+
+def _edition_for_playlist(
+    session: Session, playlist: Playlist, cache: Optional[dict] = None
+) -> Optional[ChartIssue]:
+    """The edition a chart playlist was saved from:
+
+    1. its link (`source_issue_id`);
+    2. its default name, "<chart> - 2003-12-31" or "<chart> - 2003"
+       (chart_playlist_name);
+    3. for one saved before the link existed and renamed since ("2003",
+       "1980-89" in a decade folder - 165 of PC1's 174 on 2026-10-29): the
+       year in its name picks the editions of that year, and the one whose
+       songs it shares most wins, with the chart's source (Billboard,
+       Playback, CCM) matching the playlist's folder as the tie-break.
+       Songs are compared by title, so a playlist holding a chart-folder
+       copy still recognises an edition matched to the album copy. Only a
+       clear winner counts (at least half its songs shared, and plainly
+       ahead of the next edition); otherwise None, and the playlist is left
+       alone.
+
+    `cache` (any dict) is reused across calls so a year's editions are read
+    once, not once per playlist."""
+    if playlist.source_issue_id is not None:
+        return session.get(ChartIssue, playlist.source_issue_id)
+    chart_name, sep, label = (playlist.name or "").rpartition(" - ")
+    if sep:
+        for chart in session.scalars(select(Chart).where(Chart.name == chart_name)):
+            for issue in list_issues(session, chart.id):
+                if label in (issue.chart_date.isoformat(), issue_label(session, issue)):
+                    return issue
+    year = re.match(r"(?:.* - )?(\d{4})\b", playlist.name or "")
+    if not year:
+        return None
+    cache = {} if cache is None else cache
+    editions = _year_editions(session, int(year.group(1)), cache)
+    keys = {k for k in session.scalars(
+        select(Track.title_key)
+        .join(PlaylistItem, PlaylistItem.track_id == Track.id)
+        .where(PlaylistItem.playlist_id == playlist.id)
+    ) if k}
+    if not keys or not editions:
+        return None
+    folders = [f.lower() for f in _folder_names(session, PlaylistFolder, playlist.folder_id, cache)]
+    scored = []
+    for issue_id, (chart_folders, chart_label, ed_keys) in editions.items():
+        if not ed_keys:
+            continue
+        shared = len(keys & ed_keys) / len(keys | ed_keys)
+        bonus = 0.0
+        if folders and chart_folders and folders[0].startswith(chart_folders[0].lower()[:4]):
+            bonus += 0.05   # same source: "Billboard Hot 100" / Billboard
+        if any(chart_label.lower().startswith(f) for f in folders if len(f) > 3):
+            bonus += 0.03   # "Contemporary Hits" / "Contemporary Hits #1 Songs"
+        scored.append((shared + bonus, shared, issue_id))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    best_score, best_shared, best_id = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    if best_shared < 0.5 or best_score - runner_up < 0.04:
+        return None
+    return session.get(ChartIssue, best_id)
+
+
+def _year_editions(session: Session, year: int, cache: dict) -> dict:
+    """{issue_id: (its chart's folder names top-down, chart name, the
+    matched songs' title keys)} for every edition dated in `year`."""
+    key = ("year", year)
+    if key not in cache:
+        editions: dict[int, tuple[list[str], str, set[str]]] = {}
+        for issue_id, chart_name, folder_id in session.execute(
+            select(ChartIssue.id, Chart.name, Chart.folder_id)
+            .join(Chart, Chart.id == ChartIssue.chart_id)
+            .where(ChartIssue.chart_date >= dt.date(year, 1, 1),
+                   ChartIssue.chart_date <= dt.date(year, 12, 31))
+        ):
+            editions[issue_id] = (_folder_names(session, ChartFolder, folder_id, cache),
+                                  chart_name, set())
+        ids = list(editions)
+        for start in range(0, len(ids), 500):
+            for issue_id, title_key in session.execute(
+                select(ChartEntry.issue_id, Track.title_key)
+                .join(Track, Track.id == ChartEntry.track_id)
+                .where(ChartEntry.issue_id.in_(ids[start:start + 500]))
+            ):
+                if title_key:
+                    editions[issue_id][2].add(title_key)
+        cache[key] = editions
+    return cache[key]
+
+
+def _folder_names(session: Session, model, folder_id: Optional[int], cache: dict) -> list[str]:
+    """A ChartFolder's or PlaylistFolder's path as names, top folder first."""
+    key = (model.__name__, folder_id)
+    if key not in cache:
+        names: list[str] = []
+        seen: set[int] = set()
+        while folder_id is not None and folder_id not in seen:
+            seen.add(folder_id)
+            folder = session.get(model, folder_id)
+            if folder is None:
+                break
+            names.insert(0, folder.name)
+            folder_id = folder.parent_id
+        cache[key] = names
+    return cache[key]
+
+
+#: how alike the artists must be (matching.artist_similarity) for
+#: _adopt_playlist_matches to trust a playlist's song for a chart position
+_ADOPT_ARTIST_SIMILARITY = 0.85
+
+
+def _adopt_playlist_matches(session: Session, playlist: Playlist, issue: ChartIssue) -> int:
+    """Match the edition's unmatched positions to the song the playlist
+    already has for them - same title key and the same artist - and return
+    how many. A position fixed by hand (match_locked) is never touched, and
+    the album copy of a song is used when there is one, same as
+    match_entry. A playlist song by a different artist ("One" by U2 for
+    Elton John's "The One") is not trusted - the rebuild drops it."""
+    from .duplicates import album_copy_for
+    from .matching import artist_similarity
+
+    unmatched = list(session.scalars(select(ChartEntry).where(
+        ChartEntry.issue_id == issue.id,
+        ChartEntry.track_id.is_(None),
+        ChartEntry.match_locked.is_not(True),
+    )))
+    if not unmatched:
+        return 0
+    by_title: dict[str, list[Track]] = {}
+    for track in session.scalars(
+        select(Track).join(PlaylistItem, PlaylistItem.track_id == Track.id)
+        .where(PlaylistItem.playlist_id == playlist.id)
+    ):
+        if track.title_key:
+            by_title.setdefault(track.title_key, []).append(track)
+    fixed = 0
+    for entry in unmatched:
+        best, best_score = None, _ADOPT_ARTIST_SIMILARITY
+        for track in by_title.get(entry.title_key or "", []):
+            score = artist_similarity(entry.artist_name or "", track.artist_display or "")
+            if score >= best_score:
+                best, best_score = track, score
+        if best is not None:
+            entry.track_id = album_copy_for(session, best.id) or best.id
+            entry.match_score = best_score
+            fixed += 1
+    if fixed:
+        session.flush()
+    return fixed
+
+
+@dataclass
+class ChartPlaylistRefresh:
+    checked: int = 0     # chart playlists looked at
+    updated: int = 0     # whose songs changed
+    linked: int = 0      # found by name or songs, and now linked to their edition
+    chart_fixed: int = 0  # chart positions re-matched from the playlist's own song
+    unlinked: list[str] = field(default_factory=list)  # edition not found - left alone
+
+
+def refresh_chart_playlists(
+    session: Session,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+) -> ChartPlaylistRefresh:
+    """Settings' "Chart playlists" › Update button: rebuild every playlist
+    saved from a chart edition from that edition's current matches - the
+    same songs "Save as playlist" would give it now - so fixes made on the
+    Charts page before 2026-10-29 (when fixes started carrying over by
+    themselves, see sync_edition_playlist) reach the playlists too.
+
+    Like "Save as playlist", this replaces each playlist's song list, so
+    songs added or reordered there by hand are lost; its name, folder and
+    tile stay. A playlist whose songs already match is left untouched (its
+    updated_at too, so USB sync has nothing to merge).
+
+    A playlist found by its old default name or by its songs
+    (_edition_for_playlist) is linked to its edition on the way, so later
+    fixes on the Charts page reach it by themselves. One whose edition
+    can't be told is left untouched and named in `unlinked`.
+
+    Before rebuilding, a chart position that has lost its match but whose
+    song the playlist plainly holds - same title, same artist
+    (_adopt_playlist_matches) - is matched to that song again, so the
+    rebuild doesn't drop a song that was right (PC1, 2026-10-29: Tequila by
+    the Champs, The Way by Fastball and ~20 more)."""
+    result = ChartPlaylistRefresh()
+    cache: dict = {}
+    playlists = list(session.scalars(
+        select(Playlist).where(Playlist.kind == Playlist.KIND_CHART).order_by(Playlist.name)
+    ))
+    total = len(playlists)
+    for i, playlist in enumerate(playlists, start=1):
+        result.checked += 1
+        was_linked = playlist.source_issue_id is not None
+        issue = _edition_for_playlist(session, playlist, cache)
+        chart = session.get(Chart, issue.chart_id) if issue is not None else None
+        if issue is None or chart is None:
+            result.unlinked.append(playlist.name)
+        else:
+            if not was_linked:
+                result.linked += 1
+            fixed = _adopt_playlist_matches(session, playlist, issue)
+            if fixed:
+                result.chart_fixed += fixed
+                from . import chart_sync  # chart_sync imports this module
+
+                chart_sync.mark_edited(session, chart.id)
+            changed = _fill_from_edition(session, playlist, issue, chart)
+            if changed:
+                result.updated += 1
+            if changed or not was_linked:
+                # USB sync's playlist merge goes by updated_at
+                playlist.updated_at = dt.datetime.now(dt.timezone.utc)
+        if progress:
+            progress(i, total, playlist.name)
+    session.flush()
+    return result

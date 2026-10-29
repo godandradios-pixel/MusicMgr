@@ -117,6 +117,14 @@ class MaintenanceSection:
             "Re-match",
             self.rematch_all,
         )
+        # catch-up for playlists saved before chart fixes carried over by
+        # themselves - see services/charts.py:refresh_chart_playlists
+        add_tool_row(
+            "Chart playlists",
+            "Rebuild every playlist saved from a chart so it has the chart's current matches.",
+            "Update…",
+            self.refresh_chart_playlists,
+        )
 
         tools_group("Files & data", "files")
         add_tool_row(
@@ -799,6 +807,54 @@ class MaintenanceSection:
         self._rematch_thread.finished_with.connect(self._on_rematch_done)
         self._rematch_thread.start()
         self._show_cancel()
+
+    def refresh_chart_playlists(self) -> None:
+        """Rebuild every chart-saved playlist from its edition's current
+        matches (services.charts.refresh_chart_playlists). Quick - one
+        playlist per saved edition - so it runs here rather than on a
+        thread, behind a wait cursor."""
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+        if not self._confirm_refresh_chart_playlists():
+            return
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+
+        from ....services import charts as chart_svc
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            with self.ctx.session() as session:
+                result = chart_svc.refresh_chart_playlists(session)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.ctx.playlistsChanged.emit()
+        if not result.checked:
+            self.ctx.notify("No playlists have been saved from a chart yet")
+            return
+        message = f"Updated {result.updated} of {result.checked} chart playlists"
+        if result.chart_fixed:
+            message += f", re-matched {result.chart_fixed} chart songs from them"
+        if result.unlinked:
+            names = ", ".join(f"“{n}”" for n in result.unlinked[:5])
+            more = f" and {len(result.unlinked) - 5} more" if len(result.unlinked) > 5 else ""
+            message += f" - couldn't tell which chart {names}{more} came from, so left them alone"
+        self.ctx.notify(message)
+        if result.chart_fixed:
+            self.ctx.libraryChanged.emit()
+
+    def _confirm_refresh_chart_playlists(self) -> bool:
+        """Its own method so tests can answer it."""
+        return QMessageBox.question(
+            self,
+            "Update chart playlists",
+            "Rebuild every playlist saved from a chart so its songs match the "
+            "chart's current matches?\n\nEach playlist keeps its name and "
+            "folder, but songs you added or reordered in it by hand are "
+            "replaced - the same as “Save as playlist” on the Charts page.",
+        ) == QMessageBox.Yes
 
     def _on_rematch_progress(self, done: int, total: int, name: str) -> None:
         if total <= 0:
