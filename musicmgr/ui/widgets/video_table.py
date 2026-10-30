@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...services.library import format_duration
+from ...services.search_text import fold
 from .common import ChipButton, dim_label
 
 #: which VideoRow.key a leaf row represents; absent (None) on a group header
@@ -180,7 +181,7 @@ class VideoTable(QWidget):
         shape as CoverGrid.set_filter_text: matching, not re-sorting - the
         active sort/group stays put, this just drops rows that don't
         qualify. An empty string shows everything again."""
-        text = text.strip().lower()
+        text = fold(text.strip())   # accent/case-blind: "expose" finds Exposé
         if text == self._filter_text:
             return
         self._filter_text = text
@@ -190,7 +191,7 @@ class VideoTable(QWidget):
         if not self._filter_text:
             return True
         needle = self._filter_text
-        return needle in (row.title or "").lower() or needle in (row.artist or "").lower()
+        return needle in fold(row.title) or needle in fold(row.artist)
 
     @property
     def group_by(self) -> str:

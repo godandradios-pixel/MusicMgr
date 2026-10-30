@@ -26,6 +26,9 @@ library first (backups\\library-before-health-fix-<time>.db).
 - **stale_chart_playlists** - playlists saved from a chart edition whose
   songs no longer match it. Fix: save them again (name, folder and tile
   kept - charts.snapshot_to_playlist).
+- **garbled_chart_text** - chart songs whose accented letters were
+  mangled on import ("Expos\ufffd", "ExposÃ©"). Fix: fill the letters in from
+  names the library already knows (text_repair) and match the fixed rows.
 - **edition_gaps** - chart editions missing positions (rank 15 with no
   row). Shown only: the missing rows have to come from the source.
 - **empty_albums** - albums with no songs. Fix: remove them.
@@ -324,6 +327,24 @@ def _check_chart_playlists(session: Session, report: HealthReport) -> None:
     report.findings.append(f)
 
 
+def _check_garbled_text(session: Session, report: HealthReport) -> None:
+    from .text_repair import damaged_chart_rows
+
+    f = Finding(
+        "garbled_chart_text", "Chart songs with garbled letters",
+        "Chart titles or artists whose accented letters were mangled when they were "
+        "imported (\"Expos\ufffd\" or \"ExposÃ©\" for Exposé).",
+        fix_label="Repair them")
+    shown: set[tuple] = set()
+    for eid, title, artist in damaged_chart_rows(session):
+        f.count += 1
+        f.data.append(eid)
+        if (title, artist) not in shown and len(f.examples) < EXAMPLES:
+            shown.add((title, artist))
+            f.examples.append(f"{title} - {artist}")
+    report.findings.append(f)
+
+
 def _check_edition_gaps(session: Session, report: HealthReport) -> None:
     from .charts import chart_edition_style, edition_label
 
@@ -376,6 +397,7 @@ def check_library(session: Session, progress: Optional[ProgressFn] = None,
         ("Checking chart matches…",
          lambda: _check_loose_matches(session, report, progress, should_stop)),
         ("Checking chart playlists…", lambda: _check_chart_playlists(session, report)),
+        ("Checking chart text…", lambda: _check_garbled_text(session, report)),
         ("Checking chart editions…", lambda: _check_edition_gaps(session, report)),
         ("Checking albums…", lambda: _check_empty_albums(session, report)),
     )
@@ -452,6 +474,13 @@ def apply_fix(session: Session, finding: Finding,
             snapshot_to_playlist(session, issue_id)
             done += 1
         return f"Updated {done:,} chart playlist{'s' if done != 1 else ''}"
+    if key == "garbled_chart_text":
+        from .text_repair import repair_chart_entries
+
+        done, left = repair_chart_entries(session, finding.data)
+        note = (f" ({left:,} couldn't be worked out - fix those with Charts › Edit song…)"
+                if left else "")
+        return f"Repaired {done:,} chart song{'s' if done != 1 else ''}{note}"
     if key == "empty_albums":
         from .scanner import purge_empty_releases
 

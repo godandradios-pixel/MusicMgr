@@ -64,6 +64,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..db.models import JukeboxSlot, Release, Setting, Track
 from . import artwork_names
+from .search_text import fold_ilike
 from .matching import normalize
 
 #: how many title strips make up one page of the selector (a full 3x3
@@ -696,7 +697,7 @@ def search_addable_tracks(
         .limit(limit * 3)
     )
     if artist_query:
-        stmt = stmt.where(Track.artist_display.ilike(f"%{artist_query}%"))
+        stmt = stmt.where(fold_ilike(Track.artist_display, f"%{artist_query}%"))
     if track_query:
         stmt = stmt.where(Track.title_key.like(f"%{normalize(track_query)}%"))
     candidates = session.scalars(stmt).unique()

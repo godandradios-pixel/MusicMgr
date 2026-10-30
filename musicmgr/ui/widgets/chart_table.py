@@ -51,6 +51,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
+from ...services.search_text import fold
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -273,10 +275,10 @@ class ChartTable(QTreeWidget):
         self.clear()
 
         charts_by_parent: dict[Optional[int], list[ChartLeafNode]] = {}
-        needle = self._filter_text.lower()
+        needle = fold(self._filter_text)
         matched_folder_ids: set[int] = set()
         for chart in self._charts:
-            if needle and needle not in chart.name.lower():
+            if needle and needle not in fold(chart.name):
                 continue
             charts_by_parent.setdefault(chart.parent_id, []).append(chart)
 
@@ -323,9 +325,9 @@ class ChartTable(QTreeWidget):
             self._add_level(item, folder.id, visible_folder_ids)
 
         charts_here = [c for c in self._charts if c.parent_id == parent_id]
-        needle = self._filter_text.lower()
+        needle = fold(self._filter_text)
         if needle:
-            charts_here = [c for c in charts_here if needle in c.name.lower()]
+            charts_here = [c for c in charts_here if needle in fold(c.name)]
         for chart in self._sorted_charts(charts_here):
             has_children = chart.editions > 0
             # never force-expand a chart's editions just because a filter is

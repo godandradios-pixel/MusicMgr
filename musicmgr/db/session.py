@@ -20,6 +20,13 @@ _Session: Optional[sessionmaker] = None
 @event.listens_for(Engine, "connect")
 def _sqlite_pragmas(dbapi_conn, _record):  # pragma: no cover - driver hook
     try:
+        # mm_fold(): accent/case-blind search text (services/search_text.py)
+        from ..services.search_text import register
+
+        register(dbapi_conn)
+    except Exception:
+        pass
+    try:
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA journal_mode=WAL")

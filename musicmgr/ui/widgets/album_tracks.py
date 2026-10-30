@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...config import TOUCH
+from ...services.search_text import fold
 from ...services.library import format_duration
 from ...services.tracknum import label as track_label
 from ..theme import COLORS
@@ -493,7 +494,7 @@ class AlbumTracksPanel(QWidget):
         the performer of a compilation track) - typing "Ludacris" finds
         Usher's "Yeah!".
         """
-        text = text.strip().lower()
+        text = fold(text.strip())   # accent/case-blind: "expose" finds Exposé
         if text == self._filter_text:
             return
         self._filter_text = text
@@ -517,7 +518,7 @@ class AlbumTracksPanel(QWidget):
 
             if block.kind == KIND_VIDEO:
                 matched_videos = [
-                    v for v in block.videos if needle in v.title.lower()
+                    v for v in block.videos if needle in fold(v.title)
                 ]
                 if not matched_videos:
                     continue
@@ -532,12 +533,12 @@ class AlbumTracksPanel(QWidget):
                     filtered.append(replace(block, videos=matched_videos))
                 continue
 
-            if needle in block.title.lower():
+            if needle in fold(block.title):
                 matched_tracks = block.tracks
             else:
                 matched_tracks = [
                     t for t in block.tracks
-                    if needle in t.title.lower() or needle in t.guests
+                    if needle in fold(t.title) or needle in fold(t.guests)
                 ]
                 if not matched_tracks:
                     continue

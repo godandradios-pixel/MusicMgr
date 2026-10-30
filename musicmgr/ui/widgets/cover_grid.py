@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...config import TOUCH
+from ...services.search_text import fold
 from ..theme import COLORS
 from .common import ChipButton, cover_pixmap
 
@@ -488,7 +489,7 @@ class CoverGrid(QWidget):
         just drops tiles that don't qualify. An empty string shows everything
         again.
         """
-        text = text.strip().lower()
+        text = fold(text.strip())   # accent/case-blind: "expose" finds Exposé
         if text == self._filter_text:
             return
         self._filter_text = text
@@ -542,7 +543,7 @@ class CoverGrid(QWidget):
                 if t.kind == "video":
                     # only the video's *artist* has to match here - its own
                     # title never qualifies it (see the comment above)
-                    if needle not in (t.subtitle or "").lower():
+                    if needle not in fold(t.subtitle):
                         continue
                     video_groups.setdefault(t.subtitle, []).append(t)
                 else:
@@ -550,7 +551,7 @@ class CoverGrid(QWidget):
                     # Artists) matches only its own title - not its
                     # subtitle (the release's artist-name caption, or the
                     # artist's "N releases · M tracks" count)
-                    if needle not in t.title.lower():
+                    if needle not in fold(t.title):
                         continue
                     kept.append(t)
             for artist, videos in video_groups.items():

@@ -45,6 +45,7 @@ from ..db.models import (
     Track,
 )
 from ..db.session import session_scope
+from .search_text import fold_ilike
 from .matching import best_match, normalize
 
 log = logging.getLogger(__name__)
@@ -142,16 +143,14 @@ def _int_or_none(value) -> Optional[int]:
 def _read_csv_text(path: Path) -> str:
     """Billboard-style chart CSVs come from all over. Most are clean UTF-8,
     but some (Kaggle-style Windows exports, for one) carry stray
-    Windows-1252 bytes that aren't valid UTF-8. Try UTF-8 first, since it
-    rejects cleanly on anything that isn't; fall back to cp1252, which
-    accepts any byte, rather than `errors="replace"` turning a real
-    character into U+FFFD - a mangled title character can stop match_entry
-    finding the track."""
-    raw = path.read_bytes()
-    try:
-        return raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return raw.decode("cp1252", errors="replace")
+    Windows-1252 bytes that aren't valid UTF-8. Each such byte is read as
+    cp1252 on its own (text_repair.decode_csv_bytes) - the old whole-file
+    cp1252 fallback turned every *other* accent in the file into mojibake
+    ("ExposÃ©"), and `errors="replace"` would lose the letter outright
+    (U+FFFD) - either one can stop match_entry finding the track."""
+    from .text_repair import decode_csv_bytes
+
+    return decode_csv_bytes(path.read_bytes())
 
 
 # --------------------------------------------------------------------------
@@ -496,7 +495,7 @@ def search_tracks_for_match(
         .limit(limit)
     )
     if artist_query:
-        stmt = stmt.where(Track.artist_display.ilike(f"%{artist_query}%"))
+        stmt = stmt.where(fold_ilike(Track.artist_display, f"%{artist_query}%"))
     if track_query:
         stmt = stmt.where(Track.title_key.like(f"%{normalize(track_query)}%"))
     return [
@@ -812,11 +811,20 @@ def import_chart_csv(
     seen_ranks: dict[int, set[int]] = {}
     max_rank = 0
 
+    from .text_repair import ChartTextRepairer, is_damaged
+
+    repairer: Optional[ChartTextRepairer] = None
     for lineno, row in enumerate(reader, start=2):
         try:
             rank = _int_or_none(row.get(cols["rank"]))
             title = (row.get(cols["title"]) or "").strip()
             artist = (row.get(cols["artist"]) or "").strip()
+            if is_damaged(title) or is_damaged(artist):
+                # the file itself carries mangled letters ("Expos\ufffd"):
+                # fill them in from names the library already knows
+                if repairer is None:
+                    repairer = ChartTextRepairer.from_library(session)
+                title, artist = repairer.repair(title), repairer.repair(artist)
             if not rank or not title:
                 continue
             max_rank = max(max_rank, rank)

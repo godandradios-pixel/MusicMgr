@@ -74,6 +74,7 @@ from ..db.models import (
     release_styles,
 )
 from .matching import normalize
+from .search_text import fold_ilike
 from .top_songs import distinct_chart, song_key
 
 log = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ def _find_artist(session, name: str) -> Optional[Artist]:
         return alias.artist
     # a partial name: the one with the most songs wins ("Elvis" -> Elvis Presley)
     candidates = session.scalars(
-        select(Artist).where(or_(Artist.name.ilike(_like(name)), Artist.name_key.ilike(_like(key))))
+        select(Artist).where(or_(fold_ilike(Artist.name, _like(name)), fold_ilike(Artist.name_key, _like(key))))
         .limit(25)
     ).all()
     if not candidates:
@@ -270,11 +271,11 @@ def _artist_track_clause(artist: Artist):
     names = [artist.name] + [a.alias_name for a in artist.aliases if a.alias_name]
     parts = [Release.album_artist_id == artist.id]
     for n in names:
-        parts.append(Track.artist_display.ilike(n))
-        parts.append(Track.artist_display.ilike(f"{n} feat%"))
-        parts.append(Track.artist_display.ilike(f"{n} &%"))
-        parts.append(Track.artist_display.ilike(f"{n} and %"))
-        parts.append(Track.artist_display.ilike(f"{n} with %"))
+        parts.append(fold_ilike(Track.artist_display, n))
+        parts.append(fold_ilike(Track.artist_display, f"{n} feat%"))
+        parts.append(fold_ilike(Track.artist_display, f"{n} &%"))
+        parts.append(fold_ilike(Track.artist_display, f"{n} and %"))
+        parts.append(fold_ilike(Track.artist_display, f"{n} with %"))
     return or_(*parts)
 
 
@@ -359,9 +360,9 @@ class LibraryTools:
         limit = max(1, min(int(limit or 15), 40))
         stmt = select(Artist)
         if query:
-            stmt = stmt.where(or_(Artist.name.ilike(_like(query)),
+            stmt = stmt.where(or_(fold_ilike(Artist.name, _like(query)),
                                   Artist.profile.ilike(_like(query)),
-                                  Artist.real_name.ilike(_like(query))))
+                                  fold_ilike(Artist.real_name, _like(query))))
         if genre:
             stmt = stmt.where(Artist.id.in_(
                 select(Release.album_artist_id)
@@ -369,7 +370,7 @@ class LibraryTools:
                 .join(Genre, Genre.id == release_genres.c.genre_id, isouter=True)
                 .join(release_styles, release_styles.c.release_id == Release.id, isouter=True)
                 .join(Style, Style.id == release_styles.c.style_id, isouter=True)
-                .where(or_(Genre.name.ilike(_like(genre)), Style.name.ilike(_like(genre))))
+                .where(or_(fold_ilike(Genre.name, _like(genre)), fold_ilike(Style.name, _like(genre))))
             ))
         artists = s.scalars(stmt.limit(200)).all()
         counts = _track_counts(s, artists)
@@ -454,19 +455,19 @@ class LibraryTools:
         if artist:
             a = _find_artist(s, artist)
             stmt = stmt.where(_artist_track_clause(a) if a is not None
-                              else Track.artist_display.ilike(_like(artist)))
+                              else fold_ilike(Track.artist_display, _like(artist)))
         if title:
-            stmt = stmt.where(Track.title.ilike(_like(title)))
+            stmt = stmt.where(fold_ilike(Track.title, _like(title)))
         if album:
-            stmt = stmt.where(Release.title.ilike(_like(album)))
+            stmt = stmt.where(fold_ilike(Release.title, _like(album)))
         if genre:
             stmt = stmt.where(or_(
                 Release.id.in_(select(release_genres.c.release_id)
                                .join(Genre, Genre.id == release_genres.c.genre_id)
-                               .where(Genre.name.ilike(_like(genre)))),
+                               .where(fold_ilike(Genre.name, _like(genre)))),
                 Release.id.in_(select(release_styles.c.release_id)
                                .join(Style, Style.id == release_styles.c.style_id)
-                               .where(Style.name.ilike(_like(genre)))),
+                               .where(fold_ilike(Style.name, _like(genre)))),
             ))
         if year_from:
             stmt = stmt.where(Release.year >= int(year_from))
@@ -496,11 +497,11 @@ class LibraryTools:
         limit = max(1, min(int(limit or 20), 50))
         stmt = select(Release)
         if query:
-            stmt = stmt.where(Release.title.ilike(_like(query)))
+            stmt = stmt.where(fold_ilike(Release.title, _like(query)))
         if artist:
             a = _find_artist(s, artist)
             stmt = stmt.where(Release.album_artist_id == a.id if a is not None
-                              else Release.artist_display.ilike(_like(artist)))
+                              else fold_ilike(Release.artist_display, _like(artist)))
         if year_from:
             stmt = stmt.where(Release.year >= int(year_from))
         if year_to:
@@ -607,7 +608,7 @@ class LibraryTools:
     def list_playlists(self, s, query: str = "") -> dict:
         stmt = select(Playlist).order_by(func.lower(Playlist.name))
         if query:
-            stmt = stmt.where(Playlist.name.ilike(_like(query)))
+            stmt = stmt.where(fold_ilike(Playlist.name, _like(query)))
         lists = s.scalars(stmt.limit(80)).all()
         return {"playlists": [{"playlist_id": p.id, "name": p.name, "kind": p.kind,
                                "folder": p.folder.name if p.folder else None} for p in lists]}

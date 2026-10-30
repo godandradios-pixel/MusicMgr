@@ -82,6 +82,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...config import TOUCH
+from ...services.search_text import fold
 from ...services.player import QueueItem
 from ..theme import COLORS
 from .common import STAR_COUNT, STAR_EMPTY, STAR_FULL, ChipButton, TouchButton, dim_label
@@ -869,7 +870,7 @@ class TrackDetailsTable(QWidget):
         columns - see `_row_matches`. A case-insensitive
         substring rule, same as everywhere else in Library. An empty string
         restores every row."""
-        text = text.strip().lower()
+        text = fold(text.strip())   # accent/case-blind: "expose" finds Exposé
         if text == self._filter_text:
             return
         self._filter_text = text
@@ -886,16 +887,16 @@ class TrackDetailsTable(QWidget):
         from ...services.library import format_duration
 
         return (
-            needle in row.title.lower()
-            or needle in row.genre.lower()
-            or needle in row.album_artist.lower()
-            or needle in row.album.lower()
+            needle in fold(row.title)
+            or needle in fold(row.genre)
+            or needle in fold(row.album_artist)
+            or needle in fold(row.album)
             or (row.track_no is not None and needle in str(row.track_no))
             or needle in format_duration(row.duration_ms).lower()
             or (row.year is not None and needle in str(row.year))
             or (row.rating is not None and needle in str(row.rating))
             or (row.on_jukebox and needle in "jukebox")
-            or needle in row.comment.lower()
+            or needle in fold(row.comment)
             or (row.is_video and needle in _media_label(row.media_type))
         )
 

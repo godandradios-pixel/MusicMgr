@@ -10,6 +10,7 @@ from typing import Iterable, Optional, Sequence
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from .search_text import fold_ilike
 from .tracknum import label as track_label
 from ..db.models import (
     Artist,
@@ -620,7 +621,7 @@ def search(session: Session, query: str, limit: int = 200) -> dict:
             .where(
                 or_(
                     Track.title_key.like(like),
-                    Track.artist_display.ilike(f"%{query}%"),
+                    fold_ilike(Track.artist_display, f"%{query}%"),
                 )
             )
             .limit(limit)

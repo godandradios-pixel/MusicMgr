@@ -40,6 +40,7 @@ from ..db.models import (
     release_genres,
     release_styles,
 )
+from .search_text import fold, fold_ilike
 from .matching import normalize
 
 ORDERINGS = {
@@ -370,7 +371,7 @@ def search_tracks(
         .limit(limit)
     )
     if artist_query:
-        stmt = stmt.where(Track.artist_display.ilike(f"%{artist_query}%"))
+        stmt = stmt.where(fold_ilike(Track.artist_display, f"%{artist_query}%"))
     if track_query:
         stmt = stmt.where(Track.title_key.like(f"%{normalize(track_query)}%"))
     results: list[dict] = []
@@ -487,16 +488,17 @@ def _rule_clause(field: str, op: str, value: Any):
         # "artist"/"comment" skip normalize() - normalize() strips
         # punctuation entirely (see services/matching.py), which would
         # mangle a bracketed tag like "[Billboard][1946]" into unmatchable
-        # mush before it ever reaches the ILIKE below; title/album go
+        # mush before it ever reaches the LIKE below (accent-blind via
+        # search_text.fold_ilike, so "Expose" finds Exposé); title/album go
         # through it because those columns (*_key) are themselves
         # normalized, so the search term has to match that same shape.
         needle = normalize(value) if field not in ("artist", "comment") else str(value)
         if op in ("is", "eq"):
-            return func.lower(col) == needle.lower()
+            return func.mm_fold(col) == fold(needle)
         if op == "contains":
-            return col.ilike(f"%{needle}%")
+            return fold_ilike(col, f"%{needle}%")
         if op == "startswith":
-            return col.ilike(f"{needle}%")
+            return fold_ilike(col, f"{needle}%")
         raise ValueError(f"unsupported text op {op!r}")
 
     if field == "genre":

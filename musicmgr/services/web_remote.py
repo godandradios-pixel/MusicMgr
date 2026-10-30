@@ -61,6 +61,7 @@ from sqlalchemy.orm import selectinload
 from .. import config
 from ..db.models import Artist, Playlist, RadioShow, RadioStation, Release, Setting, Track
 from . import voice_ask
+from .search_text import fold_ilike
 
 log = logging.getLogger(__name__)
 
@@ -553,14 +554,14 @@ class RemoteApi:
         with self.ctx.session() as s:
             albums = s.scalars(
                 select(Release)
-                .where(or_(Release.title.ilike(like), Release.artist_display.ilike(like)))
+                .where(or_(fold_ilike(Release.title, like), fold_ilike(Release.artist_display, like)))
                 .order_by(func.lower(Release.artist_display), Release.year, func.lower(Release.title))
                 .limit(40)
             ).all()
             tracks = s.scalars(
                 select(Track)
                 .options(selectinload(Track.release))
-                .where(or_(Track.title.ilike(like), Track.artist_display.ilike(like)))
+                .where(or_(fold_ilike(Track.title, like), fold_ilike(Track.artist_display, like)))
                 .order_by(func.lower(Track.artist_display), func.lower(Track.title))
                 .limit(80)
             ).unique().all()
