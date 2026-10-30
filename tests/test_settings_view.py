@@ -40,7 +40,7 @@ import pytest
 from PySide6.QtWidgets import QDialog
 from sqlalchemy import func, select
 
-from musicmgr.db.models import Playlist, PlaylistItem, Track, Video, WatchedFolder
+from musicmgr.db.models import PlayEvent, Playlist, PlaylistItem, Track, Video, WatchedFolder
 from musicmgr.services import metadata_health
 from musicmgr.services import scanner
 from musicmgr.ui.views import settings as settings_module
@@ -334,13 +334,58 @@ class TestPurgeMissingFiles:
 
         view.purge_missing_files()
 
-        assert boxes == []
-        assert notifications == [
+        # 2026-10-30: no purge confirmation, but an offer to remove the
+        # kept song completely - said Yes to here
+        assert len(boxes) == 1 and boxes[0][1] == "Remove completely"
+        assert boxes[0][2].startswith(
             "1 missing file found, but nothing to remove - "
             "1 track with no file left is kept (1 on a playlist)."
-        ]
+        )
+        assert notifications and notifications[-1].startswith("Removed 1 song")
+        with ctx.session() as session:
+            assert session.scalar(select(func.count(Track.id))) == 0
+            assert session.scalar(select(func.count(PlaylistItem.id))) == 0
+
+    def test_saying_no_to_complete_removal_keeps_the_song(self, ctx, view, monkeypatch, tmp_path):
+        wav = tmp_path / "Artist" / "Album" / "01 Song.wav"
+        make_silent_wav(wav)
+        with ctx.session() as session:
+            scanner.scan_folder(session, tmp_path)
+            session.add(PlayEvent(track_id=session.scalar(select(Track.id))))
+        wav.unlink()
+        monkeypatch.setattr(
+            settings_module.QMessageBox,
+            "question",
+            staticmethod(lambda *a, **k: settings_module.QMessageBox.No),
+        )
+
+        view.purge_missing_files()
+
         with ctx.session() as session:
             assert session.scalar(select(func.count(Track.id))) == 1
+
+    def test_after_a_purge_the_kept_songs_can_go_too(self, ctx, view, monkeypatch, tmp_path):
+        kept = tmp_path / "Artist" / "Album" / "01 Kept.wav"
+        plain = tmp_path / "Artist" / "Album" / "02 Plain.wav"
+        make_silent_wav(kept)
+        make_silent_wav(plain)
+        with ctx.session() as session:
+            scanner.scan_folder(session, tmp_path)
+            session.add(PlayEvent(track_id=session.scalar(select(Track.id).where(Track.title == "Kept"))))
+        kept.unlink()
+        plain.unlink()
+        titles = []
+        monkeypatch.setattr(
+            settings_module.QMessageBox,
+            "question",
+            staticmethod(lambda *a, **k: titles.append(a[1]) or settings_module.QMessageBox.Yes),
+        )
+
+        view.purge_missing_files()
+
+        assert titles == ["Purge missing files", "Remove completely"]
+        with ctx.session() as session:
+            assert session.scalar(select(func.count(Track.id))) == 0
 
     def test_confirmation_counts_tracks_that_will_go_not_missing_files(
         self, ctx, view, monkeypatch, tmp_path

@@ -286,6 +286,7 @@ class LibraryView(BaseView):
         self.artist_detail.releaseActivated.connect(self._open_release_from_artist)
         self.artist_detail.previousArtistRequested.connect(lambda: self._step_artist(-1))
         self.artist_detail.nextArtistRequested.connect(lambda: self._step_artist(1))
+        self.artist_detail.removeFromLibraryRequested.connect(self.remove_from_library)
         return self.artist_detail
 
     def _artist_order(self, artist_id: int) -> list:
@@ -376,6 +377,7 @@ class LibraryView(BaseView):
         self.details_table.trackActivated.connect(self._play_from_details)
         # the tag editor (ui/widgets/tag_editor.py)
         self.details_table.editTagsRequested.connect(self.edit_tags)
+        self.details_table.removeFromLibraryRequested.connect(self.remove_from_library)
         self.details_table.updated.connect(self._refresh_jump_bar)
         # No Jukebox column here (room for the title instead - see
         # track_details_table.py's module docstring); tracks are added to
@@ -841,6 +843,62 @@ class LibraryView(BaseView):
         dialog.exec()
         if hasattr(dialog, "deleteLater"):
             dialog.deleteLater()
+
+    def _confirm_remove(self, count: int) -> bool:  # pragma: no cover - dialog
+        from PySide6.QtWidgets import QMessageBox
+
+        what = "this song" if count == 1 else f"these {count} songs"
+        return QMessageBox.question(
+            self, "Remove from library",
+            f"Remove {what} from the library?\n\n"
+            "There's no file left. Plays, playlist places, chart matches and "
+            "jukebox sides go with it (or move to the copy you have, when "
+            "it's plainly the same song). An album or artist left with "
+            "nothing is removed too. A backup of the library is made daily.",
+        ) == QMessageBox.Yes
+
+    #: tests swap the question out
+    confirm_remove = None
+
+    def remove_from_library(self, track_ids: list) -> None:
+        """Right-click "Remove from library" on songs with no file left
+        (Title Details, an artist's Top Tracks) - services/track_removal.py."""
+        from ...services import track_removal
+
+        if not track_ids:
+            return
+        ask = self.confirm_remove or self._confirm_remove
+        if not ask(len(track_ids)):
+            return
+        with self.ctx.session() as session:
+            result = track_removal.remove_fileless_tracks(session, track_ids)
+        self.ctx.notify(result.summary())
+        if not result.removed:
+            return
+        self.ctx.libraryChanged.emit()
+        self._after_removal()
+
+    def _after_removal(self) -> None:
+        """The artist or album page on screen may be the one just emptied:
+        go back to its grid, or reload it."""
+        pane = self.panes.currentIndex()
+        if pane == PANE_ARTIST_DETAIL and self.artist_detail.artist_id is not None:
+            with self.ctx.session() as session:
+                alive = session.get(Artist, self.artist_detail.artist_id) is not None
+            if alive:
+                self.artist_detail.set_artist(self.artist_detail.artist_id,
+                                              root_label=(self._artist_root or ("Artists",))[0])
+            else:
+                self._loaded.discard(BROWSE_ARTIST)
+                self.panes.setCurrentIndex(PANE_ARTIST_GRID)
+                if self._mode == BROWSE_ARTIST:
+                    self._load_artists()
+        elif pane == PANE_RELEASE_DETAIL:
+            release_id = self.album_detail.release_id
+            with self.ctx.session() as session:
+                alive = release_id is not None and session.get(Release, release_id) is not None
+            if not alive:
+                self.panes.setCurrentIndex(PANE_ALBUM_GRID)
 
     def _on_rating_changed(self, track_id: int, rating: int) -> None:
         with self.ctx.session() as session:

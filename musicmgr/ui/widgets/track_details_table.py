@@ -649,6 +649,8 @@ class TrackDetailsTable(QWidget):
     #: "Edit tags…" on the selected songs, from the button beside Group by
     #: or a right-click. LibraryView opens the editor (ui/widgets/tag_editor.py).
     editTagsRequested = Signal(list)  # track ids
+    #: "Remove from library" on songs with no file left (services/track_removal.py)
+    removeFromLibraryRequested = Signal(list)  # track ids
     updated = Signal()
 
     def __init__(self, parent=None) -> None:
@@ -806,7 +808,26 @@ class TrackDetailsTable(QWidget):
         menu = QMenu(self.view)
         label = f"Edit tags of {len(ids)} songs…" if len(ids) > 1 else "Edit tags…"
         menu.addAction(label).triggered.connect(lambda: self.editTagsRequested.emit(ids))
+        fileless = self.selected_fileless_track_ids()
+        if fileless and len(fileless) == len(ids):
+            menu.addSeparator()
+            remove = (f"Remove {len(ids)} songs from library…" if len(ids) > 1
+                      else "Remove from library…")
+            menu.addAction(remove).triggered.connect(
+                lambda: self.removeFromLibraryRequested.emit(fileless))
         menu.exec(self.view.viewport().mapToGlobal(pos))
+
+    def selected_fileless_track_ids(self) -> list[int]:
+        """The selected songs with no file left - `path` is only set for a
+        file that isn't flagged missing (lib.list_track_details). Only
+        these can be removed from the library by hand."""
+        ids: list[int] = []
+        for r in sorted({i.row() for i in self.view.selectionModel().selectedRows()}):
+            row = self.model.row_at(r)
+            if (row is not None and not row.is_video and row.track_id and not row.path
+                    and row.track_id not in ids):
+                ids.append(row.track_id)
+        return ids
 
     # -- grouping (see class docstring) -----------------------------------------
 

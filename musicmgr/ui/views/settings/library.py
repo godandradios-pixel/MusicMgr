@@ -18,6 +18,7 @@ from ....db.models import WatchedFolder
 from ....db.session import reset_database
 from ....services import library as lib
 from ....services import scanner
+from ....services import track_removal
 from ....services import video_scanner
 from ....services import videos as vid_svc
 from ...widgets.common import TouchButton, TouchList, dim_label
@@ -181,10 +182,12 @@ class LibrarySection:
         # say what a purge will actually do, track by track, rather than
         # counting missing *file rows*
         if not summary.removable and not summary.stale_copies and not missing_videos:
-            self.ctx.notify(
-                f"{_plural(summary.files, 'missing file')} found, but nothing to "
-                "remove - " + _purge_breakdown(summary)
-            )
+            message = (f"{_plural(summary.files, 'missing file')} found, but nothing to "
+                       "remove - " + _purge_breakdown(summary))
+            if summary.kept_total:
+                self._offer_complete_removal(message, summary.kept_total)
+            else:
+                self.ctx.notify(message)
             return
         will = []
         if summary.stale_copies:
@@ -228,6 +231,41 @@ class LibrarySection:
             f"Removed {copies}{tracks_removed} missing track{'s' if tracks_removed != 1 else ''} "
             f"and {videos_removed} missing video{'s' if videos_removed != 1 else ''}"
         )
+        self.refresh()
+        with self.ctx.session() as session:
+            still_kept = len(track_removal.fileless_track_ids(session))
+        if still_kept:
+            self._offer_complete_removal(
+                f"{_plural(still_kept, 'track')} with no file left "
+                f"{'was' if still_kept == 1 else 'were'} kept for {'its' if still_kept == 1 else 'their'} "
+                "plays, playlist places, chart matches or jukebox sides.",
+                still_kept,
+            )
+
+    def _offer_complete_removal(self, lead: str, count: int) -> None:
+        """2026-10-30 - James: after Purge finds what it keeps, offer to
+        remove those completely too (services/track_removal.py). A purge
+        keeps a song with no file when something still points at it; this
+        is the "I don't care, take it out" answer."""
+        them = "it" if count == 1 else f"all {count}"
+        confirm = QMessageBox.question(
+            self,
+            "Remove completely",
+            f"{lead}\n\nRemove {them} completely?\n\n"
+            "Their plays and playlist places go too, chart entries they matched "
+            "become unmatched (Re-match can link a copy you have), and their "
+            "jukebox sides are emptied. Albums and artists left with nothing "
+            "are removed. Nothing on disk is touched.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        with self.ctx.session() as session:
+            result = track_removal.remove_fileless_tracks(
+                session, track_removal.fileless_track_ids(session))
+        self.ctx.notify(result.summary())
+        if result.removed:
+            self.ctx.libraryChanged.emit()
         self.refresh()
 
     def nuke_library(self) -> None:

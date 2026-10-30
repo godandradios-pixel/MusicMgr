@@ -34,6 +34,7 @@ from .common import (
     EmptyState,
     NeighborArrows,
     PopularityDownloadThread,
+    ROLE_PAYLOAD,
     TouchButton,
     TouchList,
     dim_label,
@@ -127,6 +128,9 @@ class ArtistDetailPanel(QWidget):
     #: answer back through set_neighbors()
     previousArtistRequested = Signal()
     nextArtistRequested = Signal()
+    #: right-click "Remove from library" on a Top Tracks song with no file
+    #: left - LibraryView asks first and does it (services/track_removal.py)
+    removeFromLibraryRequested = Signal(list)  # track ids
 
     def __init__(self, ctx, parent=None) -> None:
         super().__init__(parent)
@@ -304,6 +308,8 @@ class ArtistDetailPanel(QWidget):
         # RowDelegate's primary/secondary two-line layout is tuned for it.
         self.top_tracks = TouchList()
         self.top_tracks.itemActivatedPayload.connect(self._play_top_track)
+        self.top_tracks.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.top_tracks.customContextMenuRequested.connect(self._on_top_track_menu)
 
         self.top_tracks_stack = QStackedWidget()
         self.top_tracks_stack.addWidget(self.top_tracks_empty)  # 0
@@ -681,6 +687,37 @@ class ArtistDetailPanel(QWidget):
         self.ctx.play_tracks(
             self._playable_top_tracks, start=idx, source=f"artist:{self._artist_id}:top"
         )
+
+
+    def top_track_id_at(self, row: int) -> Optional[int]:
+        """The owned song behind Top Tracks row `row`, or None (a "Not in
+        your library" row, or no such row)."""
+        item = self.top_tracks.item(row)
+        if item is None:
+            return None
+        payload = item.data(ROLE_PAYLOAD) or {}
+        idx = payload.get("track_index")
+        if idx is None or not 0 <= idx < len(self._playable_top_tracks):
+            return None
+        return self._playable_top_tracks[idx].id
+
+    def _on_top_track_menu(self, pos) -> None:  # pragma: no cover - menu
+        from PySide6.QtWidgets import QMenu
+
+        from ...services import track_removal
+
+        item = self.top_tracks.itemAt(pos)
+        track_id = self.top_track_id_at(self.top_tracks.row(item)) if item is not None else None
+        if track_id is None:
+            return
+        with self.ctx.session() as session:
+            removable = track_removal.is_removable(session, track_id)
+        if not removable:
+            return  # only songs with no file left have anything to offer
+        menu = QMenu(self.top_tracks)
+        menu.addAction("Remove from library…").triggered.connect(
+            lambda: self.removeFromLibraryRequested.emit([track_id]))
+        menu.exec(self.top_tracks.viewport().mapToGlobal(pos))
 
 
 def _release_caption(track: Track) -> str:
