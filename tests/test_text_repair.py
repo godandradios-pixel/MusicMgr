@@ -61,11 +61,32 @@ class TestRepairer:
         assert r.repair(f"Destiny's Child feat. Beyonc{L}") == "Destiny's Child feat. Beyoncé"
 
     def test_ambiguous_left_alone(self):
-        r = ChartTextRepairer(["Café", "Cafè"])
+        r = ChartTextRepairer(["Café", "Cafè"], known_words=())
         assert r.repair(f"Caf{L}") == f"Caf{L}"
 
     def test_unknown_left_alone(self):
-        assert ChartTextRepairer(["Madonna"]).repair(f"Expos{L}") == f"Expos{L}"
+        assert ChartTextRepairer(["Madonna"], known_words=()).repair(f"Expos{L}") == f"Expos{L}"
+
+    # James's library, 2026-10-30: most \ufffd were Wikipedia's non-breaking
+    # spaces, sometimes swallowed together with an accented letter
+    @pytest.mark.parametrize("bad,good", [
+        (f"Coolio{L}featuring{L}L.V.", "Coolio featuring L.V."),
+        (f"Beyonc{L}featuring{L}Sean Paul", "Beyoncé featuring Sean Paul"),
+        (f"Jay-Z{L}featuring{L}Beyonc{L}", "Jay-Z featuring Beyoncé"),
+        (f"Method Man{L}featuring{L}Mary J. Blige", "Method Man featuring Mary J. Blige"),
+        (f"Ros{L}and{L}Bruno Mars", "Rosé and Bruno Mars"),
+        (f"Christina Aguilera,{L}Lil' Kim,{L}M{L}a{L}and{L}Pink",
+         "Christina Aguilera, Lil' Kim, Mýa and Pink"),
+        (f"Eric Ben{L}t{L}featuring{L}Tamia", "Eric Benét featuring Tamia"),
+        (f"John Legend{L}featuring{L}Andr{L} 3000", "John Legend featuring André 3000"),
+        (f"Major Lazer{L}featuring{L}Justin Bieber{L}and{L}M{L}",
+         "Major Lazer featuring Justin Bieber and MØ"),
+        (f"Diddy {L} Dirty Money", "Diddy \u2013 Dirty Money"),
+        (f"Macarena{L}(Bayside Boys Mix)", "Macarena (Bayside Boys Mix)"),
+    ])
+    def test_wikipedia_spaces(self, bad, good):
+        names = ["Method Man", "Beenie Man", "Man in the Mirror", "Jay-Z", "Jay-Z and Kanye West"]
+        assert ChartTextRepairer(names).repair(bad) == good
 
     def test_clean_text_untouched(self):
         assert ChartTextRepairer([]).repair("Let Me Be the One") == "Let Me Be the One"

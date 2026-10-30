@@ -83,8 +83,34 @@ def is_damaged(text: Optional[str]) -> bool:
 
 
 # -- U+FFFD --------------------------------------------------------------------
+#
+# 2026-10-30, second pass (James's library: 1,031 rows, none fixed by the
+# first pass). In practice a \ufffd in a chart row is usually NOT a lost
+# letter - the year-end lists came from Wikipedia, which puts non-breaking
+# spaces around "featuring"/"and"/"&", and each one became \ufffd:
+#   "Coolio\ufffdfeaturing\ufffdL.V."       -> a space
+#   "Beyonc\ufffdfeaturing\ufffdSean Paul"  -> é *and* the space (one \ufffd
+#                                         swallowed both bytes)
+#   "M\ufffda", "Thal\ufffda", "Eric Ben\ufffdt" -> a letter inside a word
+#   "Diddy \ufffd Dirty Money"           -> a dash between two spaces
+# So each \ufffd is decided on its own, from the words either side of it:
+# a letter when a known word fits (library + chart names + the short list
+# below), otherwise a space when it sits between two non-space characters,
+# a dash when it sits between two spaces, else it's left alone.
 
-_WORD = re.compile(r"[^\s,&/()\[\]\"]+")
+#: accented names that turn up on the charts, for when the library doesn't
+#: have the artist itself
+KNOWN_WORDS = (
+    "Beyoncé", "Rosé", "Mýa", "Thalía", "MØ", "Chanté", "Johntá", "Jhené", "Benét",
+    "Zhané", "Solé", "André", "Exposé", "Río", "Céline", "Sinéad", "Björk", "Mötley",
+    "Crüe", "Ramírez", "José", "Señorita", "Café", "Fiancé", "Déjà", "Rós", "Gómez",
+    "Hernández", "Martínez", "Rodríguez", "Pérez", "Peña", "Muñoz", "Ibáñez", "Niño",
+    "Tiësto", "Motörhead", "Blue Öyster", "Röyksopp", "Mónica", "Bebé", "Corazón",
+    "Canción", "Amor", "Sueño", "Mañana", "Pequeño", "Él", "Así", "Más",
+)
+
+_WORD = re.compile(r"[^\W\d_]+")
+_NON_ASCII_RUN = re.compile(r"[^\x00-\x7f]{1,2}")
 
 
 def _pattern(damaged: str, gap: str) -> re.Pattern:
@@ -101,18 +127,34 @@ _ANY_LETTER = "[^\\W\\d_]"
 class ChartTextRepairer:
     """Fixes chart titles and artists against a set of known-good names."""
 
-    def __init__(self, names: Iterable[str]) -> None:
+    def __init__(self, names: Iterable[str], known_words: Iterable[str] = KNOWN_WORDS) -> None:
         self._names: list[str] = []
-        self._words: Counter = Counter()
+        #: (letters before, letters after) the accented run, lowercased ->
+        #: the run as spelled: "Beyoncé" files ("beyonc", "") -> "é"
+        self._fills: dict[tuple[str, str], Counter] = {}
+        #: how often each whole word turns up, lowercased: "Man" (Method Man,
+        #: Beenie Man...) is far more common than "Maná", so "Method
+        #: Man\ufffdfeaturing" gets a space; "Ros" is no more common than "Rosé",
+        #: so "Ros\ufffdand Bruno Mars" gets the é
+        self._plain: Counter = Counter()
         seen: set[str] = set()
         for name in names:
             if not name or is_damaged(name) or name in seen:
                 continue
             seen.add(name)
             self._names.append(name)
-            for w in _WORD.findall(name):
-                self._words[w] += 1
+            self._learn(name)
+        for word in known_words:
+            self._learn(word)
         self._cache: dict[str, str] = {}
+
+    def _learn(self, text: str) -> None:
+        for word in _WORD.findall(text):
+            self._plain[word.lower()] += 1
+            for m in _NON_ASCII_RUN.finditer(word):
+                key = (word[:m.start()].lower(), word[m.end():].lower())
+                if key != ("", ""):
+                    self._fills.setdefault(key, Counter())[m.group()] += 1
 
     @classmethod
     def from_library(cls, session: Session) -> "ChartTextRepairer":
@@ -135,30 +177,57 @@ class ChartTextRepairer:
             return None
         return next(iter(by_fold.values())).most_common(1)[0][0]
 
-    def _lookup(self, damaged: str, pool: Iterable[str], counts=None) -> Optional[str]:
-        pool = list(pool)
+    def _lookup(self, damaged: str) -> Optional[str]:
         for gap in (_NON_ASCII, _ANY_LETTER):
             pat = _pattern(damaged, gap)
-            hit = self._one((n for n in pool if pat.fullmatch(n)), counts)
+            hit = self._one(n for n in self._names if pat.fullmatch(n))
             if hit:
                 return hit
         return None
 
+    def _letter(self, before: str, after: str) -> Optional[str]:
+        found = self._fills.get((before.lower(), after.lower()))
+        return self._one(found, found) if found else None
+
+    def _decide(self, left: str, right: str) -> Optional[str]:
+        """What one \ufffd between `left` and `right` stood for, or None."""
+        lc, rc = left[-1:], right[:1]
+        m = re.search(r"[^\W\d_]+$", left)
+        wl = m.group() if m else ""
+        m = re.match(r"[^\W\d_]+", right)
+        wr = m.group() if m else ""
+        if wl and wr:
+            x = self._letter(wl, wr)                  # "M\ufffda" -> "Mýa"
+            if x:
+                return x
+        joined = bool(rc) and not rc.isspace()      # a space could fit here
+        if wl and (len(wl) >= 2 or not joined):
+            x = self._letter(wl, "")                  # "Beyonc\ufffd..." -> "Beyoncé"
+            if x and not (joined and self._plain[wl.lower()] > self._plain[(wl + x).lower()]):
+                return x + (" " if joined and rc not in ",.;:!?)" else "")
+        if wr and not wl:
+            x = self._letter("", wr)
+            if x:
+                return x
+        if lc and rc and not lc.isspace() and not rc.isspace():
+            return " "                                # a non-breaking space
+        if lc == " " and rc == " ":
+            return "\u2013"                           # "Diddy \ufffd Dirty Money"
+        return None
+
     def _fill(self, text: str) -> str:
-        whole = self._lookup(text, self._names)
+        whole = self._lookup(text)
         if whole:
             return whole
-        # word by word: "Destiny's Child feat. Beyonc�"
-        out = []
-        for piece in re.split(r"(\s+)", text):
-            if REPLACEMENT in piece:
-                m = _WORD.search(piece)
-                if m and REPLACEMENT in m.group():
-                    hit = self._lookup(m.group(), self._words, self._words)
-                    if hit:
-                        piece = piece[:m.start()] + hit + piece[m.end():]
-            out.append(piece)
-        return "".join(out)
+        parts = text.split(REPLACEMENT)
+        out = [parts[0]]
+        for i in range(1, len(parts)):
+            # what's been decided so far, so "Ben\ufffdt\ufffdfeaturing" sees
+            # "Benét" before its second \ufffd, not just "t"
+            choice = self._decide("".join(out), parts[i])
+            out.append(REPLACEMENT if choice is None else choice)
+            out.append(parts[i])
+        return re.sub(r"  +", " ", "".join(out)).strip()
 
     def repair(self, text: Optional[str]) -> Optional[str]:
         if not text or not is_damaged(text):
