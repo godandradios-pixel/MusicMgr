@@ -695,12 +695,18 @@ class AlbumTracksPanel(QWidget):
                     Track.duration_ms,
                     playable.c.file_id,
                     Track.position,
+                    Track.artist_display,
                 )
                 .outerjoin(playable, playable.c.track_id == Track.id)
                 .order_by(Track.release_id, Track.disc_no, Track.track_no, Track.id)
             )
             by_release: dict[int, list[TrackEntry]] = {}
-            for release_id, tid, disc, no, title, ms, file_id, pos in track_rows:
+            #: each track's own artist tag - searchable like a credit, since
+            #: compilation tracks often have no credit rows (Mya, 2026-10-30)
+            track_artist: dict[int, str] = {}
+            for release_id, tid, disc, no, title, ms, file_id, pos, t_artist in track_rows:
+                if t_artist:
+                    track_artist[tid] = t_artist
                 by_release.setdefault(release_id, []).append(
                     TrackEntry(
                         track_id=tid,
@@ -776,7 +782,12 @@ class AlbumTracksPanel(QWidget):
                 own = {artist_key(n) for n in split_artists(release.artist_display or "")}
                 own.add(key)
                 for t in tracks:
-                    guests = [n for n in credited.get(t.track_id, ()) if artist_key(n) not in own]
+                    names = list(credited.get(t.track_id, ()))
+                    if t.track_id in track_artist:
+                        # split, so the album's own artist in "Usher feat.
+                        # Ludacris" still doesn't make Usher's album a hit
+                        names.extend(split_artists(track_artist[t.track_id]))
+                    guests = list(dict.fromkeys(n for n in names if artist_key(n) not in own))
                     t.guests = " / ".join(guests).lower()
                 blocks.append(
                     Block(

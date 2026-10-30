@@ -59,3 +59,19 @@ def test_compilation_performer_is_found(ctx, session):
     assert _visible(panel) == [("Now 12", ["Hot in Herre"])]
     panel.set_filter_text("")
     assert _visible(panel) == [("Now 12", ["Hot in Herre", "Angel"])]
+
+
+def test_compilation_track_with_only_an_artist_tag_is_found(ctx, session):
+    # 2026-10-30: Mýa's songs sit on Billboard compilations with no credit
+    # rows - only the track's own artist tag - and "mya" found nothing
+    release = Release(title="1999 Billboard Top Hits", title_key="1999 billboard top hits",
+                      artist_display="Various Artists")
+    session.add(release)
+    session.flush()
+    session.add(Track(release_id=release.id, title="It's All About Me",
+                      title_key="its all about me", artist_display="Mýa ft. Sisqó"))
+    session.add(Track(release_id=release.id, title="Angel", title_key="angel",
+                      artist_display="Shaggy"))
+    panel = _panel(ctx, session)
+    panel.set_filter_text("mya")
+    assert _visible(panel) == [("1999 Billboard Top Hits", ["It's All About Me"])]

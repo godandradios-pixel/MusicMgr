@@ -64,3 +64,15 @@ def test_smart_playlist_rule(session):
     for op, value in (("contains", "xpos"), ("startswith", "expo"), ("is", "EXPOSE")):
         cond = playlists._rule_clause("artist", op, value)
         assert session.scalar(select(Track.title).where(cond)) == "Let Me Be the One", op
+
+
+def test_title_details_filter_matches_the_songs_own_artist():
+    from musicmgr.ui.widgets.track_details_table import TrackDetailRow, TrackDetailsTable
+
+    row = TrackDetailRow(track_id=1, genre="Pop", album_artist="Various Artists",
+                         album="1999 Billboard Top Hits", track_no=3,
+                         title="It's All About Me", duration_ms=270000, year=1998,
+                         rating=None, sort_key="its all about me", artist="Mýa ft. Sisqó")
+    assert TrackDetailsTable._row_matches(row, fold("mya"))
+    assert TrackDetailsTable._row_matches(row, fold("Sisqo"))
+    assert not TrackDetailsTable._row_matches(row, fold("shaggy"))

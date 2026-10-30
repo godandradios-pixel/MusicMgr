@@ -878,7 +878,8 @@ class TrackDetailsTable(QWidget):
 
     @staticmethod
     def _row_matches(row: TrackDetailRow, needle: str) -> bool:
-        """Every column the table shows is searchable. Track #, Time and
+        """Every column the table shows is searchable, plus the song's own
+        artist (a compilation track's album artist is "Various Artists"). Track #, Time and
         Year match the text the column displays ("3:45", "1978", "4"), and
         Rating matches its bare star count ("5"). A track on the jukebox
         board matches the word "jukebox". A video row has no track #/time/
@@ -890,6 +891,9 @@ class TrackDetailsTable(QWidget):
             needle in fold(row.title)
             or needle in fold(row.genre)
             or needle in fold(row.album_artist)
+            # the song's own artist too, so "mya" finds her songs on
+            # Various Artists compilations (2026-10-30)
+            or needle in fold(row.artist)
             or needle in fold(row.album)
             or (row.track_no is not None and needle in str(row.track_no))
             or needle in format_duration(row.duration_ms).lower()
