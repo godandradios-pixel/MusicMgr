@@ -70,7 +70,7 @@ def test_files_gone_and_files_never_imported(session, tmp_path):
 
     missing = report.get("missing_files")
     assert missing.count == 1 and "Red Barchetta" in missing.examples[0]
-    assert missing.fix_label == "" and "Verify" in missing.hint
+    assert missing.fix_label == "Remove them" and "kept" in missing.hint  # 2026-10-31: was Verify files
     new = report.get("not_imported")
     assert new.count == 2
     assert {kind for kind, _ in new.data} == {"audio", "video"}

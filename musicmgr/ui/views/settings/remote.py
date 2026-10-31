@@ -89,6 +89,8 @@ class RemoteSection:
         # phone's Ask box. The AI needs a key for the chosen model - Gemini's
         # is free (Google AI Studio), Claude's is paid (Anthropic); without
         # one only the plain phrasings work (offline). Each key is kept.
+        # 2026-10-31: the two key fields are made and loaded here but shown
+        # under Online services with the other keys (maintenance.py).
         self.ask_model_combo = QComboBox()
         for model_id, label, _provider in voice_ask.MODELS:
             self.ask_model_combo.addItem(label, model_id)
@@ -106,11 +108,7 @@ class RemoteSection:
         self.ask_status.setWordWrap(True)
         rgrid.addWidget(QLabel("Ask with"), 4, 0)
         rgrid.addWidget(self.ask_model_combo, 4, 1, alignment=Qt.AlignLeft)
-        rgrid.addWidget(QLabel("Google AI Studio key"), 5, 0)
-        rgrid.addWidget(self.ask_gemini_key_edit, 5, 1, 1, 2)
-        rgrid.addWidget(QLabel("Anthropic API key"), 6, 0)
-        rgrid.addWidget(self.ask_key_edit, 6, 1, 1, 2)
-        rgrid.addWidget(self.ask_status, 7, 0, 1, 3)
+        rgrid.addWidget(self.ask_status, 5, 0, 1, 3)
         rgrid.setColumnStretch(1, 1)
         body.addWidget(remote_card)
         self._load_ask_prefs()
@@ -198,7 +196,7 @@ class RemoteSection:
         else:
             which = "a free Google AI Studio key" if gemini else "an Anthropic API key"
             self.ask_status.setText(
-                f"Ask: add {which} above. Until then the phone's Ask box only understands plain "
+                f"Ask: add {which} under Online services. Until then the phone's Ask box only understands plain "
                 "requests - “play Elvis”, “top 20 of 1972”, “number ones from 1965”, "
                 "“playlist Road Trip”.")
 

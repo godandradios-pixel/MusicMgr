@@ -10,9 +10,12 @@ library first (backups\\library-before-health-fix-<time>.db).
 `check_library` is read-only and returns a `HealthReport` of `Finding`s;
 `apply_fix(session, key)` runs one finding's fix. The checks:
 
-- **missing_files** - song and video records whose file is gone. No fix
-  here: Verify files › Verify… already removes them, keeping songs that
-  still have history.
+- **missing_files** - song and video records whose file is gone. Fix:
+  "Remove them" - Settings' own purge (settings/library.py:
+  purge_missing_files), which re-checks the disk, asks first, keeps songs
+  that still have history and then offers to remove those too. It runs in
+  Settings, not apply_fix, because it asks questions along the way
+  (2026-10-31: this replaced the separate Verify files row).
 - **not_imported** - music and video files in the watched folders that
   the library doesn't have. Fix: import them.
 - **no_file_songs** - songs with no file record at all (kept alive by a
@@ -143,8 +146,10 @@ def _check_files(session: Session, report: HealthReport, progress, should_stop) 
     missing = Finding(
         "missing_files", "Records whose file is gone",
         "Songs and videos the library lists whose file can no longer be found.",
-        hint="Remove them with Verify files › Verify… (songs with playlists, plays or "
-             "chart places are kept).")
+        fix_label="Remove them",
+        hint="Songs with plays, playlist places, chart matches or jukebox sides are kept "
+             "at first - you're then asked whether to remove those too. If a drive just "
+             "isn't connected, connect it and check again instead.")
     known_audio: set[str] = set()
     rows = session.execute(select(MediaFile.path, Track.title, Track.artist_display)
                            .join(Track, Track.id == MediaFile.track_id)).all()

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
-from PySide6.QtWidgets import QDialog, QFileDialog, QFrame, QMessageBox, QVBoxLayout
+from PySide6.QtWidgets import (
+    QDialog, QFileDialog, QFrame, QGridLayout, QLabel, QMessageBox, QVBoxLayout,
+)
 from ....services import artist_bio_downloader as bio_dl
 from ....services import artist_images as art_svc
 from ....services import artwork_downloader as artwork_dl
@@ -21,6 +23,7 @@ from ...widgets.common import (
     RematchChartsThread,
     TouchButton,
     clear_art_cache,
+    dim_label,
 )
 from .parts import (
     DiscogsCredentialsDialog,
@@ -74,22 +77,10 @@ class MaintenanceSection:
             "Open…",
             self.view_missing_metadata,
         )
-        # USB sync step 2 - see services/artwork_names.py
-        add_tool_row(
-            "Relink artwork",
-            "Point albums and artists at their pictures in the artwork and artists folders "
-            "(runs by itself after a USB sync).",
-            "Relink",
-            self.relink_artwork,
-        )
-        # volume levelling, see services/replaygain.py
-        add_tool_row(
-            "Volume levels",
-            "Read ReplayGain tags, or measure loudness, for every track without a level yet. "
-            "Your music files aren't changed.",
-            "Analyze…",
-            self.analyze_loudness,
-        )
+        # 2026-10-31: no Relink artwork row - it runs by itself after a USB
+        # sync and at the end of Missing info › Fill in everything
+        # (_finish_fill). Volume levels › Analyze… moved to Playback, beside
+        # the Volume levelling setting it feeds (settings/playback.py).
         # 2026-10-31: one row - re-matching goes on to offer the chart
         # playlists update (the old "Chart playlists" row), see
         # _on_rematch_done and services/charts.py:refresh_chart_playlists
@@ -102,21 +93,15 @@ class MaintenanceSection:
         )
 
         tools_group("Files & data", "files")
-        # one button: check the disk, then offer to purge what's gone -
-        # see settings/files.py:_on_verify_done
-        add_tool_row(
-            "Verify files",
-            "Check that every track and video file can still be found on disk, then "
-            "offer to remove the ones that are gone.",
-            "Verify…",
-            self.verify_files,
-        )
         # one check-up of the library against the disk and itself, with a
-        # fix beside each finding - see services/library_health.py
+        # fix beside each finding - see services/library_health.py.
+        # 2026-10-31: the old Verify files row is its "Records whose file is
+        # gone" card, whose Remove them runs purge_missing_files
         add_tool_row(
             "Library health",
-            "Check for missing files, files never imported, broken links, chart songs linked "
-            "to the wrong song, out-of-date chart playlists and charts with gaps.",
+            "Check for missing files (and remove them), files never imported, broken links, "
+            "chart songs linked to the wrong song, out-of-date chart playlists and charts "
+            "with gaps.",
             "Check…",
             self.check_library_health,
         )
@@ -157,9 +142,10 @@ class MaintenanceSection:
         )
 
         tools_group("Online services", "services")
-        # the Last.fm key (Track popularity) and Discogs token (Album
-        # artwork) are kept together here rather than beside the tools
-        # that use them
+        # every key MusicMgr uses, kept together here rather than beside the
+        # tools that use them: Last.fm (track popularity), Discogs (album
+        # artwork), and - 2026-10-31, moved from Phone remote - Google AI
+        # Studio and Anthropic (the phone remote's Ask box)
         add_tool_row(
             "Last.fm API key",
             "Set the free API key track popularity needs to fetch Last.fm charts.",
@@ -175,24 +161,36 @@ class MaintenanceSection:
             "Set token…",
             self.open_discogs_credentials,
         )
+        # the Ask keys stay plain fields that save as you leave them, as they
+        # did on Phone remote - built and loaded by _build_remote, which runs
+        # first (view.py), placed here
+        ask_keys = QGridLayout()
+        ask_keys.setContentsMargins(0, 12, 0, 12)
+        ask_keys.setHorizontalSpacing(18)
+        ask_keys.setVerticalSpacing(10)
+        ask_note = dim_label("For the phone remote's Ask box - the model is chosen under Phone remote.")
+        ask_note.setWordWrap(True)
+        ask_keys.addWidget(ask_note, 0, 0, 1, 2)
+        ask_keys.addWidget(QLabel("Google AI Studio key"), 1, 0)
+        ask_keys.addWidget(self.ask_gemini_key_edit, 1, 1)
+        ask_keys.addWidget(QLabel("Anthropic API key"), 2, 0)
+        ask_keys.addWidget(self.ask_key_edit, 2, 1)
+        ask_keys.setColumnStretch(1, 1)
+        tools["layout"].addLayout(ask_keys)
 
         _size_tool_row_buttons(tool_rows)
 
-    def relink_artwork(self) -> None:
-        """Maintenance → Relink artwork: point every release/artist at its
-        name-based picture (artwork\\<Artist> - <Title>.jpg,
-        artists\\<Artist>.jpg). The USB sync does this by itself after
-        pictures arrive; this is for files dropped in by hand."""
-        busy = self._busy_with()
-        if busy:
-            self.ctx.notify(busy)
-            return
+    def _relink_pictures(self) -> str:
+        """Point every release/artist at its name-based picture
+        (artwork\\<Artist> - <Title>.jpg, artists\\<Artist>.jpg) and
+        return what changed, or "" if nothing did. The USB sync does this by
+        itself after pictures arrive; for files dropped in by hand it runs
+        at the end of Fill in everything (2026-10-31: replaced the Relink
+        artwork row)."""
         with self.ctx.session() as db:
             result = artwork_names.relink(db)
         clear_art_cache()
-        self.ctx.notify(result.summary())
-        if result.covers or result.artist_images:
-            self.ctx.libraryChanged.emit()
+        return result.summary() if (result.covers or result.artist_images) else ""
 
     def import_artist_images(self) -> None:
         """Import artist images from a chosen folder on a background thread
@@ -681,7 +679,8 @@ class MaintenanceSection:
         looked up, then Discogs covers for releases with none, then Last.fm
         popularity - the three bulk jobs that need no answers along the way,
         one after another, with one confirmation up front and one summary at
-        the end. A job whose key/token isn't saved is skipped and named, and
+        the end - and finally relinking pictures in the artwork and artists
+        folders. A job whose key/token isn't saved is skipped and named, and
         Cancel stops the whole run (what finished stays). Artist photos need
         a folder chosen, so they stay their own button."""
         busy = self._busy_with()
@@ -715,8 +714,14 @@ class MaintenanceSection:
             skipped.append("track popularity - no Last.fm key saved (Online services)")
         skip_text = ("\n\nSkipped:\n" + "\n".join(f"  {s}" for s in skipped)) if skipped else ""
         if not steps:
-            QMessageBox.information(self, "Fill in everything",
-                                    "Nothing to fill in right now." + skip_text)
+            # still worth relinking pictures dropped into the folders by hand
+            relinked = self._relink_pictures()
+            if relinked:
+                self.ctx.libraryChanged.emit()
+            QMessageBox.information(
+                self, "Fill in everything",
+                (f"Pictures: {relinked}\n\n" if relinked else "")
+                + "Nothing else to fill in right now." + skip_text)
             return
         if not self._confirm_fill_in_everything(
             "This will:\n" + "\n".join(f"  • {w}" for w in will) + skip_text
@@ -763,6 +768,10 @@ class MaintenanceSection:
         return True
 
     def _finish_fill(self) -> None:
+        # pick up pictures put in the artwork/artists folders by hand too
+        relinked = self._relink_pictures()
+        if relinked:
+            self._fill_results.append(f"Pictures: {relinked}")
         results = self._fill_results or ["Nothing was filled in."]
         self._fill_steps = None
         self._fill_results = []
@@ -858,13 +867,15 @@ class MaintenanceSection:
         if thread is not None:
             thread.wait()
         self._health_thread = None
-        dialog = LibraryHealthDialog(report, self)
+        dialog = LibraryHealthDialog(
+            report, self, remove_missing=lambda: self.purge_missing_files(recheck=True))
         dialog.fixed.connect(self._on_health_fixed)
         if dialog.exec() == LibraryHealthDialog.RECHECK:
             self.check_library_health()
 
     def _on_health_fixed(self, key: str, message: str) -> None:
-        self.ctx.notify(message)
+        if key != "missing_files":  # the purge already said what it did
+            self.ctx.notify(message)
         self._last_metadata_scan = None
         self.ctx.libraryChanged.emit()
         self.ctx.playlistsChanged.emit()

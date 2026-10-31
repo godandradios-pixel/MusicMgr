@@ -111,7 +111,6 @@ from ...widgets.common import (
     TouchButton,
     clear_art_cache,
     TouchList,
-    VerifyFilesThread,
     dim_label,
     guard_wheel,
 )

@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -139,7 +140,7 @@ class LibrarySection:
         self.ctx.notify("Folder removed. Existing tracks and videos were kept.")
         self.refresh()
 
-    def purge_missing_files(self, recheck: bool = True) -> None:
+    def purge_missing_files(self, recheck: bool = True) -> str:
         """Permanently delete both missing tracks and missing videos in one
         action.
 
@@ -168,32 +169,36 @@ class LibrarySection:
         and points at rescanning as the fix for a merely-moved drive rather
         than purging.
 
-        2026-10-31: there's no Purge button any more - Verify (settings/
-        files.py:_on_verify_done) calls this once its check finishes, with
-        recheck=False since it has just checked the disk itself.
+        2026-10-31: no button of its own - Library health's "Records whose
+        file is gone" card runs it ("Remove them"). Returns what it removed,
+        in words, or "" when nothing was removed (declined, or nothing
+        removable) - the card shows it as done.
         """
-        with self.ctx.session() as session:
-            # re-check disk first - see above. Their return values (files
-            # *newly* flagged this call) don't matter here; missing_summary
-            # reads the real totals off the refreshed flags.
-            if recheck:
-                scanner.mark_missing_files(session)
-                video_scanner.mark_missing_videos(session)
-            summary = scanner.missing_summary(session)
-            missing_videos = vid_svc.video_counts(session)["video_missing"]
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            with self.ctx.session() as session:
+                # re-check disk first - see above. Their return values (files
+                # *newly* flagged this call) don't matter here; missing_summary
+                # reads the real totals off the refreshed flags.
+                if recheck:
+                    scanner.mark_missing_files(session)
+                    video_scanner.mark_missing_videos(session)
+                summary = scanner.missing_summary(session)
+                missing_videos = vid_svc.video_counts(session)["video_missing"]
+        finally:
+            QApplication.restoreOverrideCursor()
         if not summary.files and not missing_videos:
             self.ctx.notify("No missing files to remove")
-            return
+            return ""
         # say what a purge will actually do, track by track, rather than
         # counting missing *file rows*
         if not summary.removable and not summary.stale_copies and not missing_videos:
             message = (f"{_plural(summary.files, 'missing file')} found, but nothing to "
                        "remove - " + _purge_breakdown(summary))
             if summary.kept_total:
-                self._offer_complete_removal(message, summary.kept_total)
-            else:
-                self.ctx.notify(message)
-            return
+                return self._offer_complete_removal(message, summary.kept_total)
+            self.ctx.notify(message)
+            return ""
         will = []
         if summary.stale_copies:
             will.append(
@@ -208,22 +213,22 @@ class LibrarySection:
         kept = _purge_breakdown(summary, removing=True)
         confirm = QMessageBox.question(
             self,
-            "Purge missing files",
+            "Remove missing files",
             f"{_plural(summary.files, 'file')} and "
             f"{_plural(missing_videos, 'video')} can't currently be found.\n\n"
-            "Purging will " + "; ".join(will) + "."
+            "This will " + "; ".join(will) + "."
             + (f" {kept}" if kept else "")
             + "\n\nThis never touches anything on disk - only MusicMgr's own "
             "records.\n\n"
             "If files are only missing because a drive isn't connected "
             "right now (or a watched folder points at an old location, "
             "like a path from a different machine), reconnect it or fix "
-            "the folder and scan again instead - anything purged here has "
+            "the folder and scan again instead - anything removed here has "
             "to be rescanned from scratch to come back.",
             QMessageBox.Yes | QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:
-            return
+            return ""
         with self.ctx.session() as session:
             copies_removed = scanner.purge_stale_copies(session)
             tracks_removed = scanner.purge_orphaned_tracks(session)
@@ -232,26 +237,31 @@ class LibrarySection:
             f"{copies_removed} stale cop{'y' if copies_removed == 1 else 'ies'}, "
             if copies_removed else ""
         )
-        self.ctx.notify(
+        done = (
             f"Removed {copies}{tracks_removed} missing track{'s' if tracks_removed != 1 else ''} "
             f"and {videos_removed} missing video{'s' if videos_removed != 1 else ''}"
         )
+        self.ctx.notify(done)
         self.refresh()
         with self.ctx.session() as session:
             still_kept = len(track_removal.fileless_track_ids(session))
         if still_kept:
-            self._offer_complete_removal(
+            also = self._offer_complete_removal(
                 f"{_plural(still_kept, 'track')} with no file left "
                 f"{'was' if still_kept == 1 else 'were'} kept for {'its' if still_kept == 1 else 'their'} "
                 "plays, playlist places, chart matches or jukebox sides.",
                 still_kept,
             )
+            if also:
+                done += f"; {also[0].lower()}{also[1:]}"
+        return done
 
-    def _offer_complete_removal(self, lead: str, count: int) -> None:
+    def _offer_complete_removal(self, lead: str, count: int) -> str:
         """2026-10-30 - James: after Purge finds what it keeps, offer to
         remove those completely too (services/track_removal.py). A purge
         keeps a song with no file when something still points at it; this
-        is the "I don't care, take it out" answer."""
+        is the "I don't care, take it out" answer. Returns what was done,
+        or "" if declined."""
         them = "it" if count == 1 else f"all {count}"
         confirm = QMessageBox.question(
             self,
@@ -264,7 +274,7 @@ class LibrarySection:
             QMessageBox.Yes | QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:
-            return
+            return ""
         with self.ctx.session() as session:
             result = track_removal.remove_fileless_tracks(
                 session, track_removal.fileless_track_ids(session))
@@ -272,6 +282,7 @@ class LibrarySection:
         if result.removed:
             self.ctx.libraryChanged.emit()
         self.refresh()
+        return result.summary()
 
     def nuke_library(self) -> None:
         """Permanently erase the entire library database and start over -
@@ -388,11 +399,6 @@ class LibrarySection:
         if self._artist_images_thread is not None and self._artist_images_thread.isRunning():
             self.ctx.notify(
                 "Artist images are importing — wait for it to finish before scanning"
-            )
-            return
-        if self._verify_thread is not None and self._verify_thread.isRunning():
-            self.ctx.notify(
-                "Files are being verified — wait for it to finish before scanning"
             )
             return
         if self._rematch_thread is not None and self._rematch_thread.isRunning():

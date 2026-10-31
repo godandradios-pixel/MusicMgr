@@ -1,4 +1,4 @@
-"""Settings › Files and data (verify and purge missing files, backups, data location)."""
+"""Settings › Files and data (backups, data location)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from ....services import library as lib
 from ....services import updater
 from ....services import library_backup
 from ....services import videos as vid_svc
-from ...widgets.common import VerifyFilesThread
 from ...widgets.backups import RestoreBackupDialog
 from .parts import (
     MigrationThread,
@@ -21,67 +20,8 @@ from .parts import (
 
 
 class FilesSection:
-    """Settings › Files and data (verify, back up / restore, locate, move): a mixin of SettingsView (view.py) - its
+    """Settings › Files and data (backups, data location): a mixin of SettingsView (view.py) - its
     methods share the view's state."""
-
-    def verify_files(self) -> None:
-        """Check that every audio and video file can still be found, on a
-        background thread with the page's progress bar - see
-        VerifyFilesThread (ui/widgets/common.py), which runs the audio and
-        video checks as two phases."""
-        if self._verify_thread is not None and self._verify_thread.isRunning():
-            self.ctx.notify("Already verifying files")
-            return
-        busy = self._busy_with()
-        if busy:
-            self.ctx.notify(busy)
-            return
-
-        self.progress.setVisible(True)
-        self.progress.setRange(0, 0)
-        self.progress_label.setText("Starting…")
-        self._verify_thread = VerifyFilesThread(parent=self)
-        self._verify_thread.progress.connect(self._on_verify_progress)
-        self._verify_thread.finished_with.connect(self._on_verify_done)
-        self._verify_thread.start()
-        self._show_cancel()
-
-    def _on_verify_progress(self, done: int, total: int, name: str) -> None:
-        if total <= 0:
-            self.progress.setRange(0, 0)
-            self.progress_label.setText(name or "Verifying…")
-        else:
-            self.progress.setRange(0, total)
-            self.progress.setValue(done)
-            self.progress_label.setText(f"{done}/{total}")
-
-    def _on_verify_done(self, missing: int) -> None:
-        """2026-10-31 - James: Verify and Purge are one action now. Almost
-        every time Verify finds missing files you want them purged, so once
-        the check finishes it goes straight on to purge_missing_files
-        (settings/library.py), which still asks before removing anything.
-        A cancelled check stops at the report - its missing flags are only
-        partial, so it's no basis for offering a purge."""
-        thread = self._verify_thread
-        cancelled = thread is not None and thread.isInterruptionRequested()
-        self.progress.setVisible(False)
-        self.progress_label.setText("")
-        self._hide_cancel(thread)
-        # show the running total too - the newly-flagged count alone misses
-        # files flagged by earlier scans
-        with self.ctx.session() as session:
-            total = lib.library_stats(session)["missing"]
-            total += vid_svc.video_counts(session)["video_missing"]
-        self.refresh()
-        if total == 0:
-            self.ctx.notify("All files found - nothing is missing")
-            return
-        self.ctx.notify(
-            f"{missing} file(s) newly marked missing, {total} missing in total"
-        )
-        if not cancelled:
-            # the disk was just checked - no need for the purge to check again
-            self.purge_missing_files(recheck=False)
 
     def back_up_library(self) -> None:
         QApplication.setOverrideCursor(Qt.WaitCursor)

@@ -1365,30 +1365,6 @@ class ArtistImagesImportThread(QThread):
         self.finished_with.emit(result)
 
 
-class VerifyFilesThread(QThread):
-    """Runs "Verify files" (scanner.mark_missing_files then
-    video_scanner.mark_missing_videos) off the UI thread, with progress.
-    Two phases, same `(0, 0, "<phase>")`-then-real-progress shape
-    MetadataScanThread's own scan uses for its own multi-phase run."""
-
-    progress = Signal(int, int, str)
-    finished_with = Signal(int)  # total newly-missing count, audio + video
-
-    def run(self) -> None:  # pragma: no cover - exercised interactively
-        emit = lambda done, total, name: self.progress.emit(done, total, name)
-        with session_scope() as session:
-            emit(0, 0, "Checking audio files…")
-            missing = scanner.mark_missing_files(
-                session, progress=emit, should_stop=self.isInterruptionRequested
-            )
-            if not self.isInterruptionRequested():
-                emit(0, 0, "Checking video files…")
-                missing += video_scanner.mark_missing_videos(
-                    session, progress=emit, should_stop=self.isInterruptionRequested
-                )
-        self.finished_with.emit(missing)
-
-
 class RematchChartsThread(QThread):
     """Runs `services.charts.rematch_all_charts` off the UI thread -
     Settings' "Charts" ("Re-match…") button, with progress."""

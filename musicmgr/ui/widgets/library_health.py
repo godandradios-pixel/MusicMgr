@@ -3,7 +3,7 @@ results dialog (2026-10-25; see services/library_health.py)."""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
@@ -156,9 +156,20 @@ class LibraryHealthDialog(QDialog):
     #: a fix changed the library: (finding key, message)
     fixed = Signal(str, str)
 
-    def __init__(self, report: lh.HealthReport, parent=None) -> None:
+    #: findings whose fix runs in Settings rather than apply_fix, because
+    #: it asks its own questions (see `remove_missing` below)
+    SETTINGS_FIXES = ("missing_files",)
+
+    def __init__(self, report: lh.HealthReport, parent=None,
+                 remove_missing: Optional[Callable[[], str]] = None) -> None:
+        """`remove_missing` runs the "Records whose file is gone" fix - the
+        Settings purge, which confirms (and backs nothing up: it only
+        removes records of files that are gone) - and returns what it did,
+        or "" if nothing was done. 2026-10-31: replaces the old Verify
+        files row."""
         super().__init__(parent)
         self.report = report
+        self._remove_missing = remove_missing
         self._fix_thread: Optional[HealthFixThread] = None
         self.setWindowTitle("Library health")
         self.resize(900, 760)
@@ -209,6 +220,14 @@ class LibraryHealthDialog(QDialog):
 
     def _fix(self, card: _FindingCard) -> None:
         if self._fix_thread is not None and self._fix_thread.isRunning():
+            return
+        if card.finding.key in self.SETTINGS_FIXES:
+            if self._remove_missing is None:
+                return
+            message = self._remove_missing()  # asks its own questions
+            if message:
+                card.mark_fixed(message)
+                self.fixed.emit(card.finding.key, message)
             return
         if not self._confirm(card.finding):
             return

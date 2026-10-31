@@ -23,7 +23,6 @@ from ...widgets.common import (
     MetadataScanThread,
     PopularityDownloadThread,
     RematchChartsThread,
-    VerifyFilesThread,
     dim_label,
     guard_wheel,
 )
@@ -69,7 +68,6 @@ class SettingsView(
         #: same QThread-with-a-progress-signal shape as everything above,
         #: so these scans report progress instead of blocking the UI thread.
         self._artist_images_thread: Optional[ArtistImagesImportThread] = None
-        self._verify_thread: Optional[VerifyFilesThread] = None
         self._rematch_thread: Optional[RematchChartsThread] = None
         self._loudness_thread: Optional[LoudnessAnalyzeThread] = None
         #: Settings › Duplicates (services/duplicates.py)
@@ -172,10 +170,11 @@ class SettingsView(
             lambda: f"Crossfade: {self.crossfade_combo.currentText()}  ·  "
                     f"Levelling: {self.levelling_combo.currentText().split(' — ')[0]}")
         self._sections["info"].set_summary(
-            lambda: "Artwork, biographies, popularity, volume levels, chart matching")
+            lambda: "Artwork, biographies, popularity, lyrics, chart matching")
         self._sections["files"].set_summary(
-            lambda: "Verify, check, back up, restore or move your library")
-        self._sections["services"].set_summary(lambda: "Last.fm and Discogs keys")
+            lambda: "Library health, duplicates, backups, data location")
+        self._sections["services"].set_summary(
+            lambda: "Last.fm, Discogs, Google AI Studio and Anthropic keys")
         self._sections["appearance"].set_summary(self._look_summary)
         self._sections["remote"].set_summary(self._remote_summary)
         self._sections["updates"].set_summary(lambda: self.version_label.text())
@@ -198,7 +197,6 @@ class SettingsView(
             (self._artwork_thread, "Album artwork is downloading — wait for it to finish first"),
             (self._metadata_scan_thread, "Missing info is scanning — wait for it to finish first"),
             (self._artist_images_thread, "Artist images are importing — wait for it to finish first"),
-            (self._verify_thread, "Files are being verified — wait for it to finish first"),
             (self._rematch_thread, "Charts are re-matching — wait for it to finish first"),
             (self._loudness_thread, "Volume levels are being analyzed — wait for it to finish first"),
             (self._duplicates_thread, "Duplicates are being searched for — wait for it to finish first"),
@@ -225,7 +223,6 @@ class SettingsView(
         "_artwork_thread",
         "_metadata_scan_thread",
         "_artist_images_thread",
-        "_verify_thread",
         "_rematch_thread",
         "_loudness_thread",
         "_duplicates_thread",

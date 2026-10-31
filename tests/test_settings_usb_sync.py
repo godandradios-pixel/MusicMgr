@@ -282,7 +282,7 @@ class TestDialog:
 
 
 class TestArtworkUI:
-    def test_relink_row(self, setup, tmp_path, monkeypatch):
+    def test_relinking_pictures(self, setup, tmp_path, monkeypatch):
         from musicmgr import config
         from musicmgr.db.models import Release
 
@@ -294,10 +294,8 @@ class TestArtworkUI:
         write(tmp_path / "artwork" / "Rush - Signals.jpg")
         with view.ctx.session() as db:
             db.add(Release(title="Signals", title_key="signals", artist_display="Rush"))
-        notes = []
-        view.ctx.notified.connect(notes.append)
-        view.relink_artwork()
-        assert notes[-1].startswith("Linked 1 covers")
+        # 2026-10-31: no Relink artwork row - Fill in everything ends with this
+        assert view._relink_pictures().startswith("Linked 1 covers")
 
     def test_conflict_preview_shows_both_pictures(self, qapp, tmp_path):
         from PySide6.QtGui import QColor, QImage

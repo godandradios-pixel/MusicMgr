@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QGridLayout, QLabel
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel
 from sqlalchemy import select
 from ....services import playback_prefs
-from ...widgets.common import dim_label
+from ...widgets.common import TouchButton, dim_label
 from .parts import (
     CROSSFADE_CHOICES,
     LEVELLING_CHOICES,
@@ -43,6 +44,14 @@ class PlaybackSection:
         self.preamp_combo = combo(PREAMP_CHOICES)
         self.levels_status = dim_label("")
         self.levels_status.setWordWrap(True)
+        # 2026-10-31: moved here from Maintenance › Volume levels, beside
+        # the setting it feeds - reads ReplayGain tags or measures loudness
+        # for every track without a level yet (services/replaygain.py)
+        self.analyze_levels_btn = TouchButton("Analyze all…")
+        self.analyze_levels_btn.setToolTip(
+            "Read ReplayGain tags, or measure loudness, for every track without a level "
+            "yet. Your music files aren't changed.")
+        self.analyze_levels_btn.clicked.connect(self.analyze_loudness)
 
         pgrid.addWidget(QLabel("Crossfade"), 0, 0)
         pgrid.addWidget(self.crossfade_combo, 0, 1)
@@ -51,7 +60,11 @@ class PlaybackSection:
         pgrid.addWidget(self.levelling_combo, 2, 1)
         pgrid.addWidget(QLabel("Levelling adjust"), 3, 0)
         pgrid.addWidget(self.preamp_combo, 3, 1)
-        pgrid.addWidget(self.levels_status, 4, 1)
+        levels_row = QHBoxLayout()
+        levels_row.setSpacing(16)
+        levels_row.addWidget(self.levels_status, 1)
+        levels_row.addWidget(self.analyze_levels_btn, 0, Qt.AlignTop)
+        pgrid.addLayout(levels_row, 4, 1)
         pgrid.setColumnStretch(1, 1)
         body.addWidget(playback_card)
         self._load_playback_prefs()
@@ -117,7 +130,7 @@ class PlaybackSection:
         else:
             text = (
                 f"{known:,} of {total:,} tracks have a volume level. The rest are measured "
-                "as they play, or all at once with Maintenance › Volume levels."
+                "as they play, or all at once with Analyze all…"
             )
         self.levels_status.setText(text)
 

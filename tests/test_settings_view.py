@@ -383,7 +383,7 @@ class TestPurgeMissingFiles:
 
         view.purge_missing_files()
 
-        assert titles == ["Purge missing files", "Remove completely"]
+        assert titles == ["Remove missing files", "Remove completely"]
         with ctx.session() as session:
             assert session.scalar(select(func.count(Track.id))) == 0
 
@@ -405,7 +405,7 @@ class TestPurgeMissingFiles:
         view.purge_missing_files()
 
         assert texts and texts[0].startswith("1 file and 0 videos can't currently be found.")
-        assert "Purging will remove 1 track with no file left." in texts[0]
+        assert "This will remove 1 track with no file left." in texts[0]
 
 
 class _FakeSignal:
@@ -562,7 +562,7 @@ class _FakeThread:
     this fixture's :memory: database - see this module's own docstring),
     generalized to accept any constructor args a real one would (a plain
     `*a, **k` sink) so one fake class covers ArtistImagesImportThread/
-    VerifyFilesThread/RematchChartsThread instead of needing three
+    RematchChartsThread/LibraryHealthThread instead of needing three
     near-identical ones."""
 
     instances: list["_FakeThread"] = []
@@ -599,7 +599,7 @@ class _FakeThread:
 class TestBusyWith:
     """2026-09-22 - the shared guard `download_artist_profiles`/
     `update_track_popularity`/`search_missing_artwork`/`view_missing_metadata`/
-    `import_artist_images`/`verify_files`/`rematch_all` all now call before
+    `import_artist_images`/`rematch_all` all now call before
     starting their own background job."""
 
     def test_none_when_nothing_is_running(self, view):
@@ -615,7 +615,6 @@ class TestBusyWith:
             ("_artwork_thread", "Album artwork is downloading — wait for it to finish first"),
             ("_metadata_scan_thread", "Missing info is scanning — wait for it to finish first"),
             ("_artist_images_thread", "Artist images are importing — wait for it to finish first"),
-            ("_verify_thread", "Files are being verified — wait for it to finish first"),
             ("_rematch_thread", "Charts are re-matching — wait for it to finish first"),
         ],
     )
@@ -693,86 +692,17 @@ class TestImportArtistImagesThreaded:
         assert notifications == ["Artist profiles are downloading — wait for it to finish first"]
 
 
-class TestVerifyFilesThreaded:
-    @pytest.fixture(autouse=True)
-    def _reset_fake_thread(self):
-        _FakeThread.instances = []
-        yield
-        _FakeThread.instances = []
-
-    def test_starts_a_thread(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module.files, "VerifyFilesThread", _FakeThread)
-
-        view.verify_files()
-
-        assert len(_FakeThread.instances) == 1
-        assert _FakeThread.instances[0].started
-
-    def test_refuses_to_start_while_another_bulk_job_is_running(self, view, monkeypatch):
-        monkeypatch.setattr(settings_module.files, "VerifyFilesThread", _FakeThread)
-        view._artwork_thread = _FakeThread()
-        notifications = []
-        view.ctx.notified.connect(notifications.append)
-
-        view.verify_files()
-
-        assert _FakeThread.instances == [view._artwork_thread]
-        assert notifications == ["Album artwork is downloading — wait for it to finish first"]
-
-    def test_on_verify_done_reports_the_count_and_refreshes(self, view, monkeypatch):
-        notifications = []
-        view.ctx.notified.connect(notifications.append)
-        refreshed = []
-        monkeypatch.setattr(view, "refresh", lambda: refreshed.append(True))
-
-        purges = []
-        monkeypatch.setattr(view, "purge_missing_files", lambda **k: purges.append(k))
-
-        view._on_verify_done(0)
-
-        assert notifications == ["All files found - nothing is missing"]
-        assert refreshed == [True]
-        assert purges == []  # nothing missing - no purge offered
-        assert view.progress.isVisible() is False
-
-    def test_on_verify_done_goes_on_to_offer_the_purge(self, ctx, view, monkeypatch):
-        # 2026-10-31: Verify and Purge are one button - finding missing
-        # files leads straight into the purge, without a second disk check
-        with ctx.session() as session:
-            session.add(Video(title="Gone", title_key="gone", path="/old/gone.mp4", is_missing=True))
-        notifications = []
-        view.ctx.notified.connect(notifications.append)
-        purges = []
-        monkeypatch.setattr(view, "purge_missing_files", lambda **k: purges.append(k))
-
-        view._on_verify_done(1)
-
-        assert notifications == ["1 file(s) newly marked missing, 1 missing in total"]
-        assert purges == [{"recheck": False}]
-
-    def test_a_cancelled_verify_does_not_offer_the_purge(self, ctx, view, monkeypatch):
-        with ctx.session() as session:
-            session.add(Video(title="Gone", title_key="gone", path="/old/gone.mp4", is_missing=True))
-        view._verify_thread = _FakeThread()
-        view._verify_thread.requestInterruption()
-        purges = []
-        monkeypatch.setattr(view, "purge_missing_files", lambda **k: purges.append(k))
-
-        view._on_verify_done(1)
-
-        assert purges == []
-
-    def test_purge_after_verify_skips_the_second_disk_check(self, ctx, view, monkeypatch):
+class TestPurgeRecheck:
+    def test_purge_without_recheck_skips_the_disk_check(self, ctx, view, monkeypatch):
         calls = []
         monkeypatch.setattr(settings_module.library.scanner, "mark_missing_files",
                             lambda *a, **k: calls.append("audio") or 0)
         monkeypatch.setattr(settings_module.library.video_scanner, "mark_missing_videos",
                             lambda *a, **k: calls.append("video") or 0)
 
-        view.purge_missing_files(recheck=False)
+        assert view.purge_missing_files(recheck=False) == ""
 
         assert calls == []
-
 
 class TestRematchAllThreaded:
     @pytest.fixture(autouse=True)
@@ -791,14 +721,14 @@ class TestRematchAllThreaded:
 
     def test_refuses_to_start_while_another_bulk_job_is_running(self, view, monkeypatch):
         monkeypatch.setattr(settings_module.maintenance, "RematchChartsThread", _FakeThread)
-        view._verify_thread = _FakeThread()
+        view._health_thread = _FakeThread()
         notifications = []
         view.ctx.notified.connect(notifications.append)
 
         view.rematch_all()
 
-        assert _FakeThread.instances == [view._verify_thread]
-        assert notifications == ["Files are being verified — wait for it to finish first"]
+        assert _FakeThread.instances == [view._health_thread]
+        assert notifications == ["The library is being checked — wait for it to finish first"]
 
     def test_on_rematch_done_reports_the_count(self, view, ctx, monkeypatch):
         notifications = []
@@ -862,8 +792,8 @@ class TestCancelButton:
             "_artwork_thread",
             "_metadata_scan_thread",
             "_artist_images_thread",
-            "_verify_thread",
             "_rematch_thread",
+            "_health_thread",
         ],
     )
     def test_active_cancellable_thread_finds_whichever_one_is_running(self, view, attr):
@@ -953,17 +883,17 @@ class TestCancelButton:
     def test_starting_a_bulk_action_shows_the_cancel_button(self, view, monkeypatch):
         view.show()
         _FakeThread.instances = []
-        monkeypatch.setattr(settings_module.files, "VerifyFilesThread", _FakeThread)
+        monkeypatch.setattr(settings_module.maintenance, "RematchChartsThread", _FakeThread)
 
-        view.verify_files()
+        view.rematch_all()
 
         assert view.cancel_btn.isVisible() is True
 
     def test_finishing_a_bulk_action_hides_the_cancel_button(self, view):
-        view._verify_thread = _FakeThread()
+        view._rematch_thread = _FakeThread()
         view._show_cancel()
 
-        view._on_verify_done(0)
+        view._on_rematch_done(0)
 
         assert view.cancel_btn.isVisible() is False
 
@@ -1084,11 +1014,19 @@ class TestCollapsibleGroups:
         assert "Missing info" in titles("info") and "Charts" in titles("info")
         # 2026-10-31: folded into Missing info / Charts / Backups / Data location
         for gone in ("Artist images", "Artist profiles", "Track popularity", "Album artwork",
-                     "Chart playlists", "Back up library", "Restore library", "Move data"):
+                     "Chart playlists", "Back up library", "Restore library", "Move data",
+                     "Verify files", "Relink artwork", "Volume levels"):
             assert gone not in titles("info") + titles("files")
         assert "Backups" in titles("files") and "Data location" in titles("files")
-        assert "Nuke library" in titles("files") and "Verify files" in titles("files")
+        assert "Nuke library" in titles("files") and "Library health" in titles("files")
         assert titles("services") == ["Last.fm API key", "Discogs API token"]
+        # 2026-10-31: the Ask keys moved here from Phone remote
+        services = view._sections["services"].content
+        assert view.ask_gemini_key_edit.isVisibleTo(services) or services.isAncestorOf(view.ask_gemini_key_edit)
+        assert services.isAncestorOf(view.ask_key_edit)
+        assert not view._sections["remote"].content.isAncestorOf(view.ask_key_edit)
+        # and Analyze all… sits under Playback
+        assert view._sections["playback"].content.isAncestorOf(view.analyze_levels_btn)
 
     def test_header_click_opens_and_folds(self, view):
         from PySide6.QtCore import Qt
@@ -1397,3 +1335,67 @@ class TestDataLocation:
         view.show_paths()
 
         assert moved == []
+
+
+class TestLibraryHealthRemovesMissingFiles:
+    """2026-10-31 - the old Verify files row is Library health's "Records
+    whose file is gone" card: Remove them runs the Settings purge."""
+
+    def _report(self):
+        from musicmgr.services import library_health as lh
+
+        missing = lh.Finding("missing_files", "Records whose file is gone", "…",
+                             fix_label="Remove them", count=2, examples=["a", "b"])
+        return lh.HealthReport(findings=[missing])
+
+    def test_the_card_runs_the_purge_and_shows_what_it_did(self, qapp):
+        from musicmgr.ui.widgets.library_health import LibraryHealthDialog
+
+        ran = []
+        fixed = []
+        dialog = LibraryHealthDialog(self._report(),
+                                     remove_missing=lambda: ran.append(True) or "Removed 2 missing tracks")
+        dialog.fixed.connect(lambda key, msg: fixed.append((key, msg)))
+        card = dialog.cards[0]
+        assert card.fix_btn is not None and card.fix_btn.text() == "Remove them"
+
+        card.fix_btn.click()
+
+        assert ran == [True]
+        assert fixed == [("missing_files", "Removed 2 missing tracks")]
+        assert "Removed 2 missing tracks" in card.done.text()
+
+    def test_declining_the_purge_leaves_the_card_as_it_was(self, qapp):
+        from musicmgr.ui.widgets.library_health import LibraryHealthDialog
+
+        dialog = LibraryHealthDialog(self._report(), remove_missing=lambda: "")
+        card = dialog.cards[0]
+
+        card.fix_btn.click()
+
+        assert card.done.isHidden() and not card.fix_btn.isHidden()
+
+    def test_settings_hands_the_dialog_its_purge(self, view, monkeypatch):
+        from musicmgr.ui.widgets import library_health as lh_widgets
+
+        seen = {}
+
+        class _Dialog:
+            RECHECK = 2
+
+            def __init__(self, report, parent=None, remove_missing=None):
+                seen["remove_missing"] = remove_missing
+                self.fixed = _FakeSignal()
+
+            def exec(self):
+                return 0
+
+        monkeypatch.setattr(lh_widgets, "LibraryHealthDialog", _Dialog)
+        purges = []
+        monkeypatch.setattr(view, "purge_missing_files",
+                            lambda recheck=True: purges.append(recheck) or "done")
+
+        view._on_health_done(self._report())
+
+        assert seen["remove_missing"]() == "done"
+        assert purges == [True]  # re-checks the disk - health doesn't set the flags
