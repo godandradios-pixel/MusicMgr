@@ -502,6 +502,36 @@ class TestMissingMetadataDashboard:
         # clears it.
         assert view._last_metadata_scan is not None
 
+    @pytest.mark.parametrize("action, method", [
+        ("artwork", "search_missing_artwork"),
+        ("profiles", "download_artist_profiles"),
+        ("popularity", "update_track_popularity"),
+        ("artist_images", "import_artist_images"),
+        ("fill_all", "fill_in_everything"),
+    ])
+    def test_a_fill_in_button_runs_its_job(self, view, monkeypatch, action, method):
+        # 2026-10-31: the old Settings rows are buttons in this window now
+        view._last_metadata_scan = metadata_health.ScanResult()
+        monkeypatch.setattr(MissingMetadataDialog, "exec", lambda self: MissingMetadataDialog.ACTION)
+        monkeypatch.setattr(MissingMetadataDialog, "action", lambda self: action)
+        ran = []
+        monkeypatch.setattr(view, method, lambda: ran.append(method))
+
+        view.view_missing_metadata()
+
+        assert ran == [method]
+
+    def test_the_tab_button_follows_the_tab(self, qapp):
+        dialog = MissingMetadataDialog([], [], [], [])
+        labels = []
+        for i in range(4):
+            dialog.tabs.setCurrentIndex(i)
+            labels.append(dialog.tab_action_btn.text() if not dialog.tab_action_btn.isHidden() else None)
+        assert labels == ["Search Discogs for all", "Download all", "Update all", None]
+        dialog.tabs.setCurrentIndex(1)
+        dialog.tab_action_btn.click()
+        assert dialog.result() == MissingMetadataDialog.ACTION and dialog.action() == "profiles"
+
     def test_clicking_rescan_clears_the_cache_and_starts_a_new_scan(self, view, monkeypatch):
         monkeypatch.setattr(settings_module.maintenance, "MetadataScanThread", _FakeMetadataScanThread)
         view._last_metadata_scan = metadata_health.ScanResult()
@@ -583,7 +613,7 @@ class TestBusyWith:
             ("_bio_thread", "Artist profiles are downloading — wait for it to finish first"),
             ("_popularity_thread", "Track popularity is updating — wait for it to finish first"),
             ("_artwork_thread", "Album artwork is downloading — wait for it to finish first"),
-            ("_metadata_scan_thread", "Missing metadata is scanning — wait for it to finish first"),
+            ("_metadata_scan_thread", "Missing info is scanning — wait for it to finish first"),
             ("_artist_images_thread", "Artist images are importing — wait for it to finish first"),
             ("_verify_thread", "Files are being verified — wait for it to finish first"),
             ("_rematch_thread", "Charts are re-matching — wait for it to finish first"),
@@ -770,16 +800,42 @@ class TestRematchAllThreaded:
         assert _FakeThread.instances == [view._verify_thread]
         assert notifications == ["Files are being verified — wait for it to finish first"]
 
-    def test_on_rematch_done_reports_the_count(self, view, ctx):
+    def test_on_rematch_done_reports_the_count(self, view, ctx, monkeypatch):
         notifications = []
         view.ctx.notified.connect(notifications.append)
         library_changed = []
         ctx.libraryChanged.connect(lambda: library_changed.append(True))
+        offered = []
+        monkeypatch.setattr(view, "refresh_chart_playlists", lambda **k: offered.append(k))
 
         view._on_rematch_done(5)
 
         assert notifications == ["5 chart entries now point at tracks you own"]
         assert library_changed == [True]
+        assert offered == []  # no playlists saved from charts - nothing to offer
+
+    def test_on_rematch_done_offers_the_chart_playlists_update(self, view, ctx, monkeypatch):
+        # 2026-10-31: Charts › Re-match… then the old "Chart playlists" update
+        with ctx.session() as session:
+            session.add(Playlist(name="2025", kind=Playlist.KIND_CHART))
+        offered = []
+        monkeypatch.setattr(view, "refresh_chart_playlists", lambda **k: offered.append(k))
+
+        view._on_rematch_done(5)
+
+        assert offered == [{"check_busy": False}]
+
+    def test_a_cancelled_rematch_offers_no_update(self, view, ctx, monkeypatch):
+        with ctx.session() as session:
+            session.add(Playlist(name="2025", kind=Playlist.KIND_CHART))
+        view._rematch_thread = _FakeThread()
+        view._rematch_thread.requestInterruption()
+        offered = []
+        monkeypatch.setattr(view, "refresh_chart_playlists", lambda **k: offered.append(k))
+
+        view._on_rematch_done(5)
+
+        assert offered == []
 
 
 class TestCancelButton:
@@ -1025,7 +1081,12 @@ class TestCollapsibleGroups:
             rows = view._sections[key].content.findChildren(_ToolRow)
             return [r.findChildren(type(view.version_label))[0].text() for r in rows]
 
-        assert "Missing metadata" in titles("info") and "Charts" in titles("info")
+        assert "Missing info" in titles("info") and "Charts" in titles("info")
+        # 2026-10-31: folded into Missing info / Charts / Backups / Data location
+        for gone in ("Artist images", "Artist profiles", "Track popularity", "Album artwork",
+                     "Chart playlists", "Back up library", "Restore library", "Move data"):
+            assert gone not in titles("info") + titles("files")
+        assert "Backups" in titles("files") and "Data location" in titles("files")
         assert "Nuke library" in titles("files") and "Verify files" in titles("files")
         assert titles("services") == ["Last.fm API key", "Discogs API token"]
 
@@ -1150,13 +1211,35 @@ class TestLibraryBackupButtons:
         assert len(daily) == 1
         assert notifications == [f"Library backed up ({daily[0].name})"]
 
-    def test_restore_with_no_backups_just_says_so(self, ctx, view, paths):
-        notifications = []
-        ctx.notified.connect(notifications.append)
+    def test_with_no_backups_the_window_still_opens_to_back_up_now(self, ctx, view, paths, monkeypatch):
+        # 2026-10-31: Backups… is one window with Back up now and Restore
+        opened = []
+
+        class _Window:
+            def __init__(self, backups, parent=None, back_up=None):
+                opened.append((list(backups), back_up))
+                self.chosen = None
+
+            def exec(self):
+                return QDialog.Rejected
+
+        monkeypatch.setattr(settings_module.files, "RestoreBackupDialog", _Window)
 
         view.restore_library()
 
-        assert "no backups yet" in notifications[0]
+        assert len(opened) == 1 and opened[0][0] == [] and opened[0][1] is not None
+
+    def test_back_up_now_in_the_window_adds_todays_copy(self, qapp, view, paths):
+        from musicmgr.ui.widgets.backups import RestoreBackupDialog
+
+        dialog = RestoreBackupDialog([], back_up=view._back_up_from_window)
+        assert dialog.list.count() == 0 and not dialog.restore_btn.isEnabled()
+
+        dialog.back_up_btn.click()
+
+        assert dialog.list.count() == 1
+        assert dialog.restore_btn.isEnabled()
+        assert dialog.status.text().startswith("Library backed up")
 
     def test_restore_from_source_schedules_it_for_the_next_start(
         self, ctx, view, paths, monkeypatch
@@ -1165,7 +1248,7 @@ class TestLibraryBackupButtons:
         backup = next((paths / "backups").glob("library-daily-*.db"))
 
         class _Pick:
-            def __init__(self, backups, parent=None):
+            def __init__(self, backups, parent=None, back_up=None):
                 self.chosen = backups[0].path
 
             def exec(self):
@@ -1189,7 +1272,7 @@ class TestLibraryBackupButtons:
         view.back_up_library()
 
         class _Pick:
-            def __init__(self, backups, parent=None):
+            def __init__(self, backups, parent=None, back_up=None):
                 self.chosen = backups[0].path
 
             def exec(self):
@@ -1221,3 +1304,96 @@ class TestLibraryBackupButtons:
         assert dialog.restore_btn.isEnabled()
         dialog._accept()
         assert dialog.chosen == backups[0].path
+
+
+class TestFillInEverything:
+    """2026-10-31 - Missing info › Fill in everything: biographies, covers
+    and popularity one after another, one summary at the end."""
+
+    class _Result:
+        def __init__(self, text):
+            self.text = text
+            self.errors = []
+
+        def summary(self):
+            return self.text
+
+    @pytest.fixture
+    def jobs(self, view, monkeypatch):
+        m = settings_module.maintenance
+        monkeypatch.setattr(m.bio_dl, "artists_missing_bio", lambda new_only=False: [1, 2])
+        monkeypatch.setattr(m.artwork_dl, "has_api_token", lambda: True)
+        monkeypatch.setattr(m.artwork_dl, "releases_missing_cover", lambda: [5])
+        monkeypatch.setattr(m.popularity_dl, "has_api_key", lambda: False)
+        started = []
+        monkeypatch.setattr(view, "_start_bio_thread", lambda ids: started.append(("profiles", ids)))
+        monkeypatch.setattr(view, "_start_artwork_thread", lambda ids: started.append(("artwork", ids)))
+        monkeypatch.setattr(view, "_start_popularity_thread", lambda ids: started.append(("popularity", ids)))
+        boxes = []
+        monkeypatch.setattr(settings_module.QMessageBox, "information",
+                            staticmethod(lambda _p, title, text: boxes.append((title, text))))
+        return started, boxes
+
+    def test_runs_each_job_in_turn_and_sums_up_once(self, view, monkeypatch, jobs):
+        started, boxes = jobs
+        asked = []
+        monkeypatch.setattr(view, "_confirm_fill_in_everything", lambda text: asked.append(text) or True)
+
+        view.fill_in_everything()
+
+        assert started == [("profiles", [1, 2])]
+        assert "track popularity - no Last.fm key" in asked[0]  # skipped and said so
+        view._on_bio_done(self._Result("2 biographies saved"))
+        assert started[-1] == ("artwork", [5])
+        assert boxes == []  # no per-job result box mid-run
+        view._on_artwork_done(self._Result("1 cover saved"))
+        assert boxes == [("Fill in everything",
+                          "Artist profiles: 2 biographies saved\n\nAlbum artwork: 1 cover saved")]
+        assert view._fill_steps is None
+
+    def test_declining_runs_nothing(self, view, monkeypatch, jobs):
+        started, _ = jobs
+        monkeypatch.setattr(view, "_confirm_fill_in_everything", lambda text: False)
+
+        view.fill_in_everything()
+
+        assert started == [] and view._fill_steps is None
+
+    def test_cancel_stops_the_rest_of_the_run(self, view, monkeypatch, jobs):
+        started, boxes = jobs
+        monkeypatch.setattr(view, "_confirm_fill_in_everything", lambda text: True)
+        view.fill_in_everything()
+        view._bio_thread = _FakeThread()
+        view._bio_thread.requestInterruption()
+
+        view._on_bio_done(self._Result("1 biography saved"))
+
+        assert started == [("profiles", [1, 2])]  # artwork never started
+        assert boxes and boxes[0][1] == "Artist profiles: 1 biography saved"
+
+    def test_a_job_run_on_its_own_still_shows_its_own_result(self, view, jobs):
+        _, boxes = jobs
+        view._on_bio_done(self._Result("3 biographies saved"))
+        assert boxes == [("Artist profiles", "3 biographies saved")]
+
+
+class TestDataLocation:
+    def test_move_button_starts_the_move(self, view, monkeypatch):
+        # 2026-10-31: the old "Move data" row is the Move… button here
+        moved = []
+        monkeypatch.setattr(view, "move_data", lambda: moved.append(True))
+        monkeypatch.setattr(view, "_exec_paths_box",
+                            lambda box: next(b for b in box.buttons() if b.text() == "Move…"))
+
+        view.show_paths()
+
+        assert moved == [True]
+
+    def test_close_does_not_move(self, view, monkeypatch):
+        moved = []
+        monkeypatch.setattr(view, "move_data", lambda: moved.append(True))
+        monkeypatch.setattr(view, "_exec_paths_box", lambda box: None)
+
+        view.show_paths()
+
+        assert moved == []

@@ -382,7 +382,7 @@ class LibrarySection:
             return
         if self._metadata_scan_thread is not None and self._metadata_scan_thread.isRunning():
             self.ctx.notify(
-                "Missing metadata is scanning — wait for it to finish before scanning"
+                "Missing info is scanning — wait for it to finish before scanning"
             )
             return
         if self._artist_images_thread is not None and self._artist_images_thread.isRunning():

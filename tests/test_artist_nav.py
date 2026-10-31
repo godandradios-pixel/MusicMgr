@@ -77,7 +77,7 @@ def test_stepping_keeps_the_missing_metadata_root(view, artists):
     view._open_artist_from_missing_metadata(artists["ABBA"].id)
     view.artist_detail.next_artist_btn.click()
     assert view.artist_detail.artist_id == artists["Big Country"].id
-    assert view.artist_detail.breadcrumb.path == ["Missing metadata", "Big Country"]
+    assert view.artist_detail.breadcrumb.path == ["Missing info", "Big Country"]
 
 
 # -- album page (2026-10-17 - James: "should we do the same on the Album

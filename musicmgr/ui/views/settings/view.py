@@ -86,6 +86,11 @@ class SettingsView(
         #: a "you've already been here" marker (MissingMetadataDialog), so
         #: it's additive only, never cleared by a rescan.
         self._metadata_visited: set = set()
+        #: Missing info › "Fill in everything" (maintenance.py:
+        #: fill_in_everything) - the jobs still to run, None when no run is
+        #: going, and each finished job's one-line result for the summary
+        self._fill_steps: Optional[list] = None
+        self._fill_results: list[str] = []
         # the artist/release page's "Missing metadata" breadcrumb crumb
         # (LibraryView._return_to_missing_metadata) lands back here by
         # emitting this rather than calling Settings directly - Library and
@@ -169,7 +174,7 @@ class SettingsView(
         self._sections["info"].set_summary(
             lambda: "Artwork, biographies, popularity, volume levels, chart matching")
         self._sections["files"].set_summary(
-            lambda: "Verify (and purge), locate or move your library files")
+            lambda: "Verify, check, back up, restore or move your library")
         self._sections["services"].set_summary(lambda: "Last.fm and Discogs keys")
         self._sections["appearance"].set_summary(self._look_summary)
         self._sections["remote"].set_summary(self._remote_summary)
@@ -191,7 +196,7 @@ class SettingsView(
             (self._bio_thread, "Artist profiles are downloading — wait for it to finish first"),
             (self._popularity_thread, "Track popularity is updating — wait for it to finish first"),
             (self._artwork_thread, "Album artwork is downloading — wait for it to finish first"),
-            (self._metadata_scan_thread, "Missing metadata is scanning — wait for it to finish first"),
+            (self._metadata_scan_thread, "Missing info is scanning — wait for it to finish first"),
             (self._artist_images_thread, "Artist images are importing — wait for it to finish first"),
             (self._verify_thread, "Files are being verified — wait for it to finish first"),
             (self._rematch_thread, "Charts are re-matching — wait for it to finish first"),

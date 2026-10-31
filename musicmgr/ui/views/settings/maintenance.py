@@ -63,37 +63,16 @@ class MaintenanceSection:
         tools_group("Artwork & track info", "info")
         # first in the list, nearest `self.progress`/`self.progress_label`,
         # which is what lights up while its scan runs (see
-        # view_missing_metadata)
+        # view_missing_metadata). 2026-10-31: the Artist images, Artist
+        # profiles, Track popularity and Album artwork rows live inside its
+        # window now (MissingMetadataDialog.ACTION), with "Fill in
+        # everything" to run them all - see fill_in_everything.
         add_tool_row(
-            "Missing metadata",
-            "See everything still missing cover art, a biography, popularity data, or lyrics.",
-            "View…",
+            "Missing info",
+            "See what's missing cover art, a biography, popularity data or lyrics, and fill "
+            "it in - one kind at a time, artist photos from a folder, or everything at once.",
+            "Open…",
             self.view_missing_metadata,
-        )
-        add_tool_row(
-            "Artist images",
-            "Import missing cover art for your artists from local files.",
-            "Import…",
-            self.import_artist_images,
-        )
-        # see download_artist_profiles below
-        add_tool_row(
-            "Artist profiles",
-            "Download a biography for every artist that doesn't have one yet.",
-            "Download…",
-            self.download_artist_profiles,
-        )
-        add_tool_row(
-            "Track popularity",
-            "Refresh Last.fm popularity for every artist with a release.",
-            "Update…",
-            self.update_track_popularity,
-        )
-        add_tool_row(
-            "Album artwork",
-            "Search Discogs for a cover for every release that doesn't have one yet.",
-            "Search…",
-            self.search_missing_artwork,
         )
         # USB sync step 2 - see services/artwork_names.py
         add_tool_row(
@@ -111,19 +90,15 @@ class MaintenanceSection:
             "Analyze…",
             self.analyze_loudness,
         )
+        # 2026-10-31: one row - re-matching goes on to offer the chart
+        # playlists update (the old "Chart playlists" row), see
+        # _on_rematch_done and services/charts.py:refresh_chart_playlists
         add_tool_row(
             "Charts",
-            "Re-match every chart entry against your current library.",
-            "Re-match",
+            "Re-match every chart entry against your current library, then update the "
+            "playlists saved from charts to match.",
+            "Re-match…",
             self.rematch_all,
-        )
-        # catch-up for playlists saved before chart fixes carried over by
-        # themselves - see services/charts.py:refresh_chart_playlists
-        add_tool_row(
-            "Chart playlists",
-            "Rebuild every playlist saved from a chart so it has the chart's current matches.",
-            "Update…",
-            self.refresh_chart_playlists,
         )
 
         tools_group("Files & data", "files")
@@ -154,32 +129,22 @@ class MaintenanceSection:
             "Find…",
             self.find_duplicates,
         )
+        # 2026-10-31: one row - the window it opens has the Move… button
+        # (the old "Move data" row), see show_paths
         add_tool_row(
             "Data location",
-            "See where your library database and media files live.",
-            "Show",
+            "See where your library database and media files live, or move them.",
+            "Show…",
             self.show_paths,
         )
+        # daily library backups, local only, keep 7 - see
+        # services/library_backup.py. 2026-10-31: one row - Back up now and
+        # Restore are both in the window it opens (widgets/backups.py)
         add_tool_row(
-            "Move data",
-            "Move your database and media files to a new location.",
-            "Move…",
-            self.move_data,
-        )
-        # daily library backups, local only, keep 7, with a Restore option -
-        # see services/library_backup.py
-        add_tool_row(
-            "Back up library",
-            "Save a copy of your library now. MusicMgr also does this by itself the first time "
-            "it closes each day, keeping the last 7.",
-            "Back up",
-            self.back_up_library,
-        )
-        add_tool_row(
-            "Restore library",
-            "Put your playlists, play history, charts and settings back to a saved backup. "
-            "Music files aren't touched.",
-            "Restore…",
+            "Backups",
+            "MusicMgr saves a copy of your library the first time it closes each day, keeping "
+            "the last 7. Back up now, or put your library back to a saved copy.",
+            "Backups…",
             self.restore_library,
         )
         # wipes library.db and starts fresh. Deliberately last in this list -
@@ -329,7 +294,9 @@ class MaintenanceSection:
         if choice is None:
             return
         artist_ids = new_ids if choice == "new" else all_ids
+        self._start_bio_thread(artist_ids)
 
+    def _start_bio_thread(self, artist_ids: list) -> None:
         self.progress.setVisible(True)
         self.progress.setRange(0, len(artist_ids))
         self.progress_label.setText("Starting…")
@@ -389,6 +356,9 @@ class MaintenanceSection:
         self.progress.setVisible(False)
         self.progress_label.setText("")
         self._hide_cancel(self._bio_thread)
+        self._last_metadata_scan = None
+        if self._fill_step_done("Artist profiles", result, self._bio_thread):
+            return
         lines = [result.summary()]
         if result.errors:
             lines.append("")
@@ -467,7 +437,9 @@ class MaintenanceSection:
         )
         if confirm != QMessageBox.Yes:
             return
+        self._start_popularity_thread(artist_ids)
 
+    def _start_popularity_thread(self, artist_ids: list) -> None:
         self.progress.setVisible(True)
         self.progress.setRange(0, len(artist_ids))
         self.progress_label.setText("Starting…")
@@ -486,6 +458,9 @@ class MaintenanceSection:
         self.progress.setVisible(False)
         self.progress_label.setText("")
         self._hide_cancel(self._popularity_thread)
+        self._last_metadata_scan = None
+        if self._fill_step_done("Track popularity", result, self._popularity_thread):
+            return
         lines = [result.summary()]
         if result.errors:
             lines.append("")
@@ -563,7 +538,9 @@ class MaintenanceSection:
         )
         if confirm != QMessageBox.Yes:
             return
+        self._start_artwork_thread(release_ids)
 
+    def _start_artwork_thread(self, release_ids: list) -> None:
         self.progress.setVisible(True)
         self.progress.setRange(0, len(release_ids))
         self.progress_label.setText("Starting…")
@@ -582,6 +559,9 @@ class MaintenanceSection:
         self.progress.setVisible(False)
         self.progress_label.setText("")
         self._hide_cancel(self._artwork_thread)
+        self._last_metadata_scan = None
+        if self._fill_step_done("Album artwork", result, self._artwork_thread):
+            return
         lines = [result.summary()]
         if result.errors:
             lines.append("")
@@ -668,6 +648,17 @@ class MaintenanceSection:
             self._last_metadata_scan = None
             self.view_missing_metadata()
             return
+        if code == MissingMetadataDialog.ACTION:
+            handler = {
+                "artwork": self.search_missing_artwork,
+                "profiles": self.download_artist_profiles,
+                "popularity": self.update_track_popularity,
+                "artist_images": self.import_artist_images,
+                "fill_all": self.fill_in_everything,
+            }.get(dialog.action())
+            if handler is not None:
+                handler()
+            return
         picked = dialog.picked()
         if not picked:
             return
@@ -682,6 +673,102 @@ class MaintenanceSection:
             self.ctx.openArtistFromMissingMetadataRequested.emit(item_id)
         else:
             self.ctx.openReleaseFromMissingMetadataRequested.emit(item_id)
+
+    # ---- Missing info › Fill in everything (2026-10-31) ----
+
+    def fill_in_everything(self) -> None:
+        """Missing info › "Fill in everything": biographies for artists never
+        looked up, then Discogs covers for releases with none, then Last.fm
+        popularity - the three bulk jobs that need no answers along the way,
+        one after another, with one confirmation up front and one summary at
+        the end. A job whose key/token isn't saved is skipped and named, and
+        Cancel stops the whole run (what finished stays). Artist photos need
+        a folder chosen, so they stay their own button."""
+        busy = self._busy_with()
+        if busy:
+            self.ctx.notify(busy)
+            return
+        steps: list[tuple[str, list]] = []
+        will: list[str] = []
+        skipped: list[str] = []
+
+        def n(count: int, word: str) -> str:
+            return f"{count:,} {word}{'s' if count != 1 else ''}"
+
+        bios = bio_dl.artists_missing_bio(new_only=True)
+        if bios:
+            steps.append(("profiles", bios))
+            will.append(f"download a biography for {n(len(bios), 'artist')} never looked up")
+        if artwork_dl.has_api_token():
+            covers = artwork_dl.releases_missing_cover()
+            if covers:
+                steps.append(("artwork", covers))
+                will.append(f"search Discogs for a cover for {n(len(covers), 'release')}")
+        else:
+            skipped.append("album covers - no Discogs token saved (Online services)")
+        if popularity_dl.has_api_key():
+            artists = popularity_dl.all_artist_ids_with_releases()
+            if artists:
+                steps.append(("popularity", artists))
+                will.append(f"update Last.fm popularity for {n(len(artists), 'artist')}")
+        else:
+            skipped.append("track popularity - no Last.fm key saved (Online services)")
+        skip_text = ("\n\nSkipped:\n" + "\n".join(f"  {s}" for s in skipped)) if skipped else ""
+        if not steps:
+            QMessageBox.information(self, "Fill in everything",
+                                    "Nothing to fill in right now." + skip_text)
+            return
+        if not self._confirm_fill_in_everything(
+            "This will:\n" + "\n".join(f"  • {w}" for w in will) + skip_text
+            + "\n\nNeeds an internet connection and can take a long time on a big "
+            "library - you can Cancel at any point and keep what's done."
+        ):
+            return
+        self._fill_steps = steps
+        self._fill_results = []
+        self._fill_next()
+
+    def _confirm_fill_in_everything(self, text: str) -> bool:
+        """Its own method so tests can answer it."""
+        return QMessageBox.question(
+            self, "Fill in everything", text, QMessageBox.Yes | QMessageBox.No,
+        ) == QMessageBox.Yes
+
+    def _fill_next(self) -> None:
+        if not self._fill_steps:
+            self._finish_fill()
+            return
+        kind, ids = self._fill_steps.pop(0)
+        {
+            "profiles": self._start_bio_thread,
+            "artwork": self._start_artwork_thread,
+            "popularity": self._start_popularity_thread,
+        }[kind](ids)
+
+    def _fill_step_done(self, title: str, result, thread) -> bool:
+        """Called by each bulk job's done handler: True if the job was one
+        step of a Fill in everything run, which takes over from there (the
+        next step, or the end-of-run summary) instead of the job's own
+        result box."""
+        if self._fill_steps is None:
+            return False
+        line = f"{title}: {result.summary()}"
+        errors = getattr(result, "errors", None) or []
+        if errors:
+            line += f" ({len(errors)} couldn't be fetched)"
+        self._fill_results.append(line)
+        if thread is not None and thread.isInterruptionRequested():
+            self._fill_steps = []  # Cancel stops the rest of the run
+        self._fill_next()
+        return True
+
+    def _finish_fill(self) -> None:
+        results = self._fill_results or ["Nothing was filled in."]
+        self._fill_steps = None
+        self._fill_results = []
+        self._last_metadata_scan = None
+        self.ctx.libraryChanged.emit()
+        QMessageBox.information(self, "Fill in everything", "\n\n".join(results))
 
     def find_duplicates(self) -> None:
         """Settings › Duplicates - see services/duplicates.py. Read-only
@@ -805,15 +892,21 @@ class MaintenanceSection:
         self._rematch_thread.start()
         self._show_cancel()
 
-    def refresh_chart_playlists(self) -> None:
+    def refresh_chart_playlists(self, check_busy: bool = True) -> None:
         """Rebuild every chart-saved playlist from its edition's current
         matches (services.charts.refresh_chart_playlists). Quick - one
         playlist per saved edition - so it runs here rather than on a
-        thread, behind a wait cursor."""
-        busy = self._busy_with()
-        if busy:
-            self.ctx.notify(busy)
-            return
+        thread, behind a wait cursor.
+
+        2026-10-31: no button of its own any more - Charts › Re-match…
+        offers it once re-matching finishes (_on_rematch_done), passing
+        check_busy=False since the re-match thread may not have quite
+        wound down when its result arrives."""
+        if check_busy:
+            busy = self._busy_with()
+            if busy:
+                self.ctx.notify(busy)
+                return
         if not self._confirm_refresh_chart_playlists():
             return
         from PySide6.QtCore import Qt
@@ -863,8 +956,25 @@ class MaintenanceSection:
             self.progress_label.setText(f"{done}/{total}")
 
     def _on_rematch_done(self, total: int) -> None:
+        thread = self._rematch_thread
+        cancelled = thread is not None and thread.isInterruptionRequested()
         self.progress.setVisible(False)
         self.progress_label.setText("")
-        self._hide_cancel(self._rematch_thread)
+        self._hide_cancel(thread)
         self.ctx.notify(f"{total} chart entries now point at tracks you own")
         self.ctx.libraryChanged.emit()
+        # 2026-10-31: re-matching and updating the chart playlists are one
+        # button now - offer the update (it asks first) when there are
+        # playlists saved from charts, unless the re-match was cancelled
+        if not cancelled and self._chart_playlist_count():
+            self.refresh_chart_playlists(check_busy=False)
+
+    def _chart_playlist_count(self) -> int:
+        from sqlalchemy import func, select
+
+        from ....db.models import Playlist
+
+        with self.ctx.session() as session:
+            return session.scalar(
+                select(func.count()).select_from(Playlist)
+                .where(Playlist.kind == Playlist.KIND_CHART)) or 0

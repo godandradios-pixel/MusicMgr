@@ -1,9 +1,10 @@
-"""Settings › Files and data (verify and purge missing files, back up / restore, locate, move)."""
+"""Settings › Files and data (verify and purge missing files, backups, data location)."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 from .... import config
@@ -93,18 +94,32 @@ class FilesSection:
         else:
             self.ctx.notify(f"Library backed up ({result.path.name})")
 
+    def _back_up_from_window(self) -> tuple[str, Optional[list]]:
+        """The Backups window's Back up now button (widgets/backups.py)."""
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = library_backup.make_daily_backup(config.DB_PATH, config.DB_BACKUP_DIR, force=True)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if result.error:
+            return result.error, None
+        return (f"Library backed up ({result.path.name})",
+                library_backup.list_backups(config.DB_BACKUP_DIR))
+
     def restore_library(self) -> None:
-        backups = library_backup.list_backups(config.DB_BACKUP_DIR)
-        if not backups:
-            self.ctx.notify("There are no backups yet - use Back up to make one")
-            return
+        """Settings › Backups…: the Backups window - Back up now, or pick a
+        backup to restore. 2026-10-31: the old Back up library and Restore
+        library rows in one."""
         busy = self._busy_with()
         if busy:
             self.ctx.notify(busy)
             return
-        dialog = RestoreBackupDialog(backups, self)
+        backups = library_backup.list_backups(config.DB_BACKUP_DIR)
+        dialog = RestoreBackupDialog(backups, self, back_up=self._back_up_from_window)
         if dialog.exec() != QDialog.Accepted or dialog.chosen is None:
             return
+        # Back up now may have added backups since the window opened
+        backups = library_backup.list_backups(config.DB_BACKUP_DIR)
         chosen = next(b for b in backups if b.path == dialog.chosen)
         exe = self._current_exe()
         restart = ("MusicMgr will restart to do this." if exe is not None
@@ -137,14 +152,27 @@ class FilesSection:
         self.window().close()
 
     def show_paths(self) -> None:
-        QMessageBox.information(
-            self,
-            "Data locations",
+        """Settings › Data location: where the database and artwork live,
+        with a Move… button (2026-10-31: the old "Move data" row)."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Data location")
+        box.setIcon(QMessageBox.Information)
+        box.setText(
             f"Database:\n{config.DB_PATH}\n\n"
             f"Artwork cache:\n{config.ART_DIR}\n\n"
-            "Set the MUSICMGR_HOME environment variable to move them, or use "
-            "\"Move data location…\" below to do it from here.",
+            "Use Move… to copy them somewhere else (or set the MUSICMGR_HOME "
+            "environment variable)."
         )
+        move_btn = box.addButton("Move…", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Close)
+        if self._exec_paths_box(box) is move_btn:
+            self.move_data()
+
+    def _exec_paths_box(self, box: QMessageBox):
+        """Show the Data location box and return the clicked button - its
+        own method so tests can answer it."""
+        box.exec()
+        return box.clickedButton()
 
     def move_data(self) -> None:
         if self._migration_thread is not None and self._migration_thread.isRunning():

@@ -1473,9 +1473,10 @@ class ArtworkPickerDialog(QDialog):
 
 
 class MissingMetadataDialog(QDialog):
-    """Settings' "Missing metadata" dashboard - one screen listing what's
+    """Settings' "Missing info" dashboard - one screen listing what's
     missing cover art, bio, lyrics or popularity data, one tab per
-    enrichment source, each a `TouchList`.
+    enrichment source, each a `TouchList`, with buttons that fill the gaps
+    in (see ACTION).
 
     Takes the four already-computed row lists (see
     `services.metadata_health`) rather than querying anything itself - the
@@ -1483,7 +1484,7 @@ class MissingMetadataDialog(QDialog):
     ArtworkPickerDialog/FolderPickerDialog, which is why the slow lyrics
     scan (MetadataScanThread) runs before this dialog is constructed.
 
-    Deliberately browse-and-jump only, no "fix all" button: tapping a row
+    Tapping a row
     closes the dialog and hands the caller a `(kind, id)` pair via
     `picked()`, like `FolderPickerDialog.selected_folder_id()`. Navigating
     there (`ctx.navigateRequested`/`openArtistRequested`/
@@ -1505,6 +1506,18 @@ class MissingMetadataDialog(QDialog):
     #: (1/0) are already spoken for by a row pick / Close, so this picks
     #: the next unused value rather than colliding with either.
     REFRESH = 2
+    #: `exec()` return value for one of the fill-in buttons (2026-10-31) -
+    #: `action()` says which: "artwork", "profiles", "popularity",
+    #: "artist_images" or "fill_all". Settings runs the matching job.
+    ACTION = 3
+
+    #: the fill-in button under each tab, by tab index - (label, action).
+    #: Lyrics has none: lyrics are fetched per album, from the album page.
+    TAB_ACTIONS = {
+        0: ("Search Discogs for all", "artwork"),
+        1: ("Download all", "profiles"),
+        2: ("Update all", "popularity"),
+    }
 
     def __init__(
         self,
@@ -1516,13 +1529,15 @@ class MissingMetadataDialog(QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Missing metadata")
-        self.setMinimumSize(560, 560)
+        self.setWindowTitle("Missing info")
+        self.setMinimumSize(760, 560)
         self._picked: Optional[tuple] = None
+        self._action: Optional[str] = None
         self._visited = visited or set()
 
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
+        self.tabs = tabs
         layout.addWidget(tabs, 1)
 
         tabs.addTab(
@@ -1544,17 +1559,55 @@ class MissingMetadataDialog(QDialog):
             f"Lyrics ({len(missing_lyrics)})",
         )
 
+        # 2026-10-31 - James: the Settings rows for Artist images, Artist
+        # profiles, Track popularity and Album artwork moved in here, so
+        # seeing what's missing and filling it in is one place: a button
+        # for the tab you're on, artist photos from a folder, and one that
+        # runs everything that needs no questions.
         footer = QHBoxLayout()
         refresh_btn = TouchButton("Rescan")
         refresh_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         refresh_btn.clicked.connect(lambda: self.done(self.REFRESH))
         footer.addWidget(refresh_btn)
+        self.photos_btn = TouchButton("Artist photos…")
+        self.photos_btn.setToolTip("Import artist photos from a folder on this PC")
+        self.photos_btn.clicked.connect(lambda: self._choose("artist_images"))
+        footer.addWidget(self.photos_btn)
         footer.addStretch(1)
+        self.tab_action_btn = TouchButton("")
+        self.tab_action_btn.clicked.connect(self._on_tab_action)
+        footer.addWidget(self.tab_action_btn)
+        self.fill_all_btn = TouchButton("Fill in everything", primary=True)
+        self.fill_all_btn.setToolTip(
+            "Download missing biographies, search Discogs for missing covers and "
+            "update Last.fm popularity, one after another")
+        self.fill_all_btn.clicked.connect(lambda: self._choose("fill_all"))
+        footer.addWidget(self.fill_all_btn)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         buttons.button(QDialogButtonBox.Close).clicked.connect(self.reject)
         footer.addWidget(buttons)
         layout.addLayout(footer)
+        tabs.currentChanged.connect(self._sync_tab_action)
+        self._sync_tab_action(tabs.currentIndex())
+
+    def _sync_tab_action(self, index: int) -> None:
+        label = self.TAB_ACTIONS.get(index, ("", None))[0]
+        self.tab_action_btn.setText(label)
+        self.tab_action_btn.setVisible(bool(label))
+
+    def _on_tab_action(self) -> None:
+        action = self.TAB_ACTIONS.get(self.tabs.currentIndex(), ("", None))[1]
+        if action:
+            self._choose(action)
+
+    def _choose(self, action: str) -> None:
+        self._action = action
+        self.done(self.ACTION)
+
+    def action(self) -> Optional[str]:
+        """Which fill-in button closed the dialog (see ACTION), or None."""
+        return self._action
 
     def _build_tab(self, rows: list, kind: str, empty_text: str) -> QWidget:
         if not rows:

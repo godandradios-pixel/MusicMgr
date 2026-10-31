@@ -784,7 +784,7 @@ class LibraryView(BaseView):
         just with the breadcrumb's leading crumb pointing back to the
         dashboard instead of the Artists grid."""
         self.select_mode(BROWSE_ARTIST)
-        self._open_artist(artist_id, root=("Missing metadata", self._return_to_missing_metadata))
+        self._open_artist(artist_id, root=("Missing info", self._return_to_missing_metadata))
 
     def _open_release_from_missing_metadata(self, release_id: int) -> None:
         """ctx.openReleaseFromMissingMetadataRequested - the "Missing
@@ -792,7 +792,7 @@ class LibraryView(BaseView):
         _open_release_from_elsewhere's own "Now Playing" ancestor, just
         leading back to the dashboard instead."""
         self._open_release(release_id, [
-            ("Missing metadata", self._return_to_missing_metadata),
+            ("Missing info", self._return_to_missing_metadata),
         ])
 
     # -- Title Details ----------------------------------------------------------
