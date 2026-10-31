@@ -11,7 +11,7 @@ library first (backups\\library-before-health-fix-<time>.db).
 `apply_fix(session, key)` runs one finding's fix. The checks:
 
 - **missing_files** - song and video records whose file is gone. No fix
-  here: Missing files › Purge… already removes them, keeping songs that
+  here: Verify files › Verify… already removes them, keeping songs that
   still have history.
 - **not_imported** - music and video files in the watched folders that
   the library doesn't have. Fix: import them.
@@ -143,7 +143,7 @@ def _check_files(session: Session, report: HealthReport, progress, should_stop) 
     missing = Finding(
         "missing_files", "Records whose file is gone",
         "Songs and videos the library lists whose file can no longer be found.",
-        hint="Remove them with Missing files › Purge… (songs with playlists, plays or "
+        hint="Remove them with Verify files › Verify… (songs with playlists, plays or "
              "chart places are kept).")
     known_audio: set[str] = set()
     rows = session.execute(select(MediaFile.path, Track.title, Track.artist_display)
