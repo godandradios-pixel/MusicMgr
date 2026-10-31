@@ -1,4 +1,4 @@
-"""Settings › Files and data (verify, back up / restore, locate, move)."""
+"""Settings › Files and data (verify and purge missing files, back up / restore, locate, move)."""
 
 from __future__ import annotations
 
@@ -55,18 +55,32 @@ class FilesSection:
             self.progress_label.setText(f"{done}/{total}")
 
     def _on_verify_done(self, missing: int) -> None:
+        """2026-10-31 - James: Verify and Purge are one action now. Almost
+        every time Verify finds missing files you want them purged, so once
+        the check finishes it goes straight on to purge_missing_files
+        (settings/library.py), which still asks before removing anything.
+        A cancelled check stops at the report - its missing flags are only
+        partial, so it's no basis for offering a purge."""
+        thread = self._verify_thread
+        cancelled = thread is not None and thread.isInterruptionRequested()
         self.progress.setVisible(False)
         self.progress_label.setText("")
-        self._hide_cancel(self._verify_thread)
+        self._hide_cancel(thread)
         # show the running total too - the newly-flagged count alone misses
         # files flagged by earlier scans
         with self.ctx.session() as session:
             total = lib.library_stats(session)["missing"]
             total += vid_svc.video_counts(session)["video_missing"]
+        self.refresh()
+        if total == 0:
+            self.ctx.notify("All files found - nothing is missing")
+            return
         self.ctx.notify(
             f"{missing} file(s) newly marked missing, {total} missing in total"
         )
-        self.refresh()
+        if not cancelled:
+            # the disk was just checked - no need for the purge to check again
+            self.purge_missing_files(recheck=False)
 
     def back_up_library(self) -> None:
         QApplication.setOverrideCursor(Qt.WaitCursor)

@@ -169,7 +169,7 @@ class SettingsView(
         self._sections["info"].set_summary(
             lambda: "Artwork, biographies, popularity, volume levels, chart matching")
         self._sections["files"].set_summary(
-            lambda: "Verify, purge, locate or move your library files")
+            lambda: "Verify (and purge), locate or move your library files")
         self._sections["services"].set_summary(lambda: "Last.fm and Discogs keys")
         self._sections["appearance"].set_summary(self._look_summary)
         self._sections["remote"].set_summary(self._remote_summary)

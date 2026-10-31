@@ -695,11 +695,53 @@ class TestVerifyFilesThreaded:
         refreshed = []
         monkeypatch.setattr(view, "refresh", lambda: refreshed.append(True))
 
-        view._on_verify_done(3)
+        purges = []
+        monkeypatch.setattr(view, "purge_missing_files", lambda **k: purges.append(k))
 
-        assert notifications == ["3 file(s) newly marked missing, 0 missing in total"]
+        view._on_verify_done(0)
+
+        assert notifications == ["All files found - nothing is missing"]
         assert refreshed == [True]
+        assert purges == []  # nothing missing - no purge offered
         assert view.progress.isVisible() is False
+
+    def test_on_verify_done_goes_on_to_offer_the_purge(self, ctx, view, monkeypatch):
+        # 2026-10-31: Verify and Purge are one button - finding missing
+        # files leads straight into the purge, without a second disk check
+        with ctx.session() as session:
+            session.add(Video(title="Gone", title_key="gone", path="/old/gone.mp4", is_missing=True))
+        notifications = []
+        view.ctx.notified.connect(notifications.append)
+        purges = []
+        monkeypatch.setattr(view, "purge_missing_files", lambda **k: purges.append(k))
+
+        view._on_verify_done(1)
+
+        assert notifications == ["1 file(s) newly marked missing, 1 missing in total"]
+        assert purges == [{"recheck": False}]
+
+    def test_a_cancelled_verify_does_not_offer_the_purge(self, ctx, view, monkeypatch):
+        with ctx.session() as session:
+            session.add(Video(title="Gone", title_key="gone", path="/old/gone.mp4", is_missing=True))
+        view._verify_thread = _FakeThread()
+        view._verify_thread.requestInterruption()
+        purges = []
+        monkeypatch.setattr(view, "purge_missing_files", lambda **k: purges.append(k))
+
+        view._on_verify_done(1)
+
+        assert purges == []
+
+    def test_purge_after_verify_skips_the_second_disk_check(self, ctx, view, monkeypatch):
+        calls = []
+        monkeypatch.setattr(settings_module.library.scanner, "mark_missing_files",
+                            lambda *a, **k: calls.append("audio") or 0)
+        monkeypatch.setattr(settings_module.library.video_scanner, "mark_missing_videos",
+                            lambda *a, **k: calls.append("video") or 0)
+
+        view.purge_missing_files(recheck=False)
+
+        assert calls == []
 
 
 class TestRematchAllThreaded:

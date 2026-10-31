@@ -139,7 +139,7 @@ class LibrarySection:
         self.ctx.notify("Folder removed. Existing tracks and videos were kept.")
         self.refresh()
 
-    def purge_missing_files(self) -> None:
+    def purge_missing_files(self, recheck: bool = True) -> None:
         """Permanently delete both missing tracks and missing videos in one
         action.
 
@@ -167,13 +167,18 @@ class LibrarySection:
         text says so explicitly rather than letting that read as data loss,
         and points at rescanning as the fix for a merely-moved drive rather
         than purging.
+
+        2026-10-31: there's no Purge button any more - Verify (settings/
+        files.py:_on_verify_done) calls this once its check finishes, with
+        recheck=False since it has just checked the disk itself.
         """
         with self.ctx.session() as session:
             # re-check disk first - see above. Their return values (files
             # *newly* flagged this call) don't matter here; missing_summary
             # reads the real totals off the refreshed flags.
-            scanner.mark_missing_files(session)
-            video_scanner.mark_missing_videos(session)
+            if recheck:
+                scanner.mark_missing_files(session)
+                video_scanner.mark_missing_videos(session)
             summary = scanner.missing_summary(session)
             missing_videos = vid_svc.video_counts(session)["video_missing"]
         if not summary.files and not missing_videos:

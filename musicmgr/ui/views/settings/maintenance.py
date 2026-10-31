@@ -127,17 +127,14 @@ class MaintenanceSection:
         )
 
         tools_group("Files & data", "files")
+        # one button: check the disk, then offer to purge what's gone -
+        # see settings/files.py:_on_verify_done
         add_tool_row(
             "Verify files",
-            "Check that every track's file can still be found on disk.",
-            "Verify",
+            "Check that every track and video file can still be found on disk, then "
+            "offer to remove the ones that are gone.",
+            "Verify…",
             self.verify_files,
-        )
-        add_tool_row(
-            "Missing files",
-            "Remove tracks whose files can no longer be found.",
-            "Purge…",
-            self.purge_missing_files,
         )
         # one check-up of the library against the disk and itself, with a
         # fix beside each finding - see services/library_health.py
