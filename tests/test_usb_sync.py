@@ -477,6 +477,35 @@ class TestApply:
         assert [p.name for p in usb.iterdir()] == ["ACDC.mp3"]
         assert not plan_for(drive).all_items()
 
+    def test_case_rename_of_folder_applied(self, env, monkeypatch):
+        # Artist folder fixed on this PC ("John MIles" -> "John Miles"): the
+        # USB's folder itself must be renamed. Renaming only each file left
+        # the folder misspelled on Windows, so the same renames came back
+        # on every check.
+        monkeypatch.setattr(us, "CASE_INSENSITIVE", True)
+        local, usb, drive = env
+        names = ["Closer to You.m4a", "Dancin' for Joy.m4a", "Don't Stop Now.m4a"]
+        for n in names:
+            write(local / "John MIles" / "Miles High" / n, n.encode(), 1_600_000_000)
+        sync_all(drive)
+        os.rename(local / "John MIles", local / "John Miles")
+        plan = plan_for(drive)
+        items = plan.all_items()
+        assert len(items) == 3 and all(i.kind == RENAME and i.direction == TO_USB for i in items)
+        result, _ = run(drive, plan)
+        assert result.renamed == 3 and not result.errors
+        assert [p.name for p in usb.iterdir()] == ["John Miles"]
+        assert sorted(p.name for p in (usb / "John Miles" / "Miles High").iterdir()) == sorted(names)
+        assert not plan_for(drive).all_items()
+
+    def test_case_rename_helper_fixes_every_component(self, tmp_path):
+        write(tmp_path / "john miles" / "MILES HIGH" / "a.m4a", b"a")
+        write(tmp_path / "john miles" / "MILES HIGH" / "b.m4a", b"b")
+        us._case_rename(tmp_path, "john miles/MILES HIGH/a.m4a", "John Miles/Miles High/A.m4a")
+        us._case_rename(tmp_path, "john miles/MILES HIGH/b.m4a", "John Miles/Miles High/b.m4a")
+        assert [p.name for p in tmp_path.iterdir()] == ["John Miles"]
+        assert sorted(p.name for p in (tmp_path / "John Miles" / "Miles High").iterdir()) == ["A.m4a", "b.m4a"]
+
     def test_bytes_needed(self, env):
         local, usb, drive = env
         write(local / "a.mp3", b"12345")

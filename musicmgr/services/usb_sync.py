@@ -1345,9 +1345,9 @@ def _apply_item(pp: PairPlan, item: SyncItem, drive: Drive, base: _BaselineWrite
 
     if item.kind == RENAME:
         if item.direction == TO_USB:
-            _case_rename(U / item.usb_rel, U / item.rel)
+            _case_rename(U, item.usb_rel, item.rel)
         else:
-            _case_rename(L / item.local_rel, L / item.rel)
+            _case_rename(L, item.local_rel, item.rel)
             result.removed_local_paths.append(L / item.local_rel)
             result.new_local_paths.append(L / item.rel)
         base.drop(item.old_rel)
@@ -1406,14 +1406,70 @@ def _apply_item(pp: PairPlan, item: SyncItem, drive: Drive, base: _BaselineWrite
         return
 
 
-def _case_rename(src: Path, dst: Path) -> None:
-    """Rename that also works when only the case changes (Windows treats
-    the two names as the same file, so go through a temp name)."""
-    if str(src) == str(dst):
-        return
-    tmp = src.with_name(src.name + TEMP_SUFFIX)
-    os.replace(src, tmp)
-    os.replace(tmp, dst)
+def _case_rename(root: Path, old_rel: str, new_rel: str) -> None:
+    """Rename `root/old_rel` to `root/new_rel` where the two differ only in
+    case (or accent encoding) - in the file name, any folder above it, or
+    both. E.g. "John MIles/Miles High/x.m4a" -> "John Miles/Miles High/x.m4a".
+
+    Every path component is fixed, folders first: renaming just the file
+    into "John Miles\\..." on Windows/exFAT lands it back in the existing
+    "John MIles" folder (the names are the same there), so the folder kept
+    its old spelling and the same renames came up on every check. Each
+    step goes through a temp name, which case-insensitive file systems
+    need to accept a case-only change. The first file of a folder renames
+    the folder; the rest find it already right."""
+    old_parts = _norm_rel(old_rel).split("/")
+    new_parts = _norm_rel(new_rel).split("/")
+    if len(old_parts) != len(new_parts):
+        raise ValueError(f"not a case-only rename: {old_rel!r} -> {new_rel!r}")
+    parent = Path(root)
+    for i, want in enumerate(new_parts):
+        last = i == len(new_parts) - 1
+        actual = _actual_name(parent, want, old_parts[i])
+        if actual is None:
+            if last:
+                raise FileNotFoundError(parent / old_parts[i])
+            (parent / want).mkdir(exist_ok=True)
+        elif actual != want:
+            src = parent / actual
+            tmp = parent / (actual + TEMP_SUFFIX)
+            os.replace(src, tmp)
+            os.replace(tmp, parent / want)
+        parent = parent / want
+    if old_parts[:-1] != new_parts[:-1]:
+        # Linux (case-sensitive) with both spellings as separate folders:
+        # drop the old one if the move left it empty
+        _remove_empty_dirs(Path(root), old_parts[:-1])
+
+
+def _actual_name(parent: Path, want: str, old: str) -> Optional[str]:
+    """The on-disk spelling of the entry in `parent` that is `want`.
+    An exact match wins (two spellings can coexist on Linux); otherwise
+    the entry matching `old` exactly, then anything matching
+    case-insensitively."""
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        return None
+    if want in names:
+        return want
+    if old in names:
+        return old
+    key = _name_key(want)
+    for name in names:
+        if _name_key(name) == key:
+            return name
+    return None
+
+
+def _remove_empty_dirs(root: Path, parts: list[str]) -> None:
+    for depth in range(len(parts), 0, -1):
+        d = root.joinpath(*parts[:depth])
+        try:
+            if d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            return
 
 
 # --------------------------------------------------------------------------
