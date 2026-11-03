@@ -258,3 +258,78 @@ def test_dialog_fix_stops_when_the_backup_fails(ctx, monkeypatch):
 
     assert "couldn't be backed up" in warned[0]
     assert dialog.cards[0].status.text() == "1 found"
+
+
+# -- garbled chart songs fixed by hand (2026-11-03) ----------------------------
+
+
+def test_garbled_songs_are_listed_once_and_fixed_by_hand_everywhere(session, tmp_path):
+    _library(session, tmp_path)
+    garbled = ("Where Are Ü Now", "Skrillex and Diplo (Jack �)")
+    _chart(session, [(1, *garbled, None, False)], date=dt.date(2015, 6, 6))
+    _chart(session, [(3, *garbled, None, False)], date=dt.date(2015, 6, 13))
+
+    report = lh.check_library(session)
+    f = report.get("garbled_chart_text")
+    assert f.count == 2 and len(f.examples) == 1 and len(f.example_data) == 1
+    info = f.example_data[0]
+    assert (info["title"], info["artist"]) == garbled and len(info["ids"]) == 2
+
+    done = lh.edit_chart_song(session, info["ids"], "Where Are Ü Now",
+                              "Skrillex and Diplo (Jack Ü)")
+    session.flush()
+
+    assert done == 2
+    rows = session.scalars(select(ChartEntry).order_by(ChartEntry.rank)).all()
+    assert [(e.rank, e.artist_name, e.artist_key) for e in rows] == [
+        (1, "Skrillex and Diplo (Jack Ü)", normalize("Skrillex and Diplo (Jack Ü)")),
+        (3, "Skrillex and Diplo (Jack Ü)", normalize("Skrillex and Diplo (Jack Ü)")),
+    ]
+    assert lh.check_library(session).get("garbled_chart_text").ok
+
+
+def test_edit_chart_song_needs_a_title(session):
+    with pytest.raises(ValueError):
+        lh.edit_chart_song(session, [1], "  ", "Artist")
+
+
+def test_dialog_click_a_garbled_song_to_fix_it(ctx, monkeypatch):
+    from PySide6.QtWidgets import QDialog
+
+    from musicmgr.ui.widgets import library_health as ui
+
+    f = lh.Finding(
+        "garbled_chart_text", "Chart songs with garbled letters", "…", count=3,
+        examples=["Carnival - �$ (Kanye West)", "Other - Expos�"],
+        fix_label="Repair them", data=[10, 11, 12],
+        example_data=[
+            {"title": "Carnival", "artist": "�$ (Kanye West)", "ids": [10, 11]},
+            {"title": "Other", "artist": "Expos�", "ids": [12]},
+        ])
+    dialog = ui.LibraryHealthDialog(lh.HealthReport([f]))
+    card = dialog.cards[0]
+    assert card.examples.count() == 2  # no "… and N more" for grouped songs
+
+    backups, saved, got = [], [], []
+    monkeypatch.setattr(lh, "backup_before_fix", lambda *a, **k: backups.append(1))
+    monkeypatch.setattr(lh, "edit_chart_song",
+                        lambda s, ids, t, a: saved.append((ids, t, a)) or len(ids))
+    monkeypatch.setattr(ui.ChartSongEditDialog, "exec", lambda self: QDialog.Accepted)
+    monkeypatch.setattr(ui.ChartSongEditDialog, "values",
+                        lambda self: ("Carnival", "¥$ (Kanye West)"))
+    dialog.fixed.connect(lambda key, msg: got.append(key))
+
+    card._clicked(card.examples.item(0))
+
+    assert saved == [([10, 11], "Carnival", "¥$ (Kanye West)")]
+    assert backups == [1] and got == ["garbled_chart_text"]
+    assert card.examples.item(0).text() == "✓ Carnival - ¥$ (Kanye West)"
+    assert card.finding.count == 1 and card.finding.data == [12]
+    assert card.status.text() == "1 found"
+
+    monkeypatch.setattr(ui.ChartSongEditDialog, "values", lambda self: ("Other", "Exposé"))
+    card._clicked(card.examples.item(1))
+
+    assert backups == [1]  # one backup per dialog
+    assert card.finding.ok and card.status.text() == "Fixed"
+    assert card.fix_btn.isHidden() and not card.show_btn.isHidden()

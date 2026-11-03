@@ -32,6 +32,8 @@ library first (backups\\library-before-health-fix-<time>.db).
 - **garbled_chart_text** - chart songs whose accented letters were
   mangled on import ("Expos\ufffd", "ExposÃ©"). Fix: fill the letters in from
   names the library already knows (text_repair) and match the fixed rows.
+  Each song listed can also be clicked and corrected by hand
+  (edit_chart_song) - for the ones the repair can't work out.
 - **edition_gaps** - chart editions missing positions (rank 15 with no
   row). Shown only: the missing rows have to come from the source.
 - **empty_albums** - albums with no songs. Fix: remove them.
@@ -78,6 +80,10 @@ class Finding:
     hint: str = ""
     #: what the fix works from (ids, paths) - not shown
     data: list = field(default_factory=list)
+    #: per example, what clicking it edits by hand (same order as
+    #: `examples`); empty when the examples can't be edited. For
+    #: garbled_chart_text: {"title", "artist", "ids"}
+    example_data: list = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -340,14 +346,41 @@ def _check_garbled_text(session: Session, report: HealthReport) -> None:
         "Chart titles or artists whose accented letters were mangled when they were "
         "imported (\"Expos\ufffd\" or \"ExposÃ©\" for Exposé).",
         fix_label="Repair them")
-    shown: set[tuple] = set()
+    # one row per song: a weekly chart repeats the same garbled song in
+    # many editions, and a hand fix (edit_chart_song) corrects them all
+    groups: dict[tuple, list[int]] = {}
     for eid, title, artist in damaged_chart_rows(session):
         f.count += 1
         f.data.append(eid)
-        if (title, artist) not in shown and len(f.examples) < EXAMPLES:
-            shown.add((title, artist))
-            f.examples.append(f"{title} - {artist}")
+        groups.setdefault((title, artist), []).append(eid)
+    for (title, artist), ids in list(groups.items())[:EXAMPLES]:
+        f.examples.append(f"{title} - {artist}")
+        f.example_data.append({"title": title, "artist": artist, "ids": ids})
     report.findings.append(f)
+
+
+def edit_chart_song(session: Session, entry_ids: list[int], title: str, artist: str) -> int:
+    """Library health's hand fix for a garbled chart song: set the title
+    and artist of every listed position (the same song in each edition it
+    charted in). Goes through charts.update_entry, like Charts › Edit
+    song…, so a renamed song is re-matched (hand-fixed matches are kept),
+    the edition's saved playlist follows, and the chart is marked edited so
+    the fix wins the next USB sync. Returns how many positions changed."""
+    from .charts import update_entry
+
+    title, artist = title.strip(), artist.strip()
+    if not title:
+        raise ValueError("a chart song needs a title")
+    done = 0
+    for eid in entry_ids:
+        e = session.get(ChartEntry, eid)
+        if e is None or (e.title, e.artist_name) == (title, artist):
+            continue
+        update_entry(session, e.id, e.rank, title, artist,
+                     last_week=e.last_week, peak_pos=e.peak_pos,
+                     weeks_on_chart=e.weeks_on_chart)
+        done += 1
+    return done
 
 
 def _check_edition_gaps(session: Session, report: HealthReport) -> None:

@@ -5,13 +5,17 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QScrollArea,
     QVBoxLayout,
@@ -67,11 +71,54 @@ class HealthFixThread(QThread):
         self.finished_with.emit(message, "")
 
 
+class ChartSongEditDialog(QDialog):
+    """Fix a garbled chart song by hand from Library health: its title and
+    artist, applied to every position it holds (2026-11-03)."""
+
+    def __init__(self, parent, title: str, artist: str, positions: int) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Fix chart song")
+        self.setMinimumWidth(560)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.title_edit = QLineEdit(title)
+        self.title_edit.setPlaceholderText("Song title")
+        form.addRow("Title", self.title_edit)
+        self.artist_edit = QLineEdit(artist)
+        self.artist_edit.setPlaceholderText("Artist")
+        form.addRow("Artist", self.artist_edit)
+        layout.addLayout(form)
+        note = dim_label(
+            "Type the letters the � or Ã-style marks stand for (e.g. \"Jack Ü\", \"¥$\"). "
+            + (f"This song is on the charts {positions:,} times - all of them are fixed."
+               if positions > 1 else "")
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.ok_button = buttons.button(QDialogButtonBox.Save)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.title_edit.textChanged.connect(self._sync_ok)
+        self._sync_ok()
+        self.title_edit.setFocus()
+
+    def _sync_ok(self) -> None:
+        self.ok_button.setEnabled(bool(self.title_edit.text().strip()))
+
+    def values(self) -> tuple[str, str]:
+        return self.title_edit.text().strip(), self.artist_edit.text().strip()
+
+
 class _FindingCard(QFrame):
     """One check: its name and count, what it means, the examples behind a
-    Show button, and its fix (or where to fix it)."""
+    Show button, and its fix (or where to fix it). When the finding has
+    `example_data`, clicking an example asks to edit it by hand."""
 
     fix_requested = Signal(object)
+    #: (card, row) - an editable example was clicked
+    edit_requested = Signal(object, int)
 
     def __init__(self, finding: lh.Finding, parent=None) -> None:
         super().__init__(parent)
@@ -95,10 +142,21 @@ class _FindingCard(QFrame):
         self.examples = QListWidget()
         self.examples.setMaximumHeight(180)
         self.examples.addItems(finding.examples)
-        if finding.count > len(finding.examples):
+        if finding.count > len(finding.examples) and not finding.example_data:
             self.examples.addItem(f"… and {finding.count - len(finding.examples):,} more")
         self.examples.setVisible(False)
         layout.addWidget(self.examples)
+        if finding.example_data:
+            self.examples.setCursor(Qt.PointingHandCursor)
+            for row in range(len(finding.example_data)):
+                self.examples.item(row).setToolTip("Click to fix it by hand")
+            self.examples.itemClicked.connect(self._clicked)
+            tip = dim_label("Click a song to fix it by hand.")
+            layout.addWidget(tip)
+            self._edit_tip = tip
+            tip.setVisible(False)
+        else:
+            self._edit_tip = None
 
         buttons = QHBoxLayout()
         self.show_btn = TouchButton(f"Show ({len(finding.examples):,})")
@@ -132,7 +190,31 @@ class _FindingCard(QFrame):
     def _toggle(self) -> None:
         on = not self.examples.isVisible()
         self.examples.setVisible(on)
+        if self._edit_tip is not None:
+            self._edit_tip.setVisible(on)
         self.show_btn.setText("Hide" if on else f"Show ({len(self.finding.examples):,})")
+
+    def _clicked(self, item: QListWidgetItem) -> None:
+        row = self.examples.row(item)
+        if 0 <= row < len(self.finding.example_data):
+            self.edit_requested.emit(self, row)
+
+    def mark_edited(self, row: int, title: str, artist: str) -> None:
+        """A song was fixed by hand: show its new name with a tick, and take
+        its positions off the count (and off what "Repair them" works on)."""
+        info = self.finding.example_data[row]
+        ids = set(info["ids"])
+        if not info.get("fixed"):
+            self.finding.count = max(0, self.finding.count - len(ids))
+            self.finding.data = [i for i in self.finding.data if i not in ids]
+        info.update(title=title, artist=artist, fixed=True)
+        self.finding.examples[row] = f"{title} - {artist}"
+        self.examples.item(row).setText(f"✓ {title} - {artist}")
+        self._refresh()
+        if self.finding.ok:
+            self.status.setText("Fixed")
+            self.status.setStyleSheet("font-weight: 600;")
+            self.show_btn.setVisible(True)  # keep the list reachable
 
     def set_busy(self, busy: bool) -> None:
         if self.fix_btn is not None:
@@ -171,6 +253,8 @@ class LibraryHealthDialog(QDialog):
         self.report = report
         self._remove_missing = remove_missing
         self._fix_thread: Optional[HealthFixThread] = None
+        #: hand edits back the library up once per dialog, not every song
+        self._edit_backed_up = False
         self.setWindowTitle("Library health")
         self.resize(900, 760)
         layout = QVBoxLayout(self)
@@ -192,6 +276,7 @@ class LibraryHealthDialog(QDialog):
         for finding in sorted(report.findings, key=lambda f: f.ok):
             card = _FindingCard(finding)
             card.fix_requested.connect(self._fix)
+            card.edit_requested.connect(self._edit_example)
             cards.addWidget(card)
             self.cards.append(card)
         cards.addStretch(1)
@@ -238,6 +323,40 @@ class LibraryHealthDialog(QDialog):
         self._fix_thread.finished_with.connect(
             lambda message, error, card=card: self._fixed(card, message, error))
         self._fix_thread.start()
+
+    def _edit_example(self, card: _FindingCard, row: int) -> None:
+        """Click on a garbled chart song: edit its title and artist, saved to
+        every position it holds (lh.edit_chart_song)."""
+        if self._fix_thread is not None and self._fix_thread.isRunning():
+            return
+        info = card.finding.example_data[row]
+        dialog = ChartSongEditDialog(self, info["title"], info["artist"], len(info["ids"]))
+        if dialog.exec() != QDialog.Accepted:
+            return
+        title, artist = dialog.values()
+        if (title, artist) == (info["title"], info["artist"]):
+            return
+        if not self._edit_backed_up:
+            try:
+                lh.backup_before_fix()
+            except Exception as exc:
+                QMessageBox.warning(self, card.finding.title,
+                                    f"Nothing was changed - the library couldn't be backed "
+                                    f"up first ({exc})")
+                return
+            self._edit_backed_up = True
+        try:
+            with session_scope() as session:
+                done = lh.edit_chart_song(session, info["ids"], title, artist)
+                session.commit()
+        except Exception as exc:
+            QMessageBox.warning(self, card.finding.title,
+                                f"Couldn't save it ({exc}). A backup was saved first in "
+                                "the backups folder.")
+            return
+        card.mark_edited(row, title, artist)
+        where = f" ({done:,} chart positions)" if done > 1 else ""
+        self.fixed.emit(card.finding.key, f"Fixed “{title} - {artist}”{where}")
 
     def _fixed(self, card: _FindingCard, message: str, error: str) -> None:
         if self._fix_thread is not None:
