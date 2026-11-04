@@ -46,7 +46,7 @@ from ..theme import make_compact
 #: how many of an artist's most-played tracks the Top Tracks list shows -
 #: a taste, not a full sortable browse (Title Details already does that,
 #: with its own Artist/Album group-by - see track_details_table.py).
-TOP_TRACKS_COUNT = 8
+TOP_TRACKS_COUNT = 10
 
 #: RowDelegate right-anchors its "trail" text (see common.py's
 #: _paint_payload) to the row's full width, so on a wide window a short
@@ -105,10 +105,10 @@ class ArtistDetailPanel(QWidget):
     cover row. Music videos live in their own "Videos" section (NAV_ITEMS in
     ui/app.py), not here.
 
-    Layout: a two-column top section - header card over the biography on
-    the left, Top Tracks on the right - then the release coverflow, full
-    width. The whole page sits in a vertical QScrollArea. See the comments
-    in __init__ for the details.
+    Layout: a two-column top section - header card, release coverflow and
+    biography stacked on the left, Top Tracks on the right - so the
+    releases are above the fold without scrolling. The whole page sits in
+    a vertical QScrollArea. See the comments in __init__ for the details.
 
     Top Tracks (`_refresh_top_tracks`) shows, in priority order: the songs
     James picked (services/top_songs.py, "Choose…"); this artist's stored
@@ -176,12 +176,13 @@ class ArtistDetailPanel(QWidget):
         #   * the breadcrumb lives inside the header card, above the name
         #     (the card's stats line already gives the release count);
         #   * Top Tracks sits in the right half, beside Play/Shuffle;
-        #   * the biography fills the left column under the header card,
-        #     stretching to the Top Tracks column's height. It's a plain VBox
-        #     child, not inside the header card's row - there, BioPanel's
-        #     small sizeHint capped its height and long text overflowed onto
-        #     the release row.
-        # The release coverflow follows underneath, full width.
+        #   * the release coverflow sits directly under the header card -
+        #     the releases are the page's main content, so they come before
+        #     the biography rather than below the fold;
+        #   * the biography fills the rest of the left column, stretching to
+        #     the Top Tracks column's height. It's a plain VBox child, not
+        #     inside the header card's row - there, BioPanel's small
+        #     sizeHint capped its height and long text overflowed.
         top_section = QHBoxLayout()
         top_section.setSpacing(24)
 
@@ -249,9 +250,22 @@ class ArtistDetailPanel(QWidget):
         actions.addStretch(1)
         meta.addLayout(actions)
         hl.addLayout(meta, 0)
-        # the card hugs its own content width - the biography below is
-        # what fills out the rest of this column.
+        # the card hugs its own content width - the coverflow and
+        # biography below are what fill out the rest of this column.
         left_column.addWidget(header, 0, Qt.AlignLeft)
+
+        # a scroll/drag-driven "gatefold" row rather than a page-filling
+        # grid - an artist can have anywhere from one release to several
+        # hundred, and this is one section on a page. See
+        # gatefold_coverflow.py for the fold itself (the open release's
+        # title/year is painted over its cover); sorted by title, same as
+        # the top-level Library grids. The coverflow's own "N releases"
+        # counter isn't placed - the header card's stats line says it.
+        # Placed under the header card (not full width below the top
+        # section) so the releases show without scrolling the page.
+        self.releases = GatefoldCoverflow(noun="release", panel_size=142)
+        self.releases.tileActivated.connect(self.releaseActivated.emit)
+        left_column.addWidget(self.releases, 0)
 
         # "Edit bio" shares the heading's line rather than taking a row
         # inside BioPanel - same heading + compact button shape as the Top
@@ -266,8 +280,9 @@ class ArtistDetailPanel(QWidget):
         bio_row.addWidget(self.bio.edit_button)
         left_column.addLayout(bio_row)
         # stretches to the height the Top Tracks column sets, less the
-        # header card; BioPanel's own QScrollArea handles longer text, and
-        # the minimum keeps a few lines readable on a short window.
+        # header card and coverflow; BioPanel's own QScrollArea handles
+        # longer text, and the minimum keeps a few lines readable on a
+        # short window.
         self.bio.setMinimumHeight(TOUCH["row_height"] * 2)
         left_column.addWidget(self.bio, 1)
 
@@ -324,17 +339,6 @@ class ArtistDetailPanel(QWidget):
         top_section.addWidget(top_tracks_section, 1)
 
         layout.addLayout(top_section)
-
-        # a scroll/drag-driven "gatefold" row rather than a page-filling
-        # grid - an artist can have anywhere from one release to several
-        # hundred, and this is one section on a page. See
-        # gatefold_coverflow.py for the fold itself (the open release's
-        # title/year is painted over its cover); sorted by title, same as
-        # the top-level Library grids. The coverflow's own "N releases"
-        # counter isn't placed - the header card's stats line says it.
-        self.releases = GatefoldCoverflow(noun="release", panel_size=142)
-        self.releases.tileActivated.connect(self.releaseActivated.emit)
-        layout.addWidget(self.releases, 0)
 
         layout.addStretch(1)
 

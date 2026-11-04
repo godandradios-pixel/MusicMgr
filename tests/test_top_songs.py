@@ -98,9 +98,10 @@ def shown(panel):
 
 
 class TestArtistPage:
-    def test_different_songs_up_to_eight(self, panel):
-        # one row per song, versions folded together; up to eight rows
-        # (2026-10-22, was five) - Rush's chart here has six songs
+    def test_different_songs_up_to_ten(self, panel):
+        # one row per song, versions folded together; up to ten rows
+        # (2026-11-04, was eight; five before 2026-10-22) - Rush's chart
+        # here has six songs
         panel.set_artist(with_chart("Rush", RUSH))
         assert shown(panel) == ["Tom Sawyer", "Limelight", "Closer to the Heart",
                                 "Fly by Night", "YYZ", "Red Barchetta"]
