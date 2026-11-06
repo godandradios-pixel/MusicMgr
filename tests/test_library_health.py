@@ -82,6 +82,27 @@ def test_files_gone_and_files_never_imported(session, tmp_path):
     assert lh.check_library(session).get("not_imported").count == 0
 
 
+def test_a_damaged_file_does_not_stop_the_import(session, tmp_path):
+    """2026-11-06: one .mp3 of zeros failed the whole fix with "can't sync
+    to MPEG frame", and none of the 17,765 files came in."""
+    _library(session, tmp_path)
+    folder = tmp_path / "New"
+    make_tagged_mp3(folder / "A Good One.mp3", "A Good One", "Rush", "Signals")
+    (folder / "Damaged.mp3").write_bytes(b"\0" * 20000)
+    make_tagged_mp3(folder / "Z Good One.mp3", "Z Good One", "Rush", "Signals")
+    new = lh.check_library(session).get("not_imported")
+    assert new.count == 3
+
+    msg = lh.apply_fix(session, new)
+
+    assert msg == "Imported 2 files. 1 couldn't be read and was skipped: Damaged.mp3"
+    # the songs on both sides of it survive
+    assert _track(session, "A Good One") is not None
+    assert _track(session, "Z Good One") is not None
+    left = lh.check_library(session).get("not_imported")
+    assert left.count == 1 and "Damaged.mp3" in left.examples[0]
+
+
 def test_loose_chart_matches_are_unlinked_but_hand_fixes_kept(session, tmp_path):
     _library(session, tmp_path)
     sawyer = _track(session, "Tom Sawyer")

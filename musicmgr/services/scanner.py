@@ -1117,8 +1117,20 @@ def _import_files(
 
     tags_cache: dict[Path, TrackTags] = {}
     overrides: dict[Path, tuple[str, bool]] = {}
+    #: damaged files (an .mp3 of zeros, say: mutagen raises "can't sync to
+    #: MPEG frame") - reported and left out, so one can't stop the whole
+    #: scan. The import loop must skip them too: reading one again there
+    #: would take its rollback and lose every file before it. 2026-11-06.
+    unreadable: set[Path] = set()
     for folder_files in by_folder.values():
-        folder_tags = {p: _fallback_from_path(p, read_tags(p)) for p in folder_files}
+        folder_tags: dict[Path, TrackTags] = {}
+        for p in folder_files:
+            try:
+                folder_tags[p] = _fallback_from_path(p, read_tags(p))
+            except Exception as exc:
+                log.warning("couldn't read %s: %s", p, exc)
+                result.errors.append(f"{p.name}: {exc}")
+                unreadable.add(p)
         tags_cache.update(folder_tags)
         # one decision per album in the folder, not per folder: a folder of
         # loose singles or 78s holds many albums, each tagged with its own
@@ -1152,7 +1164,9 @@ def _import_files(
             break
         counts = (result.added, result.updated)
         try:
-            if path in regroup_set:
+            if path in unreadable:
+                pass  # already in result.errors
+            elif path in regroup_set:
                 _reimport_on_same_album(session, path, result)
             elif path in overrides:
                 album_artist, is_compilation = overrides[path]

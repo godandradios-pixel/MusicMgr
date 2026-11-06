@@ -483,9 +483,15 @@ def apply_fix(session: Session, finding: Finding,
             errors += import_paths(session, audio, should_stop=should_stop).errors
         if video:
             errors += import_video_paths(session, video, should_stop=should_stop).errors
-        done = len({p for _kind, p in finding.data})
-        note = f" ({len(errors)} couldn't be read)" if errors else ""
-        return f"Imported {done:,} file{'s' if done != 1 else ''}{note}"
+        done = max(len({p for _kind, p in finding.data}) - len(errors), 0)
+        message = f"Imported {done:,} file{'s' if done != 1 else ''}"
+        if errors:
+            # each error is "<file name>: <why>"
+            names = ", ".join(e.split(": ", 1)[0] for e in errors[:3])
+            more = f" and {len(errors) - 3:,} more" if len(errors) > 3 else ""
+            was = "was" if len(errors) == 1 else "were"
+            message += f". {len(errors):,} couldn't be read and {was} skipped: {names}{more}"
+        return message
     if key == "broken_links":
         done = 0
         for where, table, col, _label, fix in _broken_link_sql(session):
