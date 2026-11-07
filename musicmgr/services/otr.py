@@ -257,9 +257,12 @@ _SPEECH_WORDS = (
 STATION_BANDS = ("fm", "am")
 SHOW_BANDS = ("police", "sw1", "sw2", "lw")
 DEFAULT_SHOW_BAND = "sw1"
-#: settings key recording which band layout the stored bands follow
+#: settings key recording which band layout the stored bands follow.
+#: "2" was written by the first version of migrate_band_layout, which could
+#: also run on a library already on the new layout (shows scanned after the
+#: change) and shift every show one band too far; "3" means checked for that.
 LAYOUT_KEY = "tuner_band_layout"
-LAYOUT_VERSION = "2"
+LAYOUT_VERSION = "3"
 
 
 def guess_band(show_name: str, kind: str) -> str:
@@ -284,36 +287,64 @@ def guess_band(show_name: str, kind: str) -> str:
 
 
 def migrate_band_layout(session: Session) -> int:
-    """Move shows scanned under the first band layout to the second, once.
-    Shows keep their place relative to each other, so a show moved by
-    hand moves along with its old band: AM -> SW1, POLICE -> SW2, SW1 (war
-    news) -> POLICE; SW2 and LW are re-guessed from the name (American
-    History -> POLICE, speeches and commercials -> LW). Returns how many
-    shows moved."""
+    """Bring stored show bands up to the current layout, once per library.
+    Returns how many shows moved.
+
+    Old layout (shows on AM; the first layout put them there, the current
+    one never does): moved over keeping their place relative to each other,
+    so a show moved by hand moves along with its old band: AM -> SW1,
+    POLICE -> SW2, SW1 (war news) -> POLICE; SW2 and LW are re-guessed from
+    the name (American History -> POLICE, speeches and commercials -> LW).
+
+    A library already on the current layout (no shows on AM - e.g. scanned
+    after the change) is only marked as done.
+
+    Repair: the first version of this ran that move on libraries already on
+    the current layout, leaving SW1 empty with the drama and comedy on
+    POLICE. A library marked "2" that shows that pattern gets every show put
+    back on the band a scan would give it (hand moves there are lost)."""
     from ..db.models import Setting
 
     row = session.get(Setting, LAYOUT_KEY)
-    if row is not None and row.value == LAYOUT_VERSION:
+    stored = row.value if row is not None else None
+    if stored == LAYOUT_VERSION:
         return 0
-    direct = {"am": "sw1", "police": "sw2", "sw1": "police"}
+    shows = list(session.scalars(select(RadioShow)))
     moved = 0
-    for show in session.scalars(select(RadioShow)):
-        old = show.band or "am"
-        if old in direct:
-            new = direct[old]
-        elif old in ("sw2", "lw"):
+    if stored is None and any((sh.band or "am") == "am" for sh in shows):
+        direct = {"am": "sw1", "police": "sw2", "sw1": "police"}
+        for show in shows:
+            old = show.band or "am"
+            if old in direct:
+                new = direct[old]
+            elif old in ("sw2", "lw"):
+                new = guess_band(show.name, show.kind)
+            else:
+                new = old
+            if new != show.band:
+                show.band = new
+                moved += 1
+    elif stored == "2" and _shifted_twice(shows):
+        for show in shows:
             new = guess_band(show.name, show.kind)
-        else:
-            new = old
-        if new != show.band:
-            show.band = new
-            moved += 1
+            if new != show.band:
+                show.band = new
+                moved += 1
+        log.info("radio: put %d show(s) back on their bands after the double layout move", moved)
     if row is None:
         session.add(Setting(key=LAYOUT_KEY, value=LAYOUT_VERSION))
     else:
         row.value = LAYOUT_VERSION
     session.flush()
     return moved
+
+
+def _shifted_twice(shows: list[RadioShow]) -> bool:
+    """The double move's fingerprint: nothing left on SW1, and POLICE holding
+    shows that belong on SW1 (drama and comedy)."""
+    if any(sh.band == "sw1" for sh in shows):
+        return False
+    return any(sh.band == "police" and guess_band(sh.name, sh.kind) == "sw1" for sh in shows)
 
 
 def set_band(session: Session, show_id: int, band: str) -> None:

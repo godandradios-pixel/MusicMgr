@@ -321,6 +321,65 @@ class TestBands:
             assert otr.migrate_band_layout(s) == 0
             assert s.query(RadioShow).filter_by(name="Lone Ranger").one().band == "police"
 
+    def test_new_layout_library_is_not_moved(self, db):
+        """Shows scanned onto the current bands, with no layout setting saved
+        yet, stay where the scan put them (SW1 used to end up empty)."""
+        from musicmgr.db.models import Setting
+
+        names = ["Lone Ranger", "Abbott And Costello", "The Shadow",
+                 "WWII News and Sounds", "American History", "Paul Harvey"]
+        with db.session_scope() as s:
+            for i, name in enumerate(names):
+                kind = otr.guess_kind(name)
+                s.add(RadioShow(name=name, folder=f"/r/{i}", kind=kind,
+                                band=otr.guess_band(name, kind)))
+        with db.session_scope() as s:
+            assert otr.migrate_band_layout(s) == 0
+            assert s.get(Setting, otr.LAYOUT_KEY).value == otr.LAYOUT_VERSION
+            bands = {sh.name: sh.band for sh in s.query(RadioShow)}
+        assert bands["Lone Ranger"] == "sw1" and bands["Abbott And Costello"] == "sw1"
+        assert bands["WWII News and Sounds"] == "police"
+        assert bands["American History"] == "police"
+
+    def test_double_move_is_repaired(self, db):
+        """A library the first version moved twice: drama on POLICE, history
+        on SW2, SW1 empty - put back on the bands a scan would give."""
+        from musicmgr.db.models import Setting
+
+        shifted = {"Lone Ranger": "police", "Abbott And Costello": "police",
+                   "The Shadow": "sw2", "WWII News and Sounds": "sw2",
+                   "American History": "sw2", "Paul Harvey": "lw"}
+        with db.session_scope() as s:
+            for i, (name, band) in enumerate(shifted.items()):
+                s.add(RadioShow(name=name, folder=f"/r/{i}", kind=otr.guess_kind(name), band=band))
+            s.add(Setting(key=otr.LAYOUT_KEY, value="2"))
+        with db.session_scope() as s:
+            assert otr.migrate_band_layout(s) == 4
+        with db.session_scope() as s:
+            bands = {sh.name: sh.band for sh in s.query(RadioShow)}
+            assert s.get(Setting, otr.LAYOUT_KEY).value == otr.LAYOUT_VERSION
+        assert bands == {"Lone Ranger": "sw1", "Abbott And Costello": "sw1",
+                         "The Shadow": "sw2", "WWII News and Sounds": "police",
+                         "American History": "police", "Paul Harvey": "lw"}
+        with db.session_scope() as s:  # once only
+            assert otr.migrate_band_layout(s) == 0
+
+    def test_healthy_layout_2_library_is_left_alone(self, db):
+        """Marked "2" but SW1 still has its shows: hand moves are kept."""
+        from musicmgr.db.models import Setting
+
+        with db.session_scope() as s:
+            s.add(RadioShow(name="Lone Ranger", folder="/r/0", kind=otr.guess_kind("Lone Ranger"),
+                            band="sw1"))
+            s.add(RadioShow(name="The Shadow", folder="/r/1", kind=otr.guess_kind("The Shadow"),
+                            band="police"))  # moved by hand
+            s.add(Setting(key=otr.LAYOUT_KEY, value="2"))
+        with db.session_scope() as s:
+            assert otr.migrate_band_layout(s) == 0
+        with db.session_scope() as s:
+            assert s.query(RadioShow).filter_by(name="The Shadow").one().band == "police"
+            assert s.get(Setting, otr.LAYOUT_KEY).value == otr.LAYOUT_VERSION
+
     def test_stations_can_go_on_am(self, db):
         with db.session_scope() as s:
             fm = stations.add_manual(s, "WDVE", "http://127.0.0.1:9/a")
