@@ -1,8 +1,8 @@
-"""Library-state sync through the USB drive (USB sync step 3).
+"""Library-state sync through the USB drive.
 
-Plan: claude/2026-09-23-usb-sync-plan.md §3. Steps 1-2 carry the *files*
-(music, videos, movies, artwork). This carries what only lives in
-library.db - never the database file itself:
+The file sync (services/usb_sync.py) carries the *files* (music, videos,
+movies, artwork). This carries what only lives in library.db - never the
+database file itself:
 
 - **plays** (play_events, plus play_count / skip_count / last_played_at)
 - **ratings** (tracks.rating)

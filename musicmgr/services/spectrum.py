@@ -1,9 +1,8 @@
 """Spectrum data for the PlayerBar's audio-reactive pulse visualizer.
 
 Feeds the full-width bar row across the PlayerBar's top edge
-(`ui/widgets/visualizer.py:PulseVisualizer`) - see architecture.md's
-"Audio-reactive spectrum bars on the PlayerBar". Qt6 removed QAudioProbe,
-the old way to tap a live playback stream, so for a track this
+(`ui/widgets/visualizer.py:PulseVisualizer`). Qt6 has no QAudioProbe to tap
+a live playback stream, so for a track this
 pre-analyzes the whole file once and indexes into the result by playback
 position - the same "compute once, look up by position" shape
 services/lyrics.py uses for .lrc timing. Live radio is analysed as it

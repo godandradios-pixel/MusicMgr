@@ -730,7 +730,7 @@ class TunerView(BaseView):
             thread.start()
 
     def _apply_hidden_bands(self) -> None:
-        """Settings › Radio can turn the SXM band off (2026-11-08): take it
+        """Settings › Appearance › Radio can turn the SXM band off: take it
         off the set, or put it back. Read every time the page is shown, so
         a change in Settings shows the next time the Radio page opens."""
         try:

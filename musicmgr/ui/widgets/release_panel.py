@@ -131,10 +131,9 @@ class ReleaseDetailPanel(QWidget):
         dl.addLayout(info, 1)
         layout.addWidget(detail)
 
-        # No standalone "Play" pill (see architecture.md "Redundant Play
-        # button removed from the release page"): tapping any track row
-        # starts playback from there (_on_track_tapped -> self.play(idx)),
-        # and the PlayerBar's play button covers the rest.
+        # No standalone "Play" pill: tapping any track row starts playback
+        # from there (_on_track_tapped -> self.play(idx)), and the
+        # PlayerBar's play button covers the rest.
         actions = QHBoxLayout()
         actions.setSpacing(8)
         shuffle = TouchButton("Shuffle")
@@ -297,8 +296,7 @@ class ReleaseDetailPanel(QWidget):
         self.track_list.set_rows(rows)
         self._refresh_breadcrumb()
         # lets the persistent PlayerBar's play button start this release
-        # from track 1 even before any row's been tapped (see "Redundant
-        # Play button removed from the release page" in architecture.md).
+        # from track 1 even before any row's been tapped.
         self.ctx.set_viewing(self._tracks, source=f"release:{release_id}")
 
     # -- actions ---------------------------------------------------------------

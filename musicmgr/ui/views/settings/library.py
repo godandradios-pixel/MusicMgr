@@ -169,8 +169,8 @@ class LibrarySection:
         and points at rescanning as the fix for a merely-moved drive rather
         than purging.
 
-        2026-10-31: no button of its own - Library health's "Records whose
-        file is gone" card runs it ("Remove them"). Returns what it removed,
+        Library health's "Records whose file is gone" card runs it ("Remove
+        them"). Returns what it removed,
         in words, or "" when nothing was removed (declined, or nothing
         removable) - the card shows it as done.
         """
@@ -257,8 +257,8 @@ class LibrarySection:
         return done
 
     def _offer_complete_removal(self, lead: str, count: int) -> str:
-        """2026-10-30 - James: after Purge finds what it keeps, offer to
-        remove those completely too (services/track_removal.py). A purge
+        """After Purge finds what it keeps, offer to remove those completely
+        too (services/track_removal.py). A purge
         keeps a song with no file when something still points at it; this
         is the "I don't care, take it out" answer. Returns what was done,
         or "" if declined."""

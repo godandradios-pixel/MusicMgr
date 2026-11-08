@@ -17,7 +17,7 @@ Bands, top to bottom:
             the bottom and shorter than the others (BAND_HEIGHT), with a
             1-100 channel scale
 Only the selected band's strip is lit; the piano keys below choose it.
-A band can be turned off in Settings › Radio (the SXM band, 2026-11-08):
+A band can be turned off in Settings › Appearance › Radio (the SXM band):
 its strip and key disappear and the other strips re-space to fill the
 glass (RadioSet.set_hidden_bands).
 
@@ -302,7 +302,7 @@ class RadioSet(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self._band = "am"
-        #: bands turned off in Settings (the SXM band, 2026-11-08): no
+        #: bands turned off in Settings (the SXM band): no
         #: strip on the glass, no key, and the others share its room
         self._hidden: set[str] = set()
         self._labels: dict[str, list[str]] = {k: [] for k in BAND_KEYS}

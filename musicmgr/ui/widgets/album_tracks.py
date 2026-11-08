@@ -683,8 +683,7 @@ class AlbumTracksPanel(QWidget):
 
         # Both are pure but regex-heavy, and the same few thousand names come
         # up across ~100k tracks - remembering each answer for this one load
-        # took the Tracks page from 2.4 s to well under a second on a
-        # 100k-track library (2026-11-07).
+        # keeps the Tracks page well under a second on a 100k-track library.
         key_cache: dict[str, str] = {}
         split_cache: dict[str, list[str]] = {}
 
@@ -728,7 +727,7 @@ class AlbumTracksPanel(QWidget):
             )
             by_release: dict[int, list[TrackEntry]] = {}
             #: each track's own artist tag - searchable like a credit, since
-            #: compilation tracks often have no credit rows (Mya, 2026-10-30)
+            #: compilation tracks often have no credit rows
             track_artist: dict[int, str] = {}
             for release_id, tid, disc, no, title, ms, file_id, pos, t_artist in track_rows:
                 if t_artist:
@@ -772,7 +771,7 @@ class AlbumTracksPanel(QWidget):
         #: (tracks, album artist, artist key) per album - turned into each
         #: track's `guests` only when a search first needs them (see
         #: _ensure_guests), since splitting ~100k artist tags was the
-        #: biggest part of loading this page (2026-11-07)
+        #: biggest part of loading this page
         guest_jobs: list[tuple[list[TrackEntry], str, str]] = []
         grouped_by_key: dict[str, list] = {}
         display_name_by_key: dict[str, str] = {}

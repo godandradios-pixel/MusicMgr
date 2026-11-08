@@ -1479,7 +1479,7 @@ class MissingMetadataDialog(QDialog):
     #: (1/0) are already spoken for by a row pick / Close, so this picks
     #: the next unused value rather than colliding with either.
     REFRESH = 2
-    #: `exec()` return value for one of the fill-in buttons (2026-10-31) -
+    #: `exec()` return value for one of the fill-in buttons -
     #: `action()` says which: "artwork", "profiles", "popularity",
     #: "artist_images" or "fill_all". Settings runs the matching job.
     ACTION = 3
@@ -1532,9 +1532,7 @@ class MissingMetadataDialog(QDialog):
             f"Lyrics ({len(missing_lyrics)})",
         )
 
-        # 2026-10-31 - James: the Settings rows for Artist images, Artist
-        # profiles, Track popularity and Album artwork moved in here, so
-        # seeing what's missing and filling it in is one place: a button
+        # Seeing what's missing and filling it in are one place: a button
         # for the tab you're on, artist photos from a folder, and one that
         # runs everything that needs no questions.
         footer = QHBoxLayout()

@@ -771,8 +771,7 @@ class PlaylistsView(BaseView):
             total = 0
             if is_playback:
                 # show play counts (what "most played" is ranked by) instead
-                # of duration - the same trailing info the old built-in
-                # playback charts showed
+                # of duration
                 plays_by_track: dict[int, int] = {}
                 tracks = []
                 for track, plays, _ms in pl_svc.resolve_playback(session, playlist):

@@ -89,8 +89,8 @@ class RemoteSection:
         # phone's Ask box. The AI needs a key for the chosen model - Gemini's
         # is free (Google AI Studio), Claude's is paid (Anthropic); without
         # one only the plain phrasings work (offline). Each key is kept.
-        # 2026-10-31: the two key fields are made and loaded here but shown
-        # under Online services with the other keys (maintenance.py).
+        # The two key fields are made and loaded here but shown under Online
+        # services with the other keys (maintenance.py).
         self.ask_model_combo = QComboBox()
         for model_id, label, _provider in voice_ask.MODELS:
             self.ask_model_combo.addItem(label, model_id)

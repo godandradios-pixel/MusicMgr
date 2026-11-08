@@ -41,8 +41,7 @@ from .cover_grid import GridTile
 #: skipped entirely - not laid out, not painted, no cover_pixmap() call.
 #: Kept small on purpose: a coverflow is for one release in focus plus a
 #: few readable neighbors, not for scanning a whole discography, and past
-#: this point a panel is a closed sliver anyway (see _FOLD_RATE).
-#: 5 (2026-11-04, was 4) to go with the gentler _FOLD_RATE below.
+#: this point a panel is a closed sliver anyway (see _FOLD_RATE below).
 _MAX_VISIBLE_DELTA = 5
 
 #: fixed breathing room, in pixels, between one panel's folded edge and
@@ -60,9 +59,9 @@ _EDGE_GAP = 8.0
 #: foldT (0 = flat/open, 1= fully closed sliver) reaches 1.0 five
 #: releases away from focus, so about 4 releases on each side of focus
 #: stay recognizable; only the last one before _MAX_VISIBLE_DELTA reads
-#: as a bare sliver - a hint that more exist. 0.2 (2026-11-04, was 0.3,
-#: which closed panels a bit past three away) so the artist page's
-#: coverflow, now in a half-width column, shows more of the discography.
+#: as a bare sliver - a hint that more exist. Gentle enough that the
+#: artist page's coverflow, in a half-width column, shows a good part of
+#: the discography.
 _FOLD_RATE = 0.2
 _FOLD_MAX_DEG = 87.0
 

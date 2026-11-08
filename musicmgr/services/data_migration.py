@@ -12,7 +12,7 @@ checkout.
 Why this exists rather than "just copy the folder": cover art paths are
 stored in the database as absolute paths. Copying ``artwork/`` without
 rewriting ``releases.cover_path`` leaves every album showing its
-placeholder tile - see architecture.md's "Where things live".
+placeholder tile.
 ``migrate()`` copies, rewrites those paths, verifies the result, and only
 then (if asked) offers to remove the original - never the other order.
 

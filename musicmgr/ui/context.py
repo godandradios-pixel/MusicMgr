@@ -112,8 +112,7 @@ class AppContext(QObject):
         #: ArtistDetailPanel.set_artist via set_viewing() - never queued or
         #: played on its own, only consulted by play_or_resume() so the
         #: PlayerBar's play button can start something before any track has
-        #: been tapped (see "Redundant Play button removed from the release
-        #: page" in architecture.md).
+        #: been tapped (the release page has no Play button of its own).
         self._viewing_tracks: list = []
         self._viewing_source: str = "library"
 
@@ -155,9 +154,8 @@ class AppContext(QObject):
         everything, Shuffle, Play owned, a playlist/chart's Play, and the
         PlayerBar's empty-queue fallback (play_or_resume) - routes through
         this one method, so it's also the single place to send the person
-        to Now Playing (see "Auto-navigate to Now Playing when playback
-        starts" in architecture.md). Advancing to the next queued track
-        never calls this, so nothing pulls the person back mid-playback.
+        to Now Playing when playback starts. Advancing to the next queued
+        track never calls this, so nothing pulls the person back mid-playback.
         Deliberately not used for play_or_resume()'s *resume* branch or
         enqueue_tracks() - resuming or queueing isn't "hitting play" on
         something new.

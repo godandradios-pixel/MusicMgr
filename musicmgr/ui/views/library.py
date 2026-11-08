@@ -237,8 +237,7 @@ class LibraryView(BaseView):
     # -- construction ---------------------------------------------------------
 
     def _build_album_grid(self) -> QWidget:
-        # no sort picker here - always by Artist (see "Sort chips removed
-        # from Library grids" in architecture.md)
+        # no sort picker here - always by Artist
         # art_size=115 (smaller than CoverGrid's 190px default) fits three
         # rows instead of two on the jukebox screen (Windows 125% scaling),
         # with a little headroom; TILE_CAPTION/TILE_PAD don't shrink with it.
@@ -257,8 +256,7 @@ class LibraryView(BaseView):
         return self.album_grid
 
     def _build_artist_grid(self) -> QWidget:
-        # no sort picker here - always by Name (see "Sort chips removed
-        # from Library grids" in architecture.md)
+        # no sort picker here - always by Name
         # art_size=115 - matches the album grid, so both grids read as one
         # size. It's below the 130px of the artist page's "More from this
         # artist" strip (artist_panel.py); if portraits feel too strip-like,

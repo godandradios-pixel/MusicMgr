@@ -100,12 +100,9 @@ QLabel#BioText {{
     padding: 2px 4px;
 }}
 QLabel#BigNumber {{
-    /* Settings page only (its only user) - James: "change all that bright
-       orange/red color on this settings page to the brown pallet." Reuses
-       jukebox_key_hi rather than accent, same walnut-brown token
-       JukeboxNowPlayingText already uses for readable text at this size
-       (plain jukebox_key reads too dark/muddy here - see that rule's own
-       comment below). */
+    /* Settings page only (its only user). Uses jukebox_key_hi rather
+       than accent: the brighter walnut tone JukeboxNowPlayingText uses for
+       readable text at this size (plain jukebox_key reads too dark here). */
     font-size: 30px;
     font-weight: 700;
     color: {c['jukebox_key_hi']};
@@ -118,14 +115,13 @@ QFrame#NavRail {{
     border-right: 1px solid {c['border']};
 }}
 QPushButton#NavButton {{
-    /* border-radius: 0 here is load-bearing, not decorative - without it,
-       this inherits the generic QPushButton rule's 10px further down,
-       which rounds every corner including the ones behind border-left.
-       Qt then draws that colored left edge curving in at top and bottom
-       instead of as a flat bar - the "red left parenthesis" James spotted
-       next to the Settings label. Checked/hover below only round the two
-       *right* corners, so the flat left edge (and its accent bar) never
-       curves again, in any state. */
+    /* border-radius: 0 here is load-bearing, not decorative. Without it
+       this inherits the generic QPushButton rule's 10px further down, which
+       rounds every corner including the ones behind border-left, and Qt
+       then draws the colored left edge curving in at top and bottom instead
+       of as a flat bar. Checked/hover below only round the two right
+       corners, so the flat left edge (and its accent bar) never curves, in
+       any state. */
     background: transparent;
     border: none;
     border-left: 4px solid transparent;
@@ -145,12 +141,11 @@ QPushButton#NavButton:hover {{
 }}
 QPushButton#NavButton:checked {{
     /* surface_hi (not hover's dimmer surface_alt) so the selected page
-       reads as a distinct, elevated state rather than looking like
-       whatever you last happened to hover over. Brown pallet (James,
-       2026-09-08: "bring it into the brown palette") rather than accent -
-       jukebox_key_hi is the same brighter walnut tone #BigNumber/
-       JukeboxNowPlayingText already use for legibility against a dark
-       background; plain jukebox_key reads too dark/muddy this thin. */
+       reads as a distinct, elevated state rather than looking like whatever
+       you last hovered over. The border is jukebox_key_hi, the same
+       brighter walnut tone #BigNumber and JukeboxNowPlayingText use for
+       legibility on a dark background; plain jukebox_key reads too dark
+       this thin. */
     background: {c['surface_hi']};
     color: {c['text']};
     border-left: 5px solid {c['jukebox_key_hi']};
@@ -180,8 +175,7 @@ QPushButton#NavQuit:hover {{
     border-bottom-right-radius: 10px;
 }}
 QFrame#NavBrand {{
-    /* icon + wordmark header row - replaces the old plain-text QLabel
-       (2026-09-07, James: "put the ico image in the upper left area") */
+    /* icon + wordmark header row */
     border-bottom: 1px solid {c['border']};
 }}
 QLabel#NavBrandText {{
@@ -209,28 +203,12 @@ QPushButton[compact="true"] {{
     padding: 0 16px;
     border-radius: 8px;
 }}
-/* 2026-09-13 follow-up (James: "clean up the remaining red/orange lines
-   and text in the app ... need to be in the brown pallete"): every
-   remaining `accent`/`accent_dim`/`accent_soft` use in this file (and
-   the handful of `COLORS["accent"]` lookups in Python - see nowplaying.py,
-   charts.py, common.py, lyrics_panel.py, cover_grid.py) is retinted below
-   to the same walnut-brown family the 2026-09-07/08 follow-ups already
-   moved TransportMain/PrimaryWarm/ChipWarm/the volume slider/Settings'
-   progress bar/BigNumber/NavButton's checked state to (see the COLORS
-   dict's own comment above for that history) - this is the rest of that
-   same sweep, not a new palette. Unlike those earlier, deliberately
-   narrow retints, this time every remaining site gets it, since that's
-   what James actually asked for. `accent`/`accent_dim`/`accent_soft`
-   themselves are gone from COLORS now that nothing references them.
-   Two roles, two tokens, same choice every prior brown retint already
-   made: `jukebox_key` (dark enough for white button text to read clearly
-   on top - actually *better* contrast than the old red gave, see the
-   button rules below) for a filled background, `jukebox_key_hi` (the
-   brighter tone already used for BigNumber/JukeboxNowPlayingText/
-   NavButton's checked-state border) for a color standing on its own
-   against the app's dark background - a focus ring, a small badge, an
-   icon - where the darker `jukebox_key` reads as "muddy" per those
-   earlier comments. */
+/* Colour roles. The app's accent is the walnut-brown jukebox_key family
+   (the skin replaces these values; see ui/skins.py). Two roles, two tokens:
+   jukebox_key for a filled background (dark enough for white button text to
+   read clearly on top), and jukebox_key_hi, the brighter tone, for a colour
+   standing on its own against the dark background - a focus ring, a small
+   badge, an icon - where the darker jukebox_key reads as muddy. */
 QPushButton:pressed {{ background: {c['jukebox_key_pressed']}; border-color: {c['jukebox_key']}; }}
 QPushButton:disabled {{ color: {c['text_disabled']}; background: {c['surface']}; }}
 QPushButton#Primary {{
@@ -240,14 +218,9 @@ QPushButton#Primary {{
     font-weight: 600;
 }}
 QPushButton#Primary:hover {{ background: {c['jukebox_key_pressed']}; }}
-/* Originally the Jukebox page's "+ Add to jukebox" button only (2026-09-07
-   follow-up - see the COLORS dict's comment above), back when every other
-   TouchButton(primary=True) in the app still used the ordinary #Primary
-   red-orange above. The 2026-09-13 follow-up on #Primary itself (see that
-   rule's own comment) means the two are identical now - left as separate
-   rules rather than merged, since collapsing them would mean auditing
-   every #PrimaryWarm call site for a reason it might still need its own
-   name later, for no visual change today. */
+/* The Jukebox page's "+ Add to jukebox" button. Identical to #Primary;
+   kept as its own object name so the Jukebox can be styled apart from the
+   rest of the app. */
 QPushButton#PrimaryWarm {{
     background: {c['jukebox_key']};
     border-color: {c['jukebox_key']};
@@ -276,12 +249,10 @@ QPushButton#TransportWide {{
     font-size: 16px;
 }}
 QPushButton#TransportMain {{
-    /* 2026-09-07 follow-up (see the COLORS dict's comment above) -
-       retinted from accent red-orange to the jukebox key palette, same
-       as the two widgets below. This is the main player bar's central
-       Play/Pause *and* the fullscreen video overlay's (both build a
-       TransportMain button - see ui/widgets/common.py's TouchButton) -
-       one shared control, not scoped to the Jukebox page. */
+    /* The main player bar's central Play/Pause and the fullscreen video
+       overlay's (both build a TransportMain button - see
+       ui/widgets/common.py's TouchButton): one shared control, not scoped
+       to the Jukebox page. */
     background: {c['jukebox_key']};
     border-color: {c['jukebox_key']};
     border-radius: 34px;
@@ -301,29 +272,17 @@ QPushButton#Chip {{
     background: {c['surface']};
 }}
 QPushButton#Chip:checked {{
-    /* 2026-09-13 follow-up (see #Primary's own comment above) - every
-       other chip row in the app (cover_grid.py's sort chips, Now
-       Playing's "Up next"/"Lyrics", track_panel.py's/video_table.py's
-       sort/group chips) was deliberately left red when #ChipWarm below
-       was created for the Jukebox page's own genre chips (2026-09-07 -
-       see that rule's comment), specifically so this rule alone wouldn't
-       turn all of those brown too. Now that James wants the red gone
-       everywhere, it can just match #ChipWarm below instead of being a
-       separate carve-out. */
+    /* Every chip row in the app (sort chips, Now Playing's "Up
+       next"/"Lyrics", the track and video tables' sort/group chips) - the
+       same colour as #ChipWarm below. */
     background: {c['jukebox_key']};
     border-color: {c['jukebox_key']};
     color: {c['on_accent']};
 }}
-/* Originally the Jukebox page's own genre chips only (2026-09-07 follow-up
-   - James: "make the pills not red but the brown color") - same pill
-   shape as #Chip (duplicated rather than shared, since object-name
-   selectors don't inherit from one another); only the checked-state color
-   swapped to the jukebox key palette. #Chip:checked above now uses the
-   same color, so this and #Chip are visually identical (same reasoning as
-   #Primary/#PrimaryWarm above) - still separate rules since ChipButton
-   instances tell the two apart by object name (ui/views/jukebox.py
-   overrides it to "ChipWarm" for genre chips specifically) and merging
-   them would mean renaming every call site for no visual change. */
+/* The Jukebox page's genre chips: the same pill shape as #Chip
+   (duplicated rather than shared, since object-name selectors don't inherit
+   from one another). Visually identical to #Chip; ui/views/jukebox.py sets
+   the "ChipWarm" object name so the genre chips can be styled apart. */
 QPushButton#ChipWarm {{
     border-radius: 18px;
     min-height: 44px;
@@ -335,12 +294,11 @@ QPushButton#ChipWarm:checked {{
     border-color: {c['jukebox_key']};
     color: {c['on_accent']};
 }}
-/* the text box a genre chip (or the trailing "+" chip) turns into
-   mid-rename/add (2026-09-22 follow-up - see ui/views/jukebox.py's
-   _InlineGenreEdit) - same pill radius/height/padding as #ChipWarm right
-   above so swapping one for the other doesn't visibly jump the row, plus
-   a border in the jukebox key color so it still reads as "something's
-   being edited" rather than a plain, unstyled QLineEdit. */
+/* The text box a genre chip (or the trailing "+" chip) turns into while
+   renaming or adding (ui/views/jukebox.py's _InlineGenreEdit): the same
+   pill radius/height/padding as #ChipWarm right above so swapping one for
+   the other doesn't make the row jump, plus a border in the jukebox key
+   colour so it reads as "being edited" rather than a plain QLineEdit. */
 QLineEdit#GenreChipEditor {{
     border-radius: 18px;
     min-height: 44px;
@@ -364,17 +322,12 @@ QPushButton#RowPageArrow:disabled {{
     background: {c['surface']};
     color: {c['text_dim']};
 }}
-/* 2026-09-18 follow-up (James: "let's make those < and > bigger" -
-   Jukebox's own pager, next to "+ Add to jukebox" in the page header).
-   Not a #RowPageArrow size change: that shared style also backs
-   cover_grid.py's horizontal-row pagers, and the 2026-09-16 precedent
-   above (GatefoldCoverflow's own #CoverflowNavArrow) already established
-   that a "too small" complaint about one pager gets its own dedicated
-   object name rather than resizing every pager in the app at once. Sized
-   to 48px - between #RowPageArrow's 32px and #CoverflowNavArrow's 56px -
-   to line up with the 52px-tall "+ Add to jukebox" TouchButton sitting
-   right next to it in the same header row, rather than either of those
-   other two pagers' own unrelated neighbors. */
+/* The Jukebox page's own pager, next to "+ Add to jukebox" in the page
+   header. Its own object name rather than a #RowPageArrow size change,
+   since that shared style also backs the horizontal-row pagers in
+   cover_grid.py. 48px - between #RowPageArrow's 32px and
+   #CoverflowNavArrow's 56px - lines it up with the 52px-tall "+ Add to
+   jukebox" button beside it. */
 QPushButton#JukeboxPageArrow {{
     background: {c['surface_alt']};
     border-radius: 24px;
@@ -452,10 +405,9 @@ QPushButton#KeyCap {{
 /* ---------------- lists ---------------- */
 QListWidget, QListView, QTreeWidget, QTableWidget {{
     background: {c['surface']};
-    /* 2026-09-30 - the Charts table (setAlternatingRowColors) showed every
-       other row near-white on Linux Mint ("the highlight of rows is
-       bashed"): without this, the striping colour comes from the desktop
-       theme's own palette, which on Mint is a light one. */
+    /* Without this, the striping colour of alternating rows (the Charts
+       table) comes from the desktop theme's palette, which on Linux Mint is
+       a light one - every other row showed near-white. */
     alternate-background-color: {c['surface_alt']};
     border: 1px solid {c['border']};
     border-radius: 12px;
@@ -469,17 +421,13 @@ QListWidget::item:selected, QListView::item:selected, QTreeWidget::item:selected
     background: {c['surface_hi']};
     color: {c['text']};
 }}
-/* TrackDetailsTable (Title Details, 2026-09-06 follow-up) is the one
-   QTableView in the app - it never had selection enabled before, so this
-   selector was never needed until James asked to be able to select a
-   title. Without it, a selected cell fell through to the platform style's
-   own default (thin per-cell border lines, not a filled background) since
-   QTableView isn't in the shared rule above - the same class of "what is
-   that blue box" gap QTreeWidget::branch:selected exists to close, below.
-   Deliberately no matching QTableView::item rule (border-radius/margin,
-   the way QListWidget/QTreeWidget items get one) - James wants the whole
-   row reading as one solid highlighted bar, and a per-cell margin/radius
-   would break it into a row of separated chips instead. */
+/* TrackDetailsTable (Title Details) is the one QTableView in the app.
+   Without this, a selected cell falls through to the platform style's
+   default (thin per-cell border lines, not a filled background), since
+   QTableView isn't in the shared rule above. Deliberately no matching
+   QTableView::item rule (border-radius/margin, the way list and tree items
+   get one): the whole row should read as one solid highlighted bar, and a
+   per-cell margin/radius would break it into separate chips. */
 QTableView::item:selected {{
     background: {c['surface_hi']};
     color: {c['text']};
@@ -497,13 +445,12 @@ QTreeWidget::branch {{
     border: none;
 }}
 QTreeWidget::branch:selected {{
-    /* Without this, a selected nested row (anything at indentation level 1+
-       - a subfolder, a chart's edition) shows the platform's native
+    /* Without this, a selected nested row (anything at indentation level
+       1+ - a subfolder, a chart's edition) shows the platform's native
        highlight blue in its indent/branch strip, since the plain
-       QTreeWidget::branch rule above only covers the unselected state -
-       spotted 2026-08-30 as "what is that blue box" on a selected edition
-       row. Matching it to the same color the row's own selection uses
-       keeps the whole row reading as one consistent highlight. */
+       QTreeWidget::branch rule above only covers the unselected state.
+       Matching it to the row's own selection colour keeps the whole row
+       reading as one highlight. */
     background: {c['surface_hi']};
 }}
 
@@ -545,11 +492,9 @@ QScrollBar::handle:vertical {{
     min-height: {t['scrollbar_min_handle']}px;
 }}
 QScrollBar::handle:vertical:hover {{ background: {c['scroll_handle_hi']}; }}
-/* 2026-09-13 follow-up (see #Primary's comment above) - jukebox_key_hi,
-   not jukebox_key: this is a small bar with no text sitting on it, being
-   actively dragged, so it needs to read clearly against the app's dark
-   background the way BigNumber/JukeboxNowPlayingText's text does, not
-   blend in the way jukebox_key already reads as "muddy" doing. */
+/* jukebox_key_hi, not jukebox_key: a small bar with no text on it, being
+   dragged, needs to read clearly against the dark background (see the
+   colour roles above). */
 QScrollBar::handle:vertical:pressed {{ background: {c['jukebox_key_hi']}; }}
 
 QScrollBar:horizontal {{
@@ -577,11 +522,10 @@ QScrollBar::add-line, QScrollBar::sub-line {{
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 
 /* ---------------- inputs ---------------- */
-/* 2026-09-13 follow-up (see #Primary's comment above): selection-
-   background-color pairs with the default (near-white) text color, same
-   as a filled button, so it takes jukebox_key like #Primary's background
-   does; the focus border is a thin ring on the already-dark surface_alt
-   background, no text of its own, so it takes jukebox_key_hi like the
+/* selection-background-color pairs with the default (near-white) text
+   colour, like a filled button, so it takes jukebox_key as #Primary's
+   background does; the focus border is a thin ring on the dark surface_alt
+   background with no text of its own, so it takes jukebox_key_hi like the
    scrollbar's pressed handle above. */
 QLineEdit, QComboBox, QSpinBox, QDateEdit {{
     background: {c['surface_alt']};
@@ -613,10 +557,7 @@ QSlider::groove:horizontal {{
     border-radius: 4px;
 }}
 QSlider::sub-page:horizontal {{
-    /* 2026-09-13 follow-up (see #Primary's comment above) - the generic
-       seek/scrub bar fill, used everywhere this app has a slider except
-       the volume slider just below, which already got this same color in
-       2026-09-08. */
+    /* The seek/scrub bar fill, used by every slider in the app. */
     background: {c['jukebox_key']};
     border-radius: 4px;
 }}
@@ -627,16 +568,9 @@ QSlider::handle:horizontal {{
     margin: -9px 0;
     border-radius: 12px;
 }}
-/* Originally the player bar's volume slider only (2026-09-08 follow-up -
-   James: "make that volume control bar brown to fit pallete") - object-
-   name scoped (see player_bar.py: self.volume.setObjectName(
-   "VolumeSlider")) rather than retinting QSlider::sub-page generally,
-   since that generic rule was still red-orange at the time and shared
-   with the seek/scrub bar here and video_panel.py's own seek bar,
-   neither of which James had asked to change yet. The 2026-09-13
-   follow-up above brought the generic rule to this same color, so this
-   override is now redundant (kept for the same reason #Primary/
-   #PrimaryWarm above stayed separate rather than merged). */
+/* The player bar's volume slider (player_bar.py sets the "VolumeSlider"
+   object name). The same colour as the generic slider fill above; kept as
+   its own rule so the volume control can be styled apart. */
 QSlider#VolumeSlider::sub-page:horizontal {{
     background: {c['jukebox_key']};
     border-radius: 4px;
@@ -644,10 +578,8 @@ QSlider#VolumeSlider::sub-page:horizontal {{
 
 /* ---------------- jukebox ---------------- */
 QLabel#JukeboxNowPlayingText {{
-    /* 2026-09-07 follow-up - retinted from accent red-orange to the
-       jukebox key palette's brighter tone (jukebox_key itself reads too
-       dark/muddy for body text at this size) - see the COLORS dict's
-       comment above. */
+    /* The jukebox key palette's brighter tone: jukebox_key itself reads
+       too dark for body text at this size. */
     color: {c['jukebox_key_hi']};
     font-weight: 700;
     font-size: {t['font_base'] + 2}px;
@@ -660,59 +592,38 @@ QFrame#JukeboxStrip {{
     border: 2px solid {c['jukebox_strip_border']};
     border-radius: 16px;
 }}
-/* 2026-09-18 follow-up (drag-and-drop reordering, ui/widgets/
-   jukebox_strip.py): a card being dragged over highlights its border in
-   the same walnut-brown jukebox_key_hi used for the currently-playing
-   banner elsewhere on this page, so a valid drop target reads clearly
-   without needing a second, unrelated color. JukeboxStripWidget toggles
-   this dynamic property on `card` (not on itself) via unpolish/polish -
-   see `_set_drop_highlight`. */
+/* A card being dragged over (drag-and-drop reordering,
+   ui/widgets/jukebox_strip.py) highlights its border in the same
+   jukebox_key_hi used for the currently-playing banner on this page, so a
+   valid drop target reads clearly without a second, unrelated colour.
+   JukeboxStripWidget toggles this dynamic property on `card` (not on
+   itself) via unpolish/polish - see `_set_drop_highlight`. */
 QFrame#JukeboxStrip[dropTarget="true"] {{
     border: 3px solid {c['jukebox_key_hi']};
 }}
-/* 2026-09-07 redesign (match James's reference mockup): the card's inside
-   is the two painted _ChevronBanner buttons plus the artist badge/line
-   below - both draw their own look in code, so there's no QSS for them.
-   The old cream-paper "JukeboxPaper"/row/title/subtitle/indicator/round-
-   key rules this replaced are gone along with the widgets they styled. */
+/* The card's inside is the two painted _ChevronBanner buttons plus the
+   artist badge below - both draw their own look in code, so there's no QSS
+   for them. */
 QLabel#JukeboxArtistBadge {{
     background: {c['jukebox_paper']};
     color: {c['jukebox_ink']};
-    /* border/padding trimmed a px each (2026-09-20 follow-up, ui/widgets/
-       jukebox_strip.py - shrinking the jukebox card's height) - part of
-       shaving the artist-badge row down along with the rest of the card,
-       not a standalone restyle. */
+    /* Kept to a thin border and padding so the artist-badge row stays
+       short, along with the rest of the card. */
     border: 1px solid {c['jukebox_ink']};
     border-radius: 4px;
     padding: 0px 10px;
     font-weight: 700;
     font-size: {t['font_base'] - 2}px;
 }}
-/* 2026-09-20 follow-up - James: "remove the black space on the ends of
-   the middle artist block." `_build_artist_row`'s `row` container (ui/
-   widgets/jukebox_strip.py) is a bare QWidget with no rule of its own,
-   so it was inheriting the blanket `QWidget {{ background: {c['bg']}; }}`
-   rule above - QFrame#JukeboxArtistLine's own background is properly
-   capped to a 2px-tall line by min-height/max-height below, but that
-   still leaves the *rest* of the row's height (same as the artist-badge
-   label next to it) painted in that rule's near-black app background on
-   both sides of the thin line - not a thin colored line at all, a solid
-   dark block. Scoping this row to a transparent background lets the
-   card's own light chrome gradient (QFrame#JukeboxStrip) show through
-   there instead, same as it already does flanking the two chevron
-   banners above/below - `min-height`/`max-height` were already doing
-   their job; the line just had a solid dark box painted underneath it. */
+/* `_build_artist_row`'s `row` container (ui/widgets/jukebox_strip.py) is
+   a bare QWidget with no rule of its own, so it would inherit the blanket
+   QWidget background rule above and paint near-black blocks at both ends of
+   the artist badge. A transparent background lets the card's own light
+   chrome gradient (QFrame#JukeboxStrip) show through, as it does beside the
+   two chevron banners. */
 QWidget#JukeboxArtistRow {{
     background: transparent;
 }}
-/* QFrame#JukeboxArtistLine (the two divider frames that used to flank
-   the artist badge, each a background: {c['jukebox_key']}; min/max-
-   height: 2px; line) is gone as of a 2026-09-20 follow-up - James:
-   "widen the box so that it aligns to the left with the 2 tracks and
-   extend to the right so its aligned with the tip of the arrow." The
-   badge now fills the whole row itself (ui/widgets/jukebox_strip.py's
-   `_build_artist_row`/`_ARTIST_LABEL_WIDTH`), so there's no leftover
-   width for a divider line to fill any more. */
 
 /* ---------------- misc ---------------- */
 QFrame#Card {{
@@ -726,8 +637,7 @@ QFrame#PlayerBar {{
 }}
 QFrame#Divider {{ background: {c['border']}; max-height: 1px; }}
 /* Collapsible groups (ui/widgets/common.py CollapsibleSection) - the
-   Settings page's folding headers (James: "The Settings page is now way to
-   'busy' ... Maybe collapsable groups"). */
+   Settings page's folding headers. */
 QFrame#SectionHeader {{
     background: {c['surface_alt']};
     border: 1px solid {c['border']};
@@ -752,19 +662,11 @@ QProgressBar {{
     text-align: center;
     color: transparent;
 }}
-/* 2026-09-13 follow-up (James: "the progress bar when you are downloading
-   lyrics also needs to be brown" - see #Primary's comment above for the
-   rest of this sweep): this generic rule is what Charts' own progress bar
-   and the release panel's lyrics-download bar were both still drawing
-   from - #ProgressWarm below (Settings' scan/move bar) already got this
-   same color in an earlier, narrower follow-up, back when this rule was
-   still red-orange and Charts/the lyrics download hadn't been asked
-   about yet. */
+/* Charts' progress bar and the release panel's lyrics-download bar,
+   among others. */
 QProgressBar::chunk {{ background: {c['jukebox_key']}; border-radius: 6px; }}
-/* Originally Settings page's scan/move progress bar only, to keep it out
-   of the still-red generic rule above (see that rule's own comment) -
-   the two are identical now that the generic rule caught up, kept
-   separate for the same reason as #Primary/#PrimaryWarm above. */
+/* Settings page's scan/move progress bar. The same colour as the generic
+   rule above; kept as its own object name so it can be styled apart. */
 QProgressBar#ProgressWarm::chunk {{ background: {c['jukebox_key']}; border-radius: 6px; }}
 QTabBar::tab {{
     background: {c['surface']};
@@ -790,11 +692,10 @@ QMessageBox, QDialog {{ background: {c['bg']}; }}
 def make_compact(button):
     """Shorter button (TOUCH["compact_button_height"], 40px vs the usual
     52px) for pages where vertical space matters more than a jukebox-panel-
-    sized touch target - 2026-09-26, James on the artist page: "Play
-    Everything button is too big". A dynamic property rather than another
-    objectName, so it layers over #Primary instead of replacing it (see the
-    `QPushButton[compact="true"]` rule in stylesheet()). Returns the button
-    for inline use."""
+    sized touch target (the artist page's Play everything, say). A dynamic
+    property rather than another objectName, so it layers over #Primary
+    instead of replacing it (see the `QPushButton[compact="true"]` rule in
+    stylesheet()). Returns the button for inline use."""
     button.setProperty("compact", True)
     button.setMinimumHeight(TOUCH["compact_button_height"])
     return button

@@ -66,10 +66,10 @@ class MaintenanceSection:
         tools_group("Artwork & track info", "info")
         # first in the list, nearest `self.progress`/`self.progress_label`,
         # which is what lights up while its scan runs (see
-        # view_missing_metadata). 2026-10-31: the Artist images, Artist
-        # profiles, Track popularity and Album artwork rows live inside its
-        # window now (MissingMetadataDialog.ACTION), with "Fill in
-        # everything" to run them all - see fill_in_everything.
+        # view_missing_metadata). The Artist images, Artist profiles, Track
+        # popularity and Album artwork actions live inside its window
+        # (MissingMetadataDialog.ACTION), with "Fill in everything" to run
+        # them all - see fill_in_everything.
         add_tool_row(
             "Missing info",
             "See what's missing cover art, a biography, popularity data or lyrics, and fill "
@@ -77,12 +77,11 @@ class MaintenanceSection:
             "Open…",
             self.view_missing_metadata,
         )
-        # 2026-10-31: no Relink artwork row - it runs by itself after a USB
-        # sync and at the end of Missing info › Fill in everything
-        # (_finish_fill). Volume levels › Analyze… moved to Playback, beside
-        # the Volume levelling setting it feeds (settings/playback.py).
-        # 2026-10-31: one row - re-matching goes on to offer the chart
-        # playlists update (the old "Chart playlists" row), see
+        # Relinking artwork has no row: it runs by itself after a USB sync and
+        # at the end of Missing info › Fill in everything (_finish_fill).
+        # Volume levels › Analyze… is in Playback, beside the Volume levelling
+        # setting it feeds (settings/playback.py).
+        # Re-matching goes on to offer the chart playlists update - see
         # _on_rematch_done and services/charts.py:refresh_chart_playlists
         add_tool_row(
             "Charts",
@@ -94,9 +93,9 @@ class MaintenanceSection:
 
         tools_group("Files & data", "files")
         # one check-up of the library against the disk and itself, with a
-        # fix beside each finding - see services/library_health.py.
-        # 2026-10-31: the old Verify files row is its "Records whose file is
-        # gone" card, whose Remove them runs purge_missing_files
+        # fix beside each finding - see services/library_health.py. Its
+        # "Records whose file is gone" card's Remove them runs
+        # purge_missing_files
         add_tool_row(
             "Library health",
             "Check for missing files (and remove them), files never imported, broken links, "
@@ -114,8 +113,7 @@ class MaintenanceSection:
             "Find…",
             self.find_duplicates,
         )
-        # 2026-10-31: one row - the window it opens has the Move… button
-        # (the old "Move data" row), see show_paths
+        # the window it opens has the Move… button, see show_paths
         add_tool_row(
             "Data location",
             "See where your library database and media files live, or move them.",
@@ -123,8 +121,8 @@ class MaintenanceSection:
             self.show_paths,
         )
         # daily library backups, local only, keep 7 - see
-        # services/library_backup.py. 2026-10-31: one row - Back up now and
-        # Restore are both in the window it opens (widgets/backups.py)
+        # services/library_backup.py. Back up now and Restore are both in
+        # the window it opens (widgets/backups.py)
         add_tool_row(
             "Backups",
             "MusicMgr saves a copy of your library the first time it closes each day, keeping "
@@ -144,8 +142,8 @@ class MaintenanceSection:
         tools_group("Online services", "services")
         # every key MusicMgr uses, kept together here rather than beside the
         # tools that use them: Last.fm (track popularity), Discogs (album
-        # artwork), and - 2026-10-31, moved from Phone remote - Google AI
-        # Studio and Anthropic (the phone remote's Ask box)
+        # artwork), Google AI Studio and Anthropic (the phone remote's Ask
+        # box)
         add_tool_row(
             "Last.fm API key",
             "Set the free API key track popularity needs to fetch Last.fm charts.",
@@ -185,8 +183,7 @@ class MaintenanceSection:
         (artwork\\<Artist> - <Title>.jpg, artists\\<Artist>.jpg) and
         return what changed, or "" if nothing did. The USB sync does this by
         itself after pictures arrive; for files dropped in by hand it runs
-        at the end of Fill in everything (2026-10-31: replaced the Relink
-        artwork row)."""
+        at the end of Fill in everything."""
         with self.ctx.session() as db:
             result = artwork_names.relink(db)
         clear_art_cache()
@@ -672,7 +669,7 @@ class MaintenanceSection:
         else:
             self.ctx.openReleaseFromMissingMetadataRequested.emit(item_id)
 
-    # ---- Missing info › Fill in everything (2026-10-31) ----
+    # ---- Missing info › Fill in everything ----
 
     def fill_in_everything(self) -> None:
         """Missing info › "Fill in everything": biographies for artists never
@@ -909,10 +906,9 @@ class MaintenanceSection:
         playlist per saved edition - so it runs here rather than on a
         thread, behind a wait cursor.
 
-        2026-10-31: no button of its own any more - Charts › Re-match…
-        offers it once re-matching finishes (_on_rematch_done), passing
-        check_busy=False since the re-match thread may not have quite
-        wound down when its result arrives."""
+        Charts › Re-match… offers it once re-matching finishes
+        (_on_rematch_done), passing check_busy=False since the re-match
+        thread may not have quite wound down when its result arrives."""
         if check_busy:
             busy = self._busy_with()
             if busy:
@@ -974,9 +970,9 @@ class MaintenanceSection:
         self._hide_cancel(thread)
         self.ctx.notify(f"{total} chart entries now point at tracks you own")
         self.ctx.libraryChanged.emit()
-        # 2026-10-31: re-matching and updating the chart playlists are one
-        # button now - offer the update (it asks first) when there are
-        # playlists saved from charts, unless the re-match was cancelled
+        # re-matching and updating the chart playlists are one button -
+        # offer the update (it asks first) when there are playlists saved
+        # from charts, unless the re-match was cancelled
         if not cancelled and self._chart_playlist_count():
             self.refresh_chart_playlists(check_busy=False)
 

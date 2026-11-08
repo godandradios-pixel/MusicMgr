@@ -46,8 +46,7 @@ class FilesSection:
 
     def restore_library(self) -> None:
         """Settings › Backups…: the Backups window - Back up now, or pick a
-        backup to restore. 2026-10-31: the old Back up library and Restore
-        library rows in one."""
+        backup to restore."""
         busy = self._busy_with()
         if busy:
             self.ctx.notify(busy)
@@ -91,7 +90,7 @@ class FilesSection:
 
     def show_paths(self) -> None:
         """Settings › Data location: where the database and artwork live,
-        with a Move… button (2026-10-31: the old "Move data" row)."""
+        with a Move… button."""
         box = QMessageBox(self)
         box.setWindowTitle("Data location")
         box.setIcon(QMessageBox.Information)

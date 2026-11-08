@@ -1,5 +1,4 @@
-"""Name-based artwork files, MusicBee style (USB sync step 2 - plan:
-claude/2026-09-23-usb-sync-plan.md §2).
+"""Name-based artwork files, MusicBee style.
 
 Image files are named after what they show, not local database ids (which
 differ between PCs), so the folders can be shared:

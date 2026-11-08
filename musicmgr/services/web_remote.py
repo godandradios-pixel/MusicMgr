@@ -646,7 +646,7 @@ class RemoteApi:
             }
 
     def albums(self) -> dict:
-        """Every release, lightest fields only - about 6,000 on PC1. Sorted by
+        """Every release, lightest fields only - thousands of them. Sorted by
         title here; the phone re-sorts by artist or newest without asking again."""
         with self.ctx.session() as s:
             rows = s.execute(
@@ -674,8 +674,8 @@ class RemoteApi:
         from . import otr, stations
 
         with self.ctx.session() as s:
-            # a band turned off in Settings › Radio (SXM) isn't on the
-            # phone either (2026-11-08)
+            # a band turned off in Settings › Appearance › Radio (SXM) isn't
+            # on the phone either
             hidden = stations.hidden_bands(s)
             st = [
                 {"id": x.id, "name": x.name, "band": x.band or "fm",

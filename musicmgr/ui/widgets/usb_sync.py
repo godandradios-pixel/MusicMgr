@@ -1,7 +1,6 @@
 """USB sync UI pieces - the threads and dialogs behind
 Settings → USB sync. All the real work is in services/usb_sync.py (headless,
-tested there); see its module docstring and
-claude/2026-09-23-usb-sync-plan.md for the design."""
+tested there); see its module docstring for the design."""
 
 from __future__ import annotations
 

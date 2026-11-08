@@ -1,7 +1,7 @@
 """Repair chart text whose accented letters were mangled on the way in.
 
-2026-10-30 (James): the Charts page showed "Expos�" for Exposé. Two
-kinds of damage reach the database from chart CSVs:
+Two kinds of damage reach the database from chart CSVs (the Charts page
+showing "Expos�" for Exposé, say):
 
 - **U+FFFD** ("�", drawn as a diamond with a question mark) - the
   accented letter is gone; something decoded the file with
@@ -17,8 +17,8 @@ kinds of damage reach the database from chart CSVs:
 
 `decode_csv_bytes` is the reading side: UTF-8, with any byte that isn't
 valid UTF-8 read as Windows-1252 *on its own* - one stray cp1252 byte in an
-otherwise UTF-8 file no longer turns every other accent in the file into
-mojibake (the old whole-file fallback did).
+otherwise UTF-8 file doesn't turn every other accent in the file into
+mojibake, as a whole-file fallback would.
 
 `ChartTextRepairer` fixes single strings; `repair_chart_entries` fixes rows
 already in the library (Settings › Library health's "Chart songs with
@@ -84,10 +84,9 @@ def is_damaged(text: Optional[str]) -> bool:
 
 # -- U+FFFD --------------------------------------------------------------------
 #
-# 2026-10-30, second pass (James's library: 1,031 rows, none fixed by the
-# first pass). In practice a \ufffd in a chart row is usually NOT a lost
-# letter - the year-end lists came from Wikipedia, which puts non-breaking
-# spaces around "featuring"/"and"/"&", and each one became \ufffd:
+# In practice a \ufffd in a chart row is usually NOT a lost letter - the
+# year-end lists came from Wikipedia, which puts non-breaking spaces around
+# "featuring"/"and"/"&", and each one became \ufffd:
 #   "Coolio\ufffdfeaturing\ufffdL.V."       -> a space
 #   "Beyonc\ufffdfeaturing\ufffdSean Paul"  -> é *and* the space (one \ufffd
 #                                         swallowed both bytes)

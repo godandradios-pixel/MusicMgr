@@ -68,12 +68,10 @@ SCALE_MARKS = {"fm": FM_MARKS, "am": AM_MARKS, "sxm": SXM_MARKS}
 BROWSER_BANDS = ("sxm",)
 #: every band a station can be on (anything else counts as FM)
 STATION_BAND_KEYS = ("fm", "am", *BROWSER_BANDS)
-#: Settings › Radio: show the SXM band on the dial (2026-11-08). James:
-#: "a settings option where I can turn off the SiriusXM band of the radio
-#: and it would disappear from the display". Off hides the band's strip and
-#: key on the Radio page and its channels on the phone remote; the channels
-#: themselves stay in the library (and keep USB-syncing), so turning it
-#: back on brings them back as they were.
+#: Settings › Appearance › Radio: show the SXM band on the dial. Off hides
+#: the band's strip and key on the Radio page and its channels on the phone
+#: remote; the channels themselves stay in the library (and keep
+#: USB-syncing), so turning it back on brings them back as they were.
 SHOW_SXM_KEY = "tuner_show_sxm"
 #: SiriusXM's web player, for finding a channel's link
 SXM_PLAYER_URL = "https://www.siriusxm.com/player"

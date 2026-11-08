@@ -1,4 +1,4 @@
-"""Playback preferences - crossfade and volume levelling (2026-10-01).
+"""Playback preferences - crossfade and volume levelling.
 
 Stored in the generic `settings` key/value table like every other
 preference in this app (see services/charts.py:LAST_BROWSE_DIR_KEY), set on

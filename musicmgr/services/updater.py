@@ -1,8 +1,7 @@
 """In-app updates from GitHub Releases.
 
-Plan: claude/2026-09-23-auto-update-plan.md - Windows 11 and Linux Mint,
-*always ask before installing*, a public repo (config.UPDATE_REPO), and
-signed releases.
+Windows 11 and Linux Mint, *always ask before installing*, a public repo
+(config.UPDATE_REPO), and signed releases.
 
 Headless on purpose (no Qt import anywhere in this module) so every piece is
 unit-testable; ui/views/settings/ owns the threads and dialogs.

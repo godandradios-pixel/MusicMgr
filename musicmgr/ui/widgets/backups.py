@@ -1,5 +1,5 @@
-"""Settings › Files & data › "Backups" window (2026-10-19, Back up now
-added 2026-10-31) - see services/library_backup.py."""
+"""Settings › Files & data › "Backups" window - see
+services/library_backup.py."""
 
 from __future__ import annotations
 
@@ -19,9 +19,8 @@ BackUpFn = Callable[[], tuple[str, Optional[list[BackupFile]]]]
 class RestoreBackupDialog(QDialog):
     """The library's backups, newest first, with Back up now and Restore.
 
-    2026-10-31 - James: Back up library and Restore library were two
-    Settings rows; they're one "Backups…" row opening this window now. Pass
-    `back_up` to show the Back up now button. After Restore, `chosen` is the
+    Settings' "Backups…" row opens it. Pass `back_up` to show the Back up
+    now button. After Restore, `chosen` is the
     picked backup's path."""
 
     def __init__(self, backups: list[BackupFile], parent=None,

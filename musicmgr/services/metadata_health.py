@@ -179,7 +179,7 @@ def releases_missing_lyrics_rows(
     kind of multi-second silent stretch this whole `progress` callback
     exists to avoid. The row count for a meaningful progress denominator
     comes from its own fast `COUNT(*)` first, over the same join, rather
-    than `len()` on a list that no longer gets fully materialized.
+    than `len()` on a list that's never fully materialized.
     """
     with session_scope() as db:
         playable = (

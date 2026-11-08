@@ -1,14 +1,13 @@
 """Remove songs that have no file left - "Remove from library" on a right-click.
 
-2026-10-30 - James couldn't get rid of the artist "2000-09". An untagged
-file in D:\\Music\\Hot Country\\2000-09\\2008 came in with its folder names
-as artist and album. The file was renamed later and came back as a new,
-correct song, but the old one had two plays, so the missing-file cleanup
-(scanner.purge_orphaned_tracks) keeps it on purpose and nothing in the app
-could remove it.
+The missing-file cleanup (scanner.purge_orphaned_tracks) keeps a song with
+no file on purpose when anything still points at it - plays, say. That can
+leave a wrong song behind for good: an untagged file that came in with its
+folder names as artist and album, then was renamed and came back as a new,
+correct song, while the old one kept its two plays.
 
-This is the by-hand version of that cleanup, for songs James picks: a song
-goes even with plays, playlist places, chart matches or a jukebox side.
+This is the by-hand version of that cleanup, for songs picked by hand: a
+song goes even with plays, playlist places, chart matches or a jukebox side.
 
 - Only a song with no present file can be removed. A song with a file is
   skipped (a rescan would only bring it back).

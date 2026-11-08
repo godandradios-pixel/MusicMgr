@@ -1,7 +1,6 @@
-"""Two-way sync between this PC's media folders and a MusicMgr USB drive.
+"""Sync between this PC's media folders and a MusicMgr USB drive.
 
-Replaces GoodSync; MusicMgr is never run from the USB itself. Plan:
-claude/2026-09-23-usb-sync-plan.md (step 1).
+MusicMgr is never run from the USB itself.
 
 This module never touches a database file (copying a live library.db and
 its -wal/-shm files independently corrupts it). It syncs *folders of media*
@@ -30,9 +29,8 @@ Pieces (no Qt in here - the Settings page drives it through two QThreads):
   files go to the Recycle Bin / Trash, USB files move to
   `MusicMgr\\sync\\_deleted\\<date>\\`.
 - **Direction.** Settings › USB sync › "Sync direction" (`PREF_MODE`, per
-  PC): one way from the USB to this PC (`MODE_FROM_USB`, the default since
-  2026-10-27 - James: "In most cases I want the Sync to always be one way
-  from USB to the D: drive") or two-way. "Two-way sync now…" runs a single
+  PC): one way from the USB to this PC (`MODE_FROM_USB`, the default) or
+  two-way. "Two-way sync now…" runs a single
   two-way sync without changing the setting. See `make_one_way`: one way
   never writes to the USB and never deletes anything on this PC.
 """
@@ -77,7 +75,7 @@ PREF_MODE = "usb_sync_mode"
 MODE_TWO_WAY = "two_way"
 MODE_FROM_USB = "from_usb"
 MODES = (MODE_TWO_WAY, MODE_FROM_USB)
-#: until a PC picks one in Settings: one way, USB -> this PC (2026-10-27)
+#: until a PC picks one in Settings: one way, USB -> this PC
 DEFAULT_MODE = MODE_FROM_USB
 
 #: FAT/exFAT keep times to 2 seconds, and FAT can be off by exactly an hour

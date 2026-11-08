@@ -2,7 +2,7 @@
 
 Deliberately separate from services/player.py:PlayerController rather than
 reusing it: a video isn't part of a shuffled/queued listening session (Videos
-has no playlists yet - see architecture.md's extension points), and giving it
+has no playlists), and giving it
 its own QMediaPlayer means starting a video never disturbs whatever queue is
 sitting paused in the persistent PlayerBar. `ui/widgets/video_panel.py`
 attaches this to a QVideoWidget for the actual picture.

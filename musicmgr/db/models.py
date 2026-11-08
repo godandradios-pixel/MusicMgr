@@ -1007,12 +1007,12 @@ class Setting(Base):
 
 
 class SyncPair(Base):
-    """One local folder kept in two-way sync with one folder on a MusicMgr
-    USB drive - see services/usb_sync.py. `usb_rel_path` is relative to the
+    """One local folder kept in sync with one folder on a MusicMgr USB
+    drive - see services/usb_sync.py. `usb_rel_path` is relative to the
     drive's root (the folder holding `MusicMgr\\sync\\drive.json`), so the
     pair survives the drive turning up as E: one day and F: the next.
-    `kind` is "media" today; "artwork" arrives with name-based artwork
-    (plan: claude/2026-09-23-usb-sync-plan.md §2)."""
+    `kind` is "media" (music, videos, movies) or "artwork" (the name-based
+    covers and artist photos, services/artwork_names.py)."""
 
     __tablename__ = "sync_pairs"
     __table_args__ = (UniqueConstraint("drive_id", "local_path", name="uq_sync_pair_local"),)

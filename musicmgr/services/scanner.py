@@ -1119,7 +1119,7 @@ def _import_files(
     #: damaged files (an .mp3 of zeros, say: mutagen raises "can't sync to
     #: MPEG frame") - reported and left out, so one can't stop the whole
     #: scan. The import loop must skip them too: reading one again there
-    #: would take its rollback and lose every file before it. 2026-11-06.
+    #: would take its rollback and lose every file before it.
     unreadable: set[Path] = set()
     for folder_files in by_folder.values():
         folder_tags: dict[Path, TrackTags] = {}
@@ -1226,7 +1226,7 @@ def _match_new_songs(session: Session, paths: list[Path],
     library. Only positions with no song and not fixed by hand are looked
     at, and only by title key - the title as given and without its version
     note ("Billie Jean (Single Version)" also tries "billie jean"); a title
-    spelled differently waits for a full re-match. 2026-10-25.
+    spelled differently waits for a full re-match.
 
     Returns how many positions got a song."""
     from . import charts as chart_svc  # charts imports nothing from here

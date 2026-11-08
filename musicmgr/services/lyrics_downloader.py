@@ -3,7 +3,7 @@ them to the same sidecar path `services/lyrics.py` already reads from.
 
 This is a deliberate, requested exception to the rest of the app's "read
 from local files, no network calls" stance (see `services/lyrics.py`'s
-module docstring, and `architecture.md`). The lookup, retry and matching
+module docstring). The lookup, retry and matching
 logic is ported from a standalone script (`lrc_downloader.py`), with two
 differences:
 

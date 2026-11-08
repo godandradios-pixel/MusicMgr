@@ -65,8 +65,7 @@ class GridTile:
     there). `initials_source` overrides what `cover_pixmap` builds a
     placeholder from when there's no `cover_path` - a video tile sets it to
     the artist's name, since initials from a video title are meaningless
-    ("18 And Life (Official Music Video)" -> "1A"; see architecture.md's
-    "Videos" section).
+    ("18 And Life (Official Music Video)" -> "1A").
 
     `kind="video_group"`: when a search matches several of one artist's
     videos (all of which would show the same artist portrait), `_rebuild()`

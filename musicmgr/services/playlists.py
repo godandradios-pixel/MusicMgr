@@ -61,8 +61,7 @@ PLAYBACK_WINDOWS = {
     "all": None,
 }
 
-#: position count of each built-in "Most Played" playlist, same as the old
-#: playback charts' Chart.size.
+#: position count of each built-in "Most Played" playlist
 PLAYBACK_PLAYLIST_LIMIT = 100
 
 
@@ -789,8 +788,7 @@ def resolve_playback(
     return playback_top_tracks(session, window=window, limit=limit)
 
 
-#: (slug, name, window, description) for each built-in playback playlist -
-#: same three windows the old built-in playback charts shipped with.
+#: (slug, name, window, description) for each built-in playback playlist
 BUILTIN_PLAYBACK_PLAYLISTS = [
     ("most-played-week", "Most Played - This Week", "week", "Your top 100 of the last 7 days"),
     ("most-played-month", "Most Played - This Month", "month", "Your top 100 of the last 30 days"),

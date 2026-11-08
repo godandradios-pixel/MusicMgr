@@ -679,7 +679,7 @@ def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
     )
 
     # Named columns, not the Track entity: building ~100k ORM objects was
-    # most of Title Details' load time on a 100k-track library (2026-11-07).
+    # most of Title Details' load time on a 100k-track library.
     stmt = (
         select(
             Track.id, Track.track_no, Track.position, Track.title,

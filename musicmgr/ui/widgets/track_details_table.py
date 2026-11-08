@@ -894,7 +894,7 @@ class TrackDetailsTable(QWidget):
             or needle in fold(row.genre)
             or needle in fold(row.album_artist)
             # the song's own artist too, so "mya" finds her songs on
-            # Various Artists compilations (2026-10-30)
+            # Various Artists compilations
             or needle in fold(row.artist)
             or needle in fold(row.album)
             or (row.track_no is not None and needle in str(row.track_no))

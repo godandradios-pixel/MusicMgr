@@ -1,5 +1,5 @@
 """Audio-reactive pulse visualizer across the persistent PlayerBar's top
-edge. (Design history: architecture.md.)
+edge.
 
 **Data.** `PlayerBar` hands this widget a whole track's precomputed band
 buckets up front (`set_data`, via a background `SpectrumThread` - see

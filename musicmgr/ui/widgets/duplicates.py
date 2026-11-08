@@ -1,5 +1,5 @@
 """Settings › Duplicates - the search thread and the results dialog
-(2026-10-13, see services/duplicates.py for what's found and why)."""
+(see services/duplicates.py for what's found and why)."""
 
 from __future__ import annotations
 

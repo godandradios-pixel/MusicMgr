@@ -1,4 +1,4 @@
-"""Charts through the USB drive (USB sync step 3's "Charts" box).
+"""Charts through the USB drive (USB sync's "Charts" box).
 
 Rides on library_state.sync_library_state as the "Charts" checkbox, but
 keeps its own files, because a chart can be big (the Billboard Hot 100

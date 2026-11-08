@@ -52,8 +52,7 @@ log = logging.getLogger(__name__)
 #: gates the real background analysis - see tests/conftest.py's autouse
 #: `_disable_spectrum_threads` fixture. Without it every test that plays
 #: real audio through a PlayerBar spawns an un-awaited SpectrumThread,
-#: and enough of them hang the suite (see architecture.md's
-#: "Audio-reactive spectrum bars on the PlayerBar"). Tests of the threaded
+#: and enough of them hang the suite. Tests of the threaded
 #: decode opt back in explicitly.
 SPECTRUM_ENABLED = True
 
@@ -118,9 +117,7 @@ class PlayerBar(QFrame):
         #: pruned as each one finishes (see _start_spectrum)
         self._spectrum_threads: List[SpectrumThread] = []
         #: referenced again by _update_height() below, once a video needs
-        #: to drop back to just this (no visualizer strip) - kept on self
-        #: rather than a local, unlike before this needed revisiting after
-        #: construction
+        #: to drop back to just this (no visualizer strip)
         self._content_height = 120
         self.setFixedHeight(self._content_height + VISUALIZER_HEIGHT)
 
@@ -498,7 +495,7 @@ class PlayerBar(QFrame):
 
     def on_state(self, state: str) -> None:
         # see PAUSE_GLYPH in ui/widgets/common.py for why this isn't "⏸" or
-        # the old single "‖" glyph.
+        # a single "‖" glyph.
         self.play_btn.setText(PAUSE_GLYPH if state == "playing" else "▶")
         # covers both the audio queue and a hand-off video - enter_video_mode
         # and exit_video_mode both funnel through this same method (see

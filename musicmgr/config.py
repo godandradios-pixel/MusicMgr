@@ -75,7 +75,7 @@ APP_ICON = ASSETS_DIR / "app_icon.ico"
 #: -- in-app updater (services/updater.py) --------------------------------
 #: The public GitHub repo whose Releases the updater checks. Compiled into
 #: every shipped binary, so changing it strands every install still
-#: pointing at the old one - see claude/2026-09-23-public-repo-setup.md.
+#: pointing at the old one.
 UPDATE_REPO = "godandradios-pixel/MusicMgr"
 #: Ed25519 public keys (base64, one per line, `#` comments allowed) that a
 #: release's SHA256SUMS.txt.sig must verify against before anything is
@@ -134,9 +134,7 @@ _HIDDEN_NAME = re.compile(r"\.[^\W\d]|\.~")
 def is_hidden_name(name: str) -> bool:
     """A dot-file or dot-folder (".git", ".DS_Store", "._Song.mp3") - but
     not a real name that just starts with a dot: the album "...But
-    Seriously" (an ellipsis) or the band ".38 Special" (a dot and a digit).
-    2026-10-25: three ".38 Special - ....mp4" videos in D:\\Videos had never
-    been imported."""
+    Seriously" (an ellipsis) or the band ".38 Special" (a dot and a digit)."""
     return bool(_HIDDEN_NAME.match(name))
 
 

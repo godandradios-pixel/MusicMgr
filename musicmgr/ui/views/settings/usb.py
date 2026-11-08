@@ -46,9 +46,8 @@ class UsbSection:
     def _build_usb(self, section) -> None:
         """Build the Usb group."""
         # ---- USB sync ----
-        # Two-way sync of music, videos and movies with a USB drive (in
-        # place of GoodSync). See services/usb_sync.py and
-        # claude/2026-09-23-usb-sync-plan.md.
+        # Sync of music, videos and movies with a USB drive. See
+        # services/usb_sync.py.
         body = section("USB sync", "usb")
 
         usb_card = QFrame()
@@ -68,7 +67,7 @@ class UsbSection:
         # sync direction, per PC (services/usb_sync.py: PREF_MODE). Check
         # boxes in an exclusive group rather than radio buttons: the skins
         # draw a clear check mark on a check box, while a radio button's dot
-        # barely showed (2026-10-27)
+        # barely showed
         mode_row = QHBoxLayout()
         mode_row.addWidget(dim_label("Sync direction:"))
         self.usb_mode_from_usb = QCheckBox("One way: USB → this PC")
@@ -169,7 +168,7 @@ class UsbSection:
         self.usb_check_btn.setObjectName("PrimaryWarm")
         self.usb_check_btn.clicked.connect(lambda: self.check_usb(auto=False))
         # the odd sync from this PC back to the USB, without changing the
-        # usual direction (2026-10-27)
+        # usual direction
         self.usb_two_way_btn = TouchButton("Two-way sync now…")
         self.usb_two_way_btn.setToolTip(
             "Check and sync both ways this once - this PC's new and changed files go to the "

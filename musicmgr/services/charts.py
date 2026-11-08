@@ -144,8 +144,8 @@ def _read_csv_text(path: Path) -> str:
     """Billboard-style chart CSVs come from all over. Most are clean UTF-8,
     but some (Kaggle-style Windows exports, for one) carry stray
     Windows-1252 bytes that aren't valid UTF-8. Each such byte is read as
-    cp1252 on its own (text_repair.decode_csv_bytes) - the old whole-file
-    cp1252 fallback turned every *other* accent in the file into mojibake
+    cp1252 on its own (text_repair.decode_csv_bytes) - a whole-file
+    cp1252 fallback would turn every *other* accent in the file into mojibake
     ("ExposÃ©"), and `errors="replace"` would lose the letter outright
     (U+FFFD) - either one can stop match_entry finding the track."""
     from .text_repair import decode_csv_bytes
@@ -1045,7 +1045,7 @@ def edition_style(dates: Iterable[dt.date]) -> str:
     chart files each year as 31 December (parse_date's bare-year rule), so
     "2025" says it better than "31 Dec 2025"; the One-Hit Wonders lists are
     one edition per decade dated 1 January 1980, 1990..., so "1980s".
-    Anything else - a weekly chart - keeps its full date. 2026-10-25."""
+    Anything else - a weekly chart - keeps its full date."""
     dates = list(dates)
     if not dates:
         return EDITION_DATE
@@ -1083,8 +1083,8 @@ def chart_playlist_name(session: Session, issue: ChartIssue, chart: Chart) -> st
 def find_edition_playlist(session: Session, issue: ChartIssue, chart: Chart) -> Optional[Playlist]:
     """The playlist already saved from this edition, if any: by its link to
     the edition first - it may have been renamed ("2025" in a decade folder)
-    - then by either default name (the full ISO date one used before
-    2026-10-25, or chart_playlist_name)."""
+    - then by either default name (the older full ISO date one, or
+    chart_playlist_name)."""
     found = session.scalar(
         select(Playlist).where(Playlist.source_issue_id == issue.id,
                                Playlist.kind == Playlist.KIND_CHART)
@@ -1409,15 +1409,14 @@ def _edition_for_playlist(
     2. its default name, "<chart> - 2003-12-31" or "<chart> - 2003"
        (chart_playlist_name);
     3. for one saved before the link existed and renamed since ("2003",
-       "1980-89" in a decade folder - 165 of PC1's 174 on 2026-10-29): the
-       year in its name picks the editions of that year, and the one whose
-       songs it shares most wins, with the chart's source (Billboard,
-       Playback, CCM) matching the playlist's folder as the tie-break.
-       Songs are compared by title, so a playlist holding a chart-folder
-       copy still recognises an edition matched to the album copy. Only a
-       clear winner counts (at least half its songs shared, and plainly
-       ahead of the next edition); otherwise None, and the playlist is left
-       alone.
+       "1980-89" in a decade folder): the year in its name picks the
+       editions of that year, and the one whose songs it shares most wins,
+       with the chart's source (Billboard, Playback, CCM) matching the
+       playlist's folder as the tie-break. Songs are compared by title, so a
+       playlist holding a chart-folder copy still recognises an edition
+       matched to the album copy. Only a clear winner counts (at least half
+       its songs shared, and plainly ahead of the next edition); otherwise
+       None, and the playlist is left alone.
 
     `cache` (any dict) is reused across calls so a year's editions are read
     once, not once per playlist."""
@@ -1565,11 +1564,11 @@ def refresh_chart_playlists(
     session: Session,
     progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> ChartPlaylistRefresh:
-    """Settings' "Chart playlists" › Update button: rebuild every playlist
-    saved from a chart edition from that edition's current matches - the
-    same songs "Save as playlist" would give it now - so fixes made on the
-    Charts page before 2026-10-29 (when fixes started carrying over by
-    themselves, see sync_edition_playlist) reach the playlists too.
+    """Rebuild every playlist saved from a chart edition from that edition's
+    current matches - the same songs "Save as playlist" would give it now
+    (offered after Settings › Charts › Re-match…). Fixes made on the Charts
+    page carry over by themselves (sync_edition_playlist); this brings
+    playlists saved or fixed before that link existed into line.
 
     Like "Save as playlist", this replaces each playlist's song list, so
     songs added or reordered there by hand are lost; its name, folder and
@@ -1584,8 +1583,7 @@ def refresh_chart_playlists(
     Before rebuilding, a chart position that has lost its match but whose
     song the playlist plainly holds - same title, same artist
     (_adopt_playlist_matches) - is matched to that song again, so the
-    rebuild doesn't drop a song that was right (PC1, 2026-10-29: Tequila by
-    the Champs, The Way by Fastball and ~20 more)."""
+    rebuild doesn't drop a song that was right."""
     result = ChartPlaylistRefresh()
     cache: dict = {}
     playlists = list(session.scalars(

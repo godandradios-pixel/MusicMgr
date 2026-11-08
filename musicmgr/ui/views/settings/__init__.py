@@ -44,8 +44,7 @@ steps with no per-step undo, so Cancel never appears while it runs.
 # The page is a package with one module per section (library.py, usb.py,
 # ...). This module re-exports what the app and the tests import from
 # `musicmgr.ui.views.settings`: the page itself, two helpers the tests
-# use, and the Qt dialogs/config the tests patch through it (2026-11-08:
-# trimmed from ~100 leftover imports from before the split).
+# use, and the Qt dialogs/config the tests patch through it.
 
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QTextBrowser

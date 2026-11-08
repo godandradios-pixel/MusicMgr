@@ -1,11 +1,10 @@
 """Library Health: one check-up of the library against the disk and itself.
 
-2026-10-25 (James): what was done by hand that day - a scan for records
-with no file, files the library never imported (the ".38 Special" videos),
-chart positions linked to the wrong song, chart editions with missing
-positions - as one Settings button (Files & data › Library health), with a
-fix next to each finding that has one. Every fix saves a copy of the
-library first (backups\\library-before-health-fix-<time>.db).
+Records with no file, files the library never imported, chart positions
+linked to the wrong song, chart editions with missing positions and more,
+as one Settings button (Files & data › Library health), with a fix next to
+each finding that has one. Every fix saves a copy of the library first
+(backups\\library-before-health-fix-<time>.db).
 
 `check_library` is read-only and returns a `HealthReport` of `Finding`s;
 `apply_fix(session, key)` runs one finding's fix. The checks:
@@ -14,8 +13,7 @@ library first (backups\\library-before-health-fix-<time>.db).
   "Remove them" - Settings' own purge (settings/library.py:
   purge_missing_files), which re-checks the disk, asks first, keeps songs
   that still have history and then offers to remove those too. It runs in
-  Settings, not apply_fix, because it asks questions along the way
-  (2026-10-31: this replaced the separate Verify files row).
+  Settings, not apply_fix, because it asks questions along the way.
 - **not_imported** - music and video files in the watched folders that
   the library doesn't have. Fix: import them.
 - **no_file_songs** - songs with no file record at all (kept alive by a

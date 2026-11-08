@@ -254,11 +254,10 @@ def _remove_quietly(path: Path) -> None:
 
 # -- library snapshot on the USB drive -----------------------------------------
 #
-# 2026-10-25 (James): each USB sync also leaves a copy of this PC's library on
-# the drive, as <drive>\MusicMgr\data-YYYYMMDD - the folder the drive's
+# Each USB sync also leaves a copy of this PC's library on the drive, as
+# <drive>\MusicMgr\data-YYYYMMDD - the folder the drive's
 # Install-MusicMgr.bat and Copy-USB-to-D.bat look for (the newest data*
-# folder holding a library.db). Before this the only copy there was one made
-# by hand, nine days old.
+# folder holding a library.db).
 #
 # What goes in, and why it's taken *after* the library data sync:
 # - library.db, consistent and checked (the same backup-API copy as the

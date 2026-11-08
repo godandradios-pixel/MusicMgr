@@ -249,7 +249,7 @@ def _seq_ratio(x: str, y: str, need: float) -> float:
     matter: the best score they already have, or the cut-off below which
     they throw the result away - so what they end up with is exactly the
     same, only faster (chart matching compares each chart song with up to
-    800 library titles, and most can't come near; 2026-10-29)."""
+    800 library titles, and most can't come near)."""
     sm = difflib.SequenceMatcher(None, x, y)
     if need > 0.0 and (sm.real_quick_ratio() < need or sm.quick_ratio() < need):
         return 0.0
@@ -281,12 +281,12 @@ def similarity(a: str, b: str, floor: float = 0.0) -> float:
 
 
 #: below this artist similarity a chart entry never matches, however exact
-#: the title (see score_pair). Was 0.45 until 2026-10-29: two unrelated short
-#: names score about 0.5 on spelling alone, and PC1's charts had ~1,000
-#: songs matched to another act's record of the same title ("Rod Wave" /
-#: "Matroda", "Post Malone" / "The Police", "Natalie Cole" / "Nat King
-#: Cole"). Spelling variants of the same act now score high instead (see
-#: _artist_core), so the bar can sit where different acts fall below it.
+#: the title (see score_pair). Two unrelated short names score about 0.5 on
+#: spelling alone, which a lower bar let through to another act's record of
+#: the same title ("Rod Wave" / "Matroda", "Post Malone" / "The Police",
+#: "Natalie Cole" / "Nat King Cole"). Spelling variants of the same act score
+#: high instead (see _artist_core), so the bar can sit where different acts
+#: fall below it.
 MIN_ARTIST_SIMILARITY = 0.8
 #: ...and below this title similarity it never matches, however exact the
 #: artist: a one-hit wonder ("Hurricane" by MS MR) mustn't land on another
@@ -397,10 +397,9 @@ NAME_PAIR_SIMILARITY = 0.75
 #: Orchestra", "Jack Teter Trio", "(Little Jack Little, vocal)". Two
 #: different 1930s-40s bands shared enough of these that "Riley-Farley
 #: Orchestra" scored 0.58 against "Tommy Dorsey And His Orchestra" and
-#: "Jack Teter Trio" 0.48 against "Nat King Cole Trio" - both over the old
-#: artist minimum, so a song recorded by many acts in the same year matched
-#: the wrong record (2026-10-29). artist_similarity compares the names with
-#: these left out.
+#: "Jack Teter Trio" 0.48 against "Nat King Cole Trio" - enough for a song
+#: recorded by many acts in the same year to match the wrong record.
+#: artist_similarity compares the names with these left out.
 _ACT_WORDS = frozenset(
     "orchestra orch orchestre his her their and with band trio quartet quintet "
     "sextet septet octet ensemble singers chorus choir vocal vocals vocalist "

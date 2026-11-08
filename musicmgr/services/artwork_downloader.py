@@ -8,8 +8,8 @@ beyond a file's embedded tag (see services/scanner.py's `_save_cover`).
 Source: the Discogs database search API (`/database/search`,
 `type=release`), chosen over iTunes and MusicBrainz/Cover Art Archive for
 better coverage of vinyl, obscure and out-of-print releases, with no
-MusicBrainz-ID resolution step (the app's data model is Discogs-shaped too,
-see architecture.md). Needs a free personal access token from
+MusicBrainz-ID resolution step (the app's data model is Discogs-shaped
+too). Needs a free personal access token from
 discogs.com/settings/developers - see `DiscogsCredentialsDialog` in
 ui/views/settings/; stored like `lastfm_popularity.py`'s API key
 (`TOKEN_KEY`/`get_api_token`/`set_api_token`).

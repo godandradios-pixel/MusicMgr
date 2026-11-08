@@ -1,12 +1,11 @@
 """Accent- and case-blind text for search boxes.
 
-2026-10-30 (James): searching "expose" didn't find Exposé, "beyonce" didn't
-find Beyoncé, "motley crue" didn't find Mötley Crüe, "dont" or "don't"
-missed a title tagged with a curly apostrophe (Don’t). Every search
-compared text as typed: SQLite's ILIKE only folds A-Z, and the Library
-filter boxes used ``needle in text.lower()``.
+Searching "expose" should find Exposé, "beyonce" Beyoncé, "motley crue"
+Mötley Crüe, and "dont" or "don't" a title tagged with a curly apostrophe
+(Don’t). Text compared as typed misses all of these: SQLite's ILIKE only
+folds A-Z.
 
-`fold` is the one rule every search now uses - accents dropped, case folded
+`fold` is the one rule every search uses - accents dropped, case folded
 (ß -> ss too), letters NFKD can't split (ø æ œ ł đ þ) spelled out, curly
 quotes and long dashes made plain. It's applied to *both* sides, so typing
 the accent still works ("Exposé" finds a file tagged "Expose" as well).

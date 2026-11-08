@@ -1,4 +1,4 @@
-"""Settings › Appearance (split out of settings.py, 2026-10-22)."""
+"""Settings › Appearance."""
 
 from __future__ import annotations
 
@@ -15,14 +15,11 @@ class AppearanceSection:
     methods share the view's state."""
 
     def _build_appearance(self, section) -> None:
-        """Build the Appearance group (moved out of __init__, 2026-10-22)."""
-        # ---- appearance (2026-10-13) ----
-        # James: "I would like the ability for the users to change 'skins'.
-        # Right now it's the brown pallete" ... "apply at restart. and the
-        # jukebox, radio and turntable can also get their own finish
-        # choice." A skin for the app, a finish for each of the three
-        # pieces of equipment - see ui/skins.py. Saved per PC; shown from
-        # the next start (Restart now).
+        """Build the Appearance group."""
+        # ---- appearance ----
+        # A skin for the app, and a finish for each of the three pieces of
+        # equipment (jukebox, radio, turntable) - see ui/skins.py. Saved per
+        # PC; shown from the next start (Restart now).
         body = section("Appearance", "appearance")
         look_card = QFrame()
         look_card.setObjectName("Card")
@@ -52,13 +49,11 @@ class AppearanceSection:
         look_row.addWidget(self.look_status, 1)
         look_row.addWidget(self.look_restart_btn)
         lgrid.addLayout(look_row, 4, 1)
-        # ---- radio bands (2026-11-08) ----
-        # James: "I would like a settings option where I can turn off the
-        # SiriusXM band of the radio and it would disappear from the
-        # display". Off takes the SXM strip and key off the Radio page (the
-        # other bands spread out to fill the glass) and its channels off the
-        # phone remote; the channels stay saved, so on brings them back.
-        # Applies straight away - no restart (services/stations.py).
+        # ---- radio bands ----
+        # Off takes the SXM strip and key off the Radio page (the other
+        # bands spread out to fill the glass) and its channels off the phone
+        # remote; the channels stay saved, so on brings them back. Applies
+        # straight away - no restart (services/stations.py).
         self.sxm_band_cb = QCheckBox("Show the SiriusXM (SXM) band")
         self.sxm_band_cb.setToolTip(
             "Untick to take the SXM band off the radio dial and the phone remote. "

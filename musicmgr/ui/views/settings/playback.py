@@ -1,4 +1,4 @@
-"""Settings › Playback (split out of settings.py, 2026-10-22)."""
+"""Settings › Playback."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ class PlaybackSection:
     methods share the view's state."""
 
     def _build_playback(self, section) -> None:
-        """Build the Playback group (moved out of __init__, 2026-10-22)."""
-        # ---- playback (2026-10-01) ----
+        """Build the Playback group."""
+        # ---- playback ----
         # Crossfade/gapless and volume levelling - see services/player.py's
         # module docstring and services/replaygain.py.
         body = section("Playback", "playback")
@@ -44,9 +44,8 @@ class PlaybackSection:
         self.preamp_combo = combo(PREAMP_CHOICES)
         self.levels_status = dim_label("")
         self.levels_status.setWordWrap(True)
-        # 2026-10-31: moved here from Maintenance › Volume levels, beside
-        # the setting it feeds - reads ReplayGain tags or measures loudness
-        # for every track without a level yet (services/replaygain.py)
+        # beside the setting it feeds: reads ReplayGain tags or measures
+        # loudness for every track without a level yet (services/replaygain.py)
         self.analyze_levels_btn = TouchButton("Analyze all…")
         self.analyze_levels_btn.setToolTip(
             "Read ReplayGain tags, or measure loudness, for every track without a level "

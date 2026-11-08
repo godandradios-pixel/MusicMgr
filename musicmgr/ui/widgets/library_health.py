@@ -1,5 +1,5 @@
 """Settings › Library health - the check thread, the fix thread and the
-results dialog (2026-10-25; see services/library_health.py)."""
+results dialog (see services/library_health.py)."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ class HealthFixThread(QThread):
 
 class ChartSongEditDialog(QDialog):
     """Fix a garbled chart song by hand from Library health: its title and
-    artist, applied to every position it holds (2026-11-03)."""
+    artist, applied to every position it holds."""
 
     def __init__(self, parent, title: str, artist: str, positions: int) -> None:
         super().__init__(parent)
@@ -247,8 +247,7 @@ class LibraryHealthDialog(QDialog):
         """`remove_missing` runs the "Records whose file is gone" fix - the
         Settings purge, which confirms (and backs nothing up: it only
         removes records of files that are gone) - and returns what it did,
-        or "" if nothing was done. 2026-10-31: replaces the old Verify
-        files row."""
+        or "" if nothing was done."""
         super().__init__(parent)
         self.report = report
         self._remove_missing = remove_missing
