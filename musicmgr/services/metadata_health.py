@@ -35,9 +35,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, func, select
 
-from ..db.models import Artist, ArtistTopTrack, MediaFile, Release, Track
+from ..db.models import Artist, ArtistTopTrack, MediaFile, Release, Track, release_genres
 from ..db.session import session_scope
 from . import artist_bio_downloader as bio_dl
 from . import artwork_downloader as artwork_dl
@@ -55,6 +55,7 @@ class ScanResult:
     missing_bios: list = field(default_factory=list)
     missing_popularity: list = field(default_factory=list)
     missing_lyrics: list = field(default_factory=list)
+    missing_tags: list = field(default_factory=list)
 
 
 def scan_missing_metadata(
@@ -80,22 +81,26 @@ def scan_missing_metadata(
             progress(0, 0, name)
 
     if should_stop and should_stop():
-        return ScanResult([], [], [], [])
+        return ScanResult()
     tick("Checking album artwork…")
     covers = releases_missing_cover_rows()
     if should_stop and should_stop():
-        return ScanResult(covers, [], [], [])
+        return ScanResult(covers)
     tick("Checking artist profiles…")
     bios = artists_missing_bio_rows()
     if should_stop and should_stop():
-        return ScanResult(covers, bios, [], [])
+        return ScanResult(covers, bios)
     tick("Checking track popularity…")
     popularity = artists_missing_popularity_rows()
     if should_stop and should_stop():
-        return ScanResult(covers, bios, popularity, [])
+        return ScanResult(covers, bios, popularity)
+    tick("Checking tags…")
+    tags = releases_missing_tags_rows()
+    if should_stop and should_stop():
+        return ScanResult(covers, bios, popularity, [], tags)
     tick("Checking lyrics…")
     lyrics = releases_missing_lyrics_rows(progress=progress, should_stop=should_stop)
-    return ScanResult(covers, bios, popularity, lyrics)
+    return ScanResult(covers, bios, popularity, lyrics, tags)
 
 
 def releases_missing_cover_rows(limit: Optional[int] = None) -> list[dict]:
@@ -152,6 +157,98 @@ def artists_missing_popularity_rows(limit: Optional[int] = None) -> list[dict]:
         if limit:
             stmt = stmt.limit(limit)
         return [{"id": aid, "name": name or ""} for aid, name in db.execute(stmt).all()]
+
+
+#: what the scanner files a song under when it has no artist tag (and no
+#: album artist to fall back on) - see scanner.py's read_tags
+UNKNOWN_ARTIST = "Unknown Artist"
+
+
+def releases_missing_tags_rows(limit: Optional[int] = None) -> list[dict]:
+    """Every album with at least one playable file that's missing a year,
+    a genre, or a real artist on any of its songs - the "Missing tags" tab
+    (MusicBee's "missing tags" view). One row per album:
+    `{"id", "title", "artist", "no_year", "no_genre", "unknown_artist",
+    "total"}`, where `unknown_artist`/`total` count the album's playable
+    songs filed under "Unknown Artist".
+
+    Year and genre live on the Release (the scanner takes them from the
+    files' tags), so this is one indexed query, no file I/O. A missing
+    *album* tag isn't checked: the scanner names the album after its
+    folder, which can't be told apart from a real tag without reading
+    every file. The "?" artist (? and the Mysterians) is a real name, not a
+    blank one, so it isn't counted.
+
+    Tapping a row opens Edit tags for that album's songs (see
+    ui/views/settings/maintenance.py: _open_missing_metadata_dialog)."""
+    with session_scope() as db:
+        playable = (
+            select(MediaFile.track_id.label("track_id"))
+            .where(MediaFile.is_missing.is_(False))
+            .group_by(MediaFile.track_id)
+            .subquery()
+        )
+        has_genre = select(release_genres.c.release_id).distinct()
+        stmt = (
+            select(
+                Release.id,
+                Release.title,
+                Release.artist_display,
+                Release.year,
+                Release.id.in_(has_genre).label("has_genre"),
+                func.count(Track.id).label("total"),
+                func.sum(
+                    (Track.artist_display == UNKNOWN_ARTIST).cast(Integer)
+                ).label("unknown"),
+            )
+            .join(Track, Track.release_id == Release.id)
+            .join(playable, playable.c.track_id == Track.id)
+            .group_by(Release.id)
+        )
+        rows: list[dict] = []
+        for rid, title, artist, year, has_g, total, unknown in db.execute(stmt):
+            unknown = int(unknown or 0)
+            if (artist or "") == UNKNOWN_ARTIST and not unknown:
+                unknown = int(total or 0)
+            row = {
+                "id": rid,
+                "title": title or "",
+                "artist": artist or "",
+                "no_year": not year,
+                "no_genre": not has_g,
+                "unknown_artist": unknown,
+                "total": int(total or 0),
+            }
+            if row["no_year"] or row["no_genre"] or row["unknown_artist"]:
+                rows.append(row)
+        rows.sort(key=lambda r: (r["title"].casefold(), r["artist"].casefold()))
+        return rows[:limit] if limit else rows
+
+
+def missing_tags_summary(row: dict) -> str:
+    """"No year · No genre · 3/12 Unknown Artist" - the Tags tab's trail."""
+    parts = []
+    if row.get("no_year"):
+        parts.append("No year")
+    if row.get("no_genre"):
+        parts.append("No genre")
+    if row.get("unknown_artist"):
+        parts.append(f"{row['unknown_artist']}/{row['total']} {UNKNOWN_ARTIST}")
+    return " · ".join(parts)
+
+
+def track_ids_for_release(release_id: int) -> list[int]:
+    """The album's songs that still have a file - what Edit tags opens
+    with from the Tags tab (a song with no file has no tags to edit)."""
+    with session_scope() as db:
+        stmt = (
+            select(Track.id)
+            .join(MediaFile, MediaFile.track_id == Track.id)
+            .where(Track.release_id == release_id, MediaFile.is_missing.is_(False))
+            .distinct()
+            .order_by(Track.disc_no, Track.track_no)
+        )
+        return [tid for (tid,) in db.execute(stmt)]
 
 
 def releases_missing_lyrics_rows(

@@ -247,3 +247,89 @@ class TestScanMissingMetadata:
         assert no_bio.id in {r["id"] for r in result.missing_bios}
         assert result.missing_popularity == []
         assert result.missing_lyrics == []
+
+
+# --------------------------------------------------------------------------
+# 2026-11-08: Missing tags (MusicBee's "missing tags" view) - albums with a
+# playable file but no year, no genre, or songs filed as "Unknown Artist"
+# --------------------------------------------------------------------------
+
+
+def _with_file(session, track, path, *, missing=False):
+    session.add(MediaFile(track_id=track.id, path=str(path), is_missing=missing))
+    session.flush()
+
+
+def _complete(session, release, year=1965, genre="Rock"):
+    release.year = year
+    release.genres = [lib.get_or_create_genre(session, genre)]
+    session.flush()
+
+
+class TestReleasesMissingTagsRows:
+    def test_a_fully_tagged_album_is_not_listed(self, session, tmp_path):
+        _, rel, track = make_track(session, "Song", artist="A", album="Complete")
+        _complete(session, rel)
+        _with_file(session, track, tmp_path / "a.mp3")
+
+        assert mh.releases_missing_tags_rows() == []
+
+    def test_missing_year_and_missing_genre_are_flagged_separately(self, session, tmp_path):
+        _, no_year, t1 = make_track(session, "Song", artist="A", album="No Year")
+        no_year.genres = [lib.get_or_create_genre(session, "Jazz")]
+        _with_file(session, t1, tmp_path / "1.mp3")
+        _, no_genre, t2 = make_track(session, "Song", artist="B", album="No Genre")
+        no_genre.year = 1948
+        _with_file(session, t2, tmp_path / "2.mp3")
+
+        rows = {r["id"]: r for r in mh.releases_missing_tags_rows()}
+
+        assert rows[no_year.id]["no_year"] and not rows[no_year.id]["no_genre"]
+        assert rows[no_genre.id]["no_genre"] and not rows[no_genre.id]["no_year"]
+
+    def test_unknown_artist_songs_are_counted_and_question_mark_is_not(self, session, tmp_path):
+        _, rel, t1 = make_track(session, "One", artist="Unknown Artist", album="Mixed")
+        _complete(session, rel)
+        _with_file(session, t1, tmp_path / "1.mp3")
+        _, _, t2 = make_track(session, "Two", artist="Unknown Artist", album="Mixed")
+        _with_file(session, t2, tmp_path / "2.mp3")
+
+        _, qm, t3 = make_track(session, "96 Tears", artist="?", album="96 Tears")
+        _complete(session, qm)
+        _with_file(session, t3, tmp_path / "3.mp3")
+
+        rows = {r["id"]: r for r in mh.releases_missing_tags_rows()}
+
+        assert rows[rel.id]["unknown_artist"] == rows[rel.id]["total"]
+        assert qm.id not in rows
+
+    def test_albums_with_no_playable_file_are_skipped(self, session, tmp_path):
+        _, rel, track = make_track(session, "Gone", artist="A", album="Ghost")
+        _with_file(session, track, tmp_path / "gone.mp3", missing=True)
+        _, bare, _ = make_track(session, "No File", artist="B", album="Bare")
+
+        ids = {r["id"] for r in mh.releases_missing_tags_rows()}
+
+        assert rel.id not in ids and bare.id not in ids
+
+    def test_summary_names_each_gap(self):
+        row = {"no_year": True, "no_genre": True, "unknown_artist": 3, "total": 12}
+        assert mh.missing_tags_summary(row) == "No year · No genre · 3/12 Unknown Artist"
+        assert mh.missing_tags_summary({"no_year": False, "no_genre": True,
+                                        "unknown_artist": 0, "total": 5}) == "No genre"
+
+    def test_track_ids_for_release_only_includes_songs_with_a_file(self, session, tmp_path):
+        _, rel, kept = make_track(session, "Kept", artist="A", album="Half")
+        _with_file(session, kept, tmp_path / "kept.mp3")
+        _, _, lost = make_track(session, "Lost", artist="A", album="Half")
+        _with_file(session, lost, tmp_path / "lost.mp3", missing=True)
+
+        assert mh.track_ids_for_release(rel.id) == [kept.id]
+
+    def test_scan_missing_metadata_includes_tags(self, session, tmp_path):
+        _, rel, track = make_track(session, "Song", artist="A", album="Untagged")
+        _with_file(session, track, tmp_path / "s.mp3")
+
+        result = mh.scan_missing_metadata()
+
+        assert rel.id in {r["id"] for r in result.missing_tags}

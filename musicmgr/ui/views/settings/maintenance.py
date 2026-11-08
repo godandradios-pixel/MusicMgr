@@ -636,6 +636,7 @@ class MaintenanceSection:
         dialog = MissingMetadataDialog(
             result.missing_covers, result.missing_bios,
             result.missing_popularity, result.missing_lyrics,
+            missing_tags=result.missing_tags,
             visited=self._metadata_visited, parent=self,
         )
         code = dialog.exec()
@@ -659,6 +660,9 @@ class MaintenanceSection:
             return
         kind, item_id = picked
         self._metadata_visited.add((kind, item_id))
+        if kind == "tags":
+            self._edit_missing_tags(result, item_id)
+            return
         self.ctx.navigateRequested.emit("library")
         # the "FromMissingMetadata" variants (not the plain
         # openArtistRequested/openReleaseRequested Now Playing's own
@@ -668,6 +672,32 @@ class MaintenanceSection:
             self.ctx.openArtistFromMissingMetadataRequested.emit(item_id)
         else:
             self.ctx.openReleaseFromMissingMetadataRequested.emit(item_id)
+
+    #: tests swap the dialog out
+    tag_editor_class = None
+
+    def _edit_missing_tags(self, result: metadata_health.ScanResult, release_id: int) -> None:
+        """Missing info › Tags: open Edit tags on that album's songs right
+        here, then come back to the list. A save re-runs only the Tags
+        query (one fast SQL query - the lyrics scan isn't repeated), so the
+        fixed album drops off and anything still missing stays listed."""
+        track_ids = metadata_health.track_ids_for_release(release_id)
+        if not track_ids:
+            self.ctx.notify("That album has no songs with a file to edit")
+        else:
+            from ...widgets.tag_editor import TagEditorDialog
+
+            cls = self.tag_editor_class or TagEditorDialog
+            dialog = cls(self.ctx, track_ids, parent=self)
+            saved: list = []
+            if hasattr(dialog, "saved"):
+                dialog.saved.connect(saved.append)
+            dialog.exec()
+            if hasattr(dialog, "deleteLater"):
+                dialog.deleteLater()
+            if saved:
+                result.missing_tags = metadata_health.releases_missing_tags_rows()
+        self._open_missing_metadata_dialog(result)
 
     # ---- Missing info › Fill in everything ----
 

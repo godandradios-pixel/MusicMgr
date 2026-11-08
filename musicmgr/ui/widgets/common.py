@@ -1449,7 +1449,9 @@ class MissingMetadataDialog(QDialog):
     """Settings' "Missing info" dashboard - one screen listing what's
     missing cover art, bio, lyrics or popularity data, one tab per
     enrichment source, each a `TouchList`, with buttons that fill the gaps
-    in (see ACTION).
+    in (see ACTION) - plus a Tags tab for albums missing a year, a genre or
+    a real artist (`metadata_health.releases_missing_tags_rows`), whose
+    rows `picked()` reports as kind "tags" so Settings opens Edit tags.
 
     Takes the four already-computed row lists (see
     `services.metadata_health`) rather than querying anything itself - the
@@ -1498,6 +1500,7 @@ class MissingMetadataDialog(QDialog):
         missing_bios: list,
         missing_popularity: list,
         missing_lyrics: list,
+        missing_tags: Optional[list] = None,
         visited: Optional[set] = None,
         parent=None,
     ) -> None:
@@ -1530,6 +1533,13 @@ class MissingMetadataDialog(QDialog):
         tabs.addTab(
             self._build_tab(missing_lyrics, "release", "No releases missing lyrics."),
             f"Lyrics ({len(missing_lyrics)})",
+        )
+        missing_tags = missing_tags or []
+        tabs.addTab(
+            self._build_tab(
+                missing_tags, "tags", "No albums missing a year, genre or artist."
+            ),
+            f"Tags ({len(missing_tags)})",
         )
 
         # Seeing what's missing and filling it in are one place: a button
@@ -1598,6 +1608,10 @@ class MissingMetadataDialog(QDialog):
     def _row_payload(self, row: dict, kind: str) -> dict:
         if kind == "artist":
             payload = {"primary": row["name"], "kind": "artist", "id": row["id"]}
+        elif kind == "tags":
+            payload = {"primary": row["title"], "secondary": row.get("artist", ""),
+                       "kind": "tags", "id": row["id"],
+                       "trail": metadata_health.missing_tags_summary(row)}
         else:
             payload = {"primary": row["title"], "secondary": row.get("artist", ""),
                        "kind": "release", "id": row["id"]}
@@ -1613,7 +1627,8 @@ class MissingMetadataDialog(QDialog):
         self.accept()
 
     def picked(self) -> Optional[tuple]:
-        """`(kind, id)` - `kind` is "artist" or "release" - for whichever
+        """`(kind, id)` - `kind` is "artist", "release", or "tags" (a
+        release from the Tags tab, to open in Edit tags) - for whichever
         row was tapped, or None if the dialog was just closed/cancelled."""
         return self._picked
 

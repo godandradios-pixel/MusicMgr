@@ -524,13 +524,68 @@ class TestMissingMetadataDashboard:
     def test_the_tab_button_follows_the_tab(self, qapp):
         dialog = MissingMetadataDialog([], [], [], [])
         labels = []
-        for i in range(4):
+        for i in range(5):
             dialog.tabs.setCurrentIndex(i)
             labels.append(dialog.tab_action_btn.text() if not dialog.tab_action_btn.isHidden() else None)
-        assert labels == ["Search Discogs for all", "Download all", "Update all", None]
+        assert labels == ["Search Discogs for all", "Download all", "Update all", None, None]
         dialog.tabs.setCurrentIndex(1)
         dialog.tab_action_btn.click()
         assert dialog.result() == MissingMetadataDialog.ACTION and dialog.action() == "profiles"
+
+    def test_the_tags_tab_lists_albums_with_what_is_missing(self, qapp):
+        # 2026-11-08: Missing tags - MusicBee's "missing tags" view
+        row = {"id": 5, "title": "Old 78s", "artist": "Various", "no_year": True,
+               "no_genre": False, "unknown_artist": 2, "total": 4}
+        dialog = MissingMetadataDialog([], [], [], [], missing_tags=[row])
+        assert dialog.tabs.tabText(4) == "Tags (1)"
+        payload = dialog._row_payload(row, "tags")
+        assert payload["kind"] == "tags" and payload["id"] == 5
+        assert payload["trail"] == "No year · 2/4 Unknown Artist"
+        dialog.tabs.setCurrentIndex(4)
+        assert dialog.tab_action_btn.isHidden()
+
+    def test_picking_a_tags_row_opens_edit_tags_then_returns(self, view, ctx, monkeypatch):
+        view._last_metadata_scan = metadata_health.ScanResult(
+            missing_tags=[{"id": 9, "title": "A", "artist": "B", "no_year": True,
+                           "no_genre": False, "unknown_artist": 0, "total": 2}],
+        )
+        picks = iter([("tags", 9), None])
+        monkeypatch.setattr(MissingMetadataDialog, "exec", lambda self: QDialog.Accepted)
+        monkeypatch.setattr(MissingMetadataDialog, "picked", lambda self: next(picks))
+        monkeypatch.setattr(metadata_health, "track_ids_for_release", lambda rid: [31, 32])
+        monkeypatch.setattr(metadata_health, "releases_missing_tags_rows", lambda: [])
+        opened = []
+
+        class FakeEditor:
+            def __init__(self, ctx_, track_ids, parent=None):
+                opened.append(track_ids)
+                self.saved = _Sig()
+
+            def exec(self):
+                self.saved.emit(object())
+
+        class _Sig:
+            def __init__(self):
+                self._slots = []
+
+            def connect(self, fn):
+                self._slots.append(fn)
+
+            def emit(self, value):
+                for fn in self._slots:
+                    fn(value)
+
+        view.tag_editor_class = FakeEditor
+        navigated = []
+        ctx.navigateRequested.connect(navigated.append)
+
+        view.view_missing_metadata()
+
+        assert opened == [[31, 32]]
+        assert navigated == []
+        assert ("tags", 9) in view._metadata_visited
+        # a save re-runs just the Tags query on the cached scan
+        assert view._last_metadata_scan.missing_tags == []
 
     def test_clicking_rescan_clears_the_cache_and_starts_a_new_scan(self, view, monkeypatch):
         monkeypatch.setattr(settings_module.maintenance, "MetadataScanThread", _FakeMetadataScanThread)
