@@ -169,11 +169,6 @@ def load_rows(session, track_ids: Sequence[int]) -> list[EditRow]:
     return rows
 
 
-def load_rows_for_release(session, release_id: int) -> list[EditRow]:
-    ids = list(session.scalars(select(Track.id).where(Track.release_id == release_id)))
-    return load_rows(session, ids)
-
-
 # --------------------------------------------------------------------------
 # saving
 # --------------------------------------------------------------------------
@@ -430,7 +425,7 @@ def save_edits_in(
     commit()
 
     # 5. charts
-    result.charts_matched = _rematch_charts(session, result.track_ids, set(result.moves))
+    result.charts_matched = _rematch_charts(session, result.track_ids)
     commit()
     return result
 
@@ -594,7 +589,7 @@ def _refresh_release(session, rel: Release) -> None:
         rel.master.year = rel.year
 
 
-def _rematch_charts(session, track_ids: set[int], moved_from: set[int]) -> int:
+def _rematch_charts(session, track_ids: set[int]) -> int:
     """Re-match chart rows for the edited songs. Returns how many rows
     point at one of them afterwards that didn't before."""
     if not track_ids:

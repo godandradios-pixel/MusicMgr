@@ -60,7 +60,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 NUMBER_PREFIX = re.compile(r"^\d+(?:[-\s]\d+)*[-\s]$")
 

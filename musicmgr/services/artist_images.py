@@ -215,12 +215,3 @@ def artists_without_images(session: Session, limit: int = 50) -> list[str]:
         .limit(limit)
     )
     return [a.name for a in session.scalars(stmt)]
-
-
-def clear_artist_images(session: Session) -> int:
-    count = 0
-    for artist in session.scalars(select(Artist).where(Artist.image_path.is_not(None))):
-        artist.image_path = None
-        count += 1
-    session.flush()
-    return count

@@ -189,7 +189,7 @@ class ChartTable(QTreeWidget):
         # 100px shows the "Coverage" header whole
         header.resizeSection(COL_COVERAGE, 100)
         # Type is hidden: charts are filed Source > Genre > Type
-        # (tools/organize_charts_by_source.py names each chart "Year End" or
+        # (tools/archive/organize_charts_by_source.py names each chart "Year End" or
         # "Weekly"), so the column would repeat the name. Kept so it can
         # come back with one line.
         self.setColumnHidden(COL_TYPE, True)
@@ -214,11 +214,6 @@ class ChartTable(QTreeWidget):
         self._charts = list(charts)
         self._chart_by_id = {c.id: c for c in self._charts}
         self._rebuild()
-
-    def set_issues_provider(
-        self, provider: Optional[Callable[[int], Sequence[ChartIssueNode]]]
-    ) -> None:
-        self._issues_provider = provider
 
     def set_filter_text(self, text: str) -> None:
         text = text.strip()
@@ -481,17 +476,3 @@ class ChartTable(QTreeWidget):
         for i in range(self.topLevelItemCount()):
             walk(self.topLevelItem(i))
         return names
-
-    def visible_chart_names(self) -> list[str]:
-        """Chart leaf names in the order currently rendered - respects sort,
-        grouping and the active filter."""
-        return self._visible_names("chart")
-
-    def visible_folder_names(self) -> list[str]:
-        return self._visible_names("folder")
-
-    def visible_issue_labels(self) -> list[str]:
-        """Edition labels currently rendered - only ever non-empty for a
-        chart that's actually expanded, since editions are lazy (see module
-        docstring)."""
-        return self._visible_names("issue")

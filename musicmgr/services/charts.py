@@ -1334,7 +1334,6 @@ _KEEP_FOLDER = object()
 def snapshot_to_playlist(
     session: Session,
     issue_id: int,
-    owned_only: bool = True,
     folder_id=_KEEP_FOLDER,
 ) -> Playlist:
     """Freeze a chart week as a real playlist you can queue.

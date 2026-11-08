@@ -37,7 +37,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,

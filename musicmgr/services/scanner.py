@@ -17,10 +17,9 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
 import mutagen
-from mutagen.flac import FLAC, Picture
+from mutagen.flac import FLAC
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
-from mutagen.oggvorbis import OggVorbis
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 

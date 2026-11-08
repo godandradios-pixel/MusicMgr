@@ -1886,7 +1886,3 @@ def _nothing_sent(notes: MergeNotes) -> None:
     for f in dataclass_fields(notes):
         if f.name.endswith("_out"):
             setattr(notes, f.name, False if isinstance(getattr(notes, f.name), bool) else 0)
-
-
-def count_plays(db: Session) -> int:
-    return db.scalar(select(func.count()).select_from(PlayEvent)) or 0

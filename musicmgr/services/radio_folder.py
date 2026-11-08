@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 _DRIVE_RADIO = re.compile(r"^[a-z]:/radio/")
 
@@ -45,7 +45,3 @@ def roots(session) -> list[str]:
 def is_radio_path(path: str, radio_roots: Sequence[str]) -> bool:
     p = _norm(path)
     return bool(_DRIVE_RADIO.match(p)) or any(p.startswith(r) for r in radio_roots)
-
-
-def without_radio(paths: Iterable, radio_roots: Sequence[str]) -> list:
-    return [p for p in paths if not is_radio_path(str(p), radio_roots)]

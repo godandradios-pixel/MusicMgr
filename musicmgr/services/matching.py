@@ -11,7 +11,7 @@ import difflib
 import functools
 import re
 import unicodedata
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 _ARTICLES = ("the ", "a ", "an ")
 

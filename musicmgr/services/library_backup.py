@@ -198,10 +198,6 @@ def pending_restore(marker: Path) -> Optional[Path]:
     return Path(text) if text else None
 
 
-def cancel_restore(marker: Path) -> None:
-    _remove_quietly(marker)
-
-
 def apply_pending_restore(db_path: Path, backup_dir: Path, marker: Path) -> Optional[RestoreOutcome]:
     """Call before the database is opened. None when no restore was asked
     for. The marker is always removed, so a failing restore can't repeat

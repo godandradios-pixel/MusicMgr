@@ -35,7 +35,7 @@ from ..db.models import (
     Release,
     Video,
 )
-from .matching import normalize, sort_name
+from .matching import sort_name
 
 #: (kept name, spellings merged into it)
 ARTIST_MERGES: tuple[tuple[str, tuple[str, ...]], ...] = (

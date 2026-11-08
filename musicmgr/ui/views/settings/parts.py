@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
 )
 from .... import config
 from ....version import RELEASE_VERSION
-from ....db.models import WatchedFolder
 from ....db.session import session_scope
 from ....services import data_migration
 from ....services import scanner
@@ -25,7 +24,7 @@ from ....services import playback_prefs
 from ....services import replaygain
 from ....services import updater
 from ....services import video_scanner
-from ...widgets.common import SearchBar, TouchButton, TouchList, dim_label
+from ...widgets.common import SearchBar, TouchButton, dim_label
 
 #: which Settings groups are open, comma separated
 SECTIONS_OPEN_KEY = "settings_sections_open"

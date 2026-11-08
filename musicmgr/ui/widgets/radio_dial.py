@@ -439,10 +439,6 @@ class RadioSet(QWidget):
             self._move_to(self._positions[band][index], animate, tune=False)
         self.update()
 
-    def clear_tuned(self, band: str) -> None:
-        self._tuned[band] = -1
-        self.update()
-
     def set_volume(self, value: float) -> None:
         self._volume = max(0.0, min(1.0, value))
         self.update()

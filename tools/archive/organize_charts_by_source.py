@@ -49,7 +49,6 @@ before anything changes.
 from __future__ import annotations
 
 import argparse
-import shutil
 import sqlite3
 import sys
 import time
@@ -68,7 +67,7 @@ WEEKLY = "Weekly"
 
 
 def default_db() -> Path:
-    here = Path(__file__).resolve().parent.parent / "data" / "library.db"
+    here = Path(__file__).resolve().parents[2] / "data" / "library.db"
     return here
 
 

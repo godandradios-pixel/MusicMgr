@@ -62,13 +62,10 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLineEdit,
     QStackedWidget,
-    QVBoxLayout,
     QWidget,
 )
 from sqlalchemy import func, select

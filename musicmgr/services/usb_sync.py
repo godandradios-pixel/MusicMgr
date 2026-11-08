@@ -735,10 +735,6 @@ class PairPlan:
     def of(self, kind: str, direction: Optional[str] = None) -> list[SyncItem]:
         return [i for i in self.items if i.kind == kind and (direction is None or i.direction == direction)]
 
-    @property
-    def has_changes(self) -> bool:
-        return bool(self.items)
-
 
 @dataclass
 class ComparePlan:
@@ -1205,18 +1201,6 @@ def _remove_quietly(path: Path) -> None:
         path.unlink()
     except OSError:
         pass
-
-
-def cleanup_temp_files(root: Path) -> int:
-    """Remove `*.mmsync-tmp` left behind by a crash or a pulled drive."""
-    removed = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if not _skip_dir(d)]
-        for name in filenames:
-            if name.endswith(TEMP_SUFFIX):
-                _remove_quietly(Path(dirpath) / name)
-                removed += 1
-    return removed
 
 
 def trash_local(path: Path) -> None:

@@ -28,7 +28,6 @@ from typing import Optional
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
-    QBrush,
     QColor,
     QLinearGradient,
     QPainter,
@@ -355,13 +354,6 @@ class Turntable(QWidget):
         p.drawEllipse(c, r - s * 0.006, r - s * 0.006)
         p.end()
         return out
-
-    def _rest_point(self) -> QPointF:
-        """Where the stylus sits when the arm is parked."""
-        pivot = self._pivot()
-        a = math.radians(self._REST_DEG)
-        length = self._arm_length()
-        return QPointF(pivot.x() + math.sin(a) * length, pivot.y() + math.cos(a) * length)
 
     _REST_DEG = -3.0
 

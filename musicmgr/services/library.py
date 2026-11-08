@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import re
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Optional, Sequence
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -15,8 +14,6 @@ from .tracknum import label as track_label
 from ..db.models import (
     Artist,
     Chart,
-    ChartEntry,
-    ChartIssue,
     Credit,
     Genre,
     Label,
@@ -24,9 +21,7 @@ from ..db.models import (
     MediaFile,
     PlayEvent,
     Playlist,
-    PlaylistItem,
     Release,
-    ReleaseFormat,
     Style,
     Track,
     release_genres,
@@ -540,20 +535,6 @@ def artist_track_count(session: Session, artist_id: int) -> int:
         )
         or 0
     )
-
-
-def list_releases(
-    session: Session, artist_id: Optional[int] = None, limit: int = 5000
-) -> Sequence[Release]:
-    stmt = select(Release).options(selectinload(Release.tracks))
-    if artist_id is not None:
-        stmt = stmt.join(Track, Track.release_id == Release.id).join(
-            Credit, Credit.track_id == Track.id
-        ).where(Credit.artist_id == artist_id).group_by(Release.id)
-    stmt = stmt.order_by(
-        func.coalesce(Release.year, 9999), func.lower(Release.title)
-    ).limit(limit)
-    return list(session.scalars(stmt))
 
 
 def list_tracks(

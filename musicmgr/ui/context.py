@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, Signal
 from sqlalchemy.orm import Session
 
 from ..db.session import session_scope
-from ..services.player import PlayerController, QueueItem, queue_items_from_tracks
+from ..services.player import PlayerController, queue_items_from_tracks
 
 
 class AppContext(QObject):

@@ -29,7 +29,7 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Iterable
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..db.models import Credit, JukeboxSlot, MediaFile, Playlist, PlaylistItem, Release, Track

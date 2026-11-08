@@ -9,10 +9,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 from .... import config
 from ....services import data_migration
-from ....services import library as lib
 from ....services import updater
 from ....services import library_backup
-from ....services import videos as vid_svc
 from ...widgets.backups import RestoreBackupDialog
 from .parts import (
     MigrationThread,

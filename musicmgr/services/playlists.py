@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import random
 import re
 from typing import Any, Iterable, Optional, Sequence
 
@@ -26,10 +25,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..db.models import (
-    Chart,
-    Credit,
     Genre,
-    MediaFile,
     PlayEvent,
     Playlist,
     PlaylistFolder,

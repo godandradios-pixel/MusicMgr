@@ -23,7 +23,7 @@ another new with the same ``sig``; the chart is then moved here rather
 than deleted and rebuilt.
 
 Charts neither side has synced before may be filed differently - one PC
-on the Source > Genre > Type layout (tools/organize_charts_by_source.py,
+on the Source > Genre > Type layout (tools/archive/organize_charts_by_source.py,
 ``Billboard/Pop/Year End``), the other still on the old one
 (``Pop/Billboard YE``) - and with no base neither looks deleted. Such a
 pair is taken to be the same chart (`_match_moves`) when its place says so
@@ -73,7 +73,7 @@ EPOCH = "1970-01-01T00:00:00+00:00"
 MATCH_THRESHOLD = 0.72
 
 #: first word of an old-style chart name / top folder -> its source, as in
-#: tools/organize_charts_by_source.py
+#: tools/archive/organize_charts_by_source.py
 SOURCES = {
     "billboard": "Billboard",
     "playback": "Playback",

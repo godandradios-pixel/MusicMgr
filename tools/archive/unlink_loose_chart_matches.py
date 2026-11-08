@@ -33,7 +33,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from musicmgr.services.matching import score_pair  # noqa: E402
 

@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from musicmgr import config
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QThread, Signal, QTimer
+from PySide6.QtCore import QEvent, QObject, QRect, QSize, Qt, QThread, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -61,8 +60,6 @@ from ...services import charts as chart_svc
 from ...services import lyrics_downloader as lyrics_dl
 from ...services import lastfm_popularity as popularity_dl
 from ...services import metadata_health
-from ...services import scanner
-from ...services import video_scanner
 from ..theme import COLORS
 
 ROLE_PAYLOAD = Qt.UserRole + 1

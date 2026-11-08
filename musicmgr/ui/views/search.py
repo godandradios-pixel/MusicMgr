@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ...services import library as lib
 from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS
-from ..widgets.common import SearchBar, TouchButton, TouchList, dim_label
+from ..widgets.common import SearchBar, TouchList, dim_label
 from .base import BaseView
 
 
@@ -64,9 +64,6 @@ class SearchView(BaseView):
     def refresh(self) -> None:
         if self.search_bar.text():
             self._run_search()
-
-    def focus_input(self) -> None:
-        self.search_bar.edit.setFocus()
 
     def _schedule(self, _text: str) -> None:
         self._timer.start()

@@ -60,10 +60,6 @@ def _resolve_data_dir() -> Path:
     return platform_data_dir()
 
 
-def is_portable() -> bool:
-    return DATA_DIR == PROJECT_ROOT / "data"
-
-
 #: Branding assets shipped inside the package itself (not the user's data/
 #: folder - these are part of the app, same on every install). Built from
 #: _BUNDLE_ROOT (not PROJECT_ROOT) so this still finds them when frozen -

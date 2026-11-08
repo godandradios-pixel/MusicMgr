@@ -38,7 +38,6 @@ import re
 import struct
 from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
 from sqlalchemy import func, select, update
@@ -256,10 +255,6 @@ class DuplicateReport:
 
     def switches_within(self, max_diff_ms: int = SAME_SONG_MAX_DIFF_MS) -> list[Switch]:
         return [s for s in self.switches if s.diff_ms <= max_diff_ms or s.how == "identical"]
-
-    @property
-    def identical_switches(self) -> int:
-        return sum(1 for s in self.switches if s.how == "identical")
 
     def summary(self, max_diff_ms: int = SAME_SONG_MAX_DIFF_MS) -> str:
         chosen = self.switches_within(max_diff_ms)

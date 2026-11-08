@@ -15,9 +15,8 @@ the link - no index file.
 - `safe_image_name` builds the file name (MusicBee's character rules).
 - `find_image` looks a name up ignoring case and punctuation, so
   `AC-DC.jpg`, `acdc.png` and `AC DC.jpg` all reach AC/DC.
-- `release_cover_target` / `artist_image_target` say where an image for a
-  release/artist belongs, reusing an existing spelling if there is one.
-- `save_release_cover` / `save_artist_image` write them: the scanner never
+- `save_release_cover` / `save_artist_image` write an image where it
+  belongs (reusing an existing spelling if there is one): the scanner never
   overwrites an existing picture; a download or a manual choice does.
 - `relink` fills in cover_path / image_path from files that arrived by sync.
 - `migrate` renames an existing id-named library once (with a DB backup).
@@ -180,14 +179,6 @@ def _target(folder: Path, stem: str, ext: str) -> Path:
     if existing is not None:
         return existing.with_suffix(ext.lower())
     return Path(folder) / f"{stem}{ext.lower()}"
-
-
-def release_cover_target(release: Release, ext: str = ".jpg") -> Path:
-    return _target(config.ART_DIR, release_stem(release), ext)
-
-
-def artist_image_target(artist: Artist, ext: str = ".jpg") -> Path:
-    return _target(config.ARTIST_IMG_DIR, artist_stem(artist), ext)
 
 
 def _ext_for(data: bytes, hint: Optional[str] = None) -> str:

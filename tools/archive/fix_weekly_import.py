@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 DEFAULT_DB = Path(r"D:\MusicMgr\data\library.db")
 DEFAULT_CSV = REPO / "Claude outputs" / "billboard-hot-100-weekly-2023-08-22-to-2026-09-29.csv"
 

@@ -662,9 +662,5 @@ def queue_item(st: RadioStation):
     )
 
 
-def starter_stations(http=None) -> list[Found]:
-    return search(params=STARTER_SEARCH, limit=STARTER_COUNT, http=http)
-
-
 def names(stations: Sequence[RadioStation]) -> list[str]:
     return [s.name for s in stations]
