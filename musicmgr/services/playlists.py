@@ -330,11 +330,46 @@ def remove_item(session: Session, item_id: int) -> None:
 
 
 def reorder(session: Session, playlist_id: int, ordered_item_ids: Sequence[int]) -> None:
+    """Put a playlist's songs in the given order (PlaylistItem ids, first
+    to last) - the playlist page's drag-and-drop. Items of another
+    playlist are ignored. Bumps the playlist's updated_at so USB sync
+    carries the new order."""
+    moved = False
     for pos, item_id in enumerate(ordered_item_ids):
         item = session.get(PlaylistItem, item_id)
         if item is not None and item.playlist_id == playlist_id:
             item.position = pos
+            moved = True
+    if moved:
+        playlist = session.get(Playlist, playlist_id)
+        if playlist is not None:
+            playlist.updated_at = dt.datetime.now(dt.timezone.utc)
     session.flush()
+
+
+def move_item(session: Session, playlist_id: int, item_id: int, to_index: int) -> Optional[int]:
+    """Move one song of a manual playlist to 0-based `to_index` (clamped to
+    the list), shifting the songs in between - the playlist page's Move up /
+    Move down / Move to top / Move to bottom. Positions are renumbered 0..n-1
+    and updated_at is bumped so USB sync carries the new order. Returns the
+    song's new index, or None if the playlist isn't manual or the item isn't
+    in it."""
+    playlist = session.get(Playlist, playlist_id)
+    if playlist is None or playlist.kind != Playlist.KIND_MANUAL:
+        return None
+    items = list(playlist.items)
+    current = next((i for i, it in enumerate(items) if it.id == item_id), None)
+    if current is None:
+        return None
+    to_index = max(0, min(to_index, len(items) - 1))
+    if to_index != current:
+        items.insert(to_index, items.pop(current))
+        for pos, it in enumerate(items):
+            it.position = pos
+        playlist.updated_at = dt.datetime.now(dt.timezone.utc)
+        session.flush()
+        session.expire(playlist, ["items"])
+    return to_index
 
 
 def search_tracks(

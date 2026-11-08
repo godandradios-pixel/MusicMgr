@@ -685,3 +685,63 @@ class TestTileArtwork:
 
         assert [f.name for f in lib_pl.folder_path(session, c.id)] == ["Billboard", "2020-29", "2021"]
         assert lib_pl.folder_path(session, None) == []
+
+
+class TestMoveItem:
+    """Moving one song within a manual playlist (the playlist page's
+    Reorder mode)."""
+
+    def _setup(self, session):
+        playlist = lib_pl.create_playlist(session, "Mix")
+        tracks = [make_track(session, n) for n in ("One", "Two", "Three", "Four")]
+        lib_pl.add_tracks(session, playlist.id, [t.id for t in tracks])
+        items = list(session.scalars(select(PlaylistItem)
+                                     .where(PlaylistItem.playlist_id == playlist.id)
+                                     .order_by(PlaylistItem.position)))
+        return playlist, items
+
+    def _titles(self, session, playlist):
+        return [t.title for t in lib_pl.playlist_tracks(session, playlist.id)]
+
+    def test_moves_a_song_down_and_shifts_the_rest(self, session):
+        playlist, items = self._setup(session)
+        assert lib_pl.move_item(session, playlist.id, items[0].id, 2) == 2
+        assert self._titles(session, playlist) == ["Two", "Three", "One", "Four"]
+        positions = sorted(i.position for i in session.scalars(
+            select(PlaylistItem).where(PlaylistItem.playlist_id == playlist.id)))
+        assert positions == [0, 1, 2, 3]
+
+    def test_moves_a_song_up(self, session):
+        playlist, items = self._setup(session)
+        assert lib_pl.move_item(session, playlist.id, items[3].id, 0) == 0
+        assert self._titles(session, playlist) == ["Four", "One", "Two", "Three"]
+
+    def test_target_is_clamped_to_the_list(self, session):
+        playlist, items = self._setup(session)
+        assert lib_pl.move_item(session, playlist.id, items[1].id, 99) == 3
+        assert self._titles(session, playlist) == ["One", "Three", "Four", "Two"]
+        assert lib_pl.move_item(session, playlist.id, items[1].id, -5) == 0
+        assert self._titles(session, playlist) == ["Two", "One", "Three", "Four"]
+
+    def test_bumps_updated_at_so_usb_sync_carries_the_order(self, session):
+        playlist, items = self._setup(session)
+        playlist.updated_at = dt.datetime(2020, 1, 1)
+        session.flush()
+        lib_pl.move_item(session, playlist.id, items[0].id, 1)
+        assert playlist.updated_at.replace(tzinfo=None) > dt.datetime(2020, 1, 2)
+
+    def test_reorder_bumps_updated_at_too(self, session):
+        playlist, items = self._setup(session)
+        playlist.updated_at = dt.datetime(2020, 1, 1)
+        session.flush()
+        lib_pl.reorder(session, playlist.id, [i.id for i in reversed(items)])
+        assert self._titles(session, playlist) == ["Four", "Three", "Two", "One"]
+        assert playlist.updated_at.replace(tzinfo=None) > dt.datetime(2020, 1, 2)
+
+    def test_only_manual_playlists_and_their_own_items(self, session):
+        playlist, items = self._setup(session)
+        other = lib_pl.create_playlist(session, "Other")
+        assert lib_pl.move_item(session, other.id, items[0].id, 2) is None
+        playlist.kind = Playlist.KIND_SMART
+        session.flush()
+        assert lib_pl.move_item(session, playlist.id, items[0].id, 2) is None

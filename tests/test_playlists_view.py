@@ -5,11 +5,15 @@ breadcrumb walks back out, tapping a playlist opens its own page."""
 
 from __future__ import annotations
 
+from PySide6.QtCore import QModelIndex
+from PySide6.QtWidgets import QAbstractItemView
+
 from musicmgr.db.models import Playlist, Track
 from musicmgr.services import library as lib
 from musicmgr.services import playlists as pl
 from musicmgr.services.matching import normalize
 from musicmgr.ui.views.playlists import PlaylistsView
+from musicmgr.ui.widgets.common import ROLE_PAYLOAD
 from musicmgr.ui.widgets.playlist_grid import KIND_FOLDER, KIND_PLAYLIST
 
 
@@ -223,3 +227,92 @@ class TestTileMenu:
         assert session.get(Playlist, playlist.id).cover_path is None
         tile = next(t for t in view.grid.tiles() if t.title == "Mix")
         assert tile.custom_path is None
+
+
+class TestReorder:
+    """Reorder mode on a manual playlist's page."""
+
+    def _open(self, ctx, session, titles=("One", "Two", "Three")):
+        playlist = pl.create_playlist(session, "Mix")
+        tracks = [make_track(session, t) for t in titles]
+        pl.add_tracks(session, playlist.id, [t.id for t in tracks])
+        session.commit()
+        view = make_view(ctx)
+        view._open_playlist(playlist.id)
+        return view, playlist
+
+    def _rows(self, view):
+        return [view.track_list.item(i).data(ROLE_PAYLOAD)["primary"]
+                for i in range(view.track_list.count())]
+
+    def _saved(self, session, playlist):
+        session.expire_all()
+        return [t.title for t in pl.playlist_tracks(session, playlist.id)]
+
+    def test_reorder_button_only_for_manual_playlists_with_songs_to_move(self, ctx, session):
+        view, playlist = self._open(ctx, session)
+        assert not view.reorder_btn.isHidden()
+        one, _ = self._open(ctx, session, titles=("Solo",))
+        assert one.reorder_btn.isHidden()
+        playlist.kind = Playlist.KIND_SMART       # a smart list orders itself
+        session.commit()
+        view._load_playlist_detail(playlist.id)
+        assert view.reorder_btn.isHidden()
+
+    def test_reorder_mode_swaps_the_buttons_and_done_puts_them_back(self, ctx, session):
+        view, _ = self._open(ctx, session)
+        view.start_reorder()
+        assert view.play_btn.isHidden() and view.remove_btn.isHidden()
+        assert not view.move_up_btn.isHidden() and not view.reorder_done_btn.isHidden()
+        assert not view.reorder_hint.isHidden()
+        assert view.track_list.dragDropMode() == QAbstractItemView.InternalMove
+        view.end_reorder()
+        assert not view.play_btn.isHidden() and not view.remove_btn.isHidden()
+        assert view.move_up_btn.isHidden()
+        assert view.track_list.dragDropMode() == QAbstractItemView.NoDragDrop
+
+    def test_a_tap_selects_instead_of_playing(self, ctx, session, monkeypatch):
+        view, _ = self._open(ctx, session)
+        played = []
+        monkeypatch.setattr(view, "_play", lambda start: played.append(start))
+        view.start_reorder()
+        view._on_track_tapped(view.track_list.item(1).data(ROLE_PAYLOAD))
+        assert played == []
+        view.end_reorder()
+        view._on_track_tapped(view.track_list.item(1).data(ROLE_PAYLOAD))
+        assert played == [1]
+
+    def test_arrows_move_the_selected_song_and_keep_it_selected(self, ctx, session):
+        view, playlist = self._open(ctx, session)
+        view.start_reorder()
+        view.track_list.setCurrentRow(0)
+        view._move_selected(by=1)
+        assert self._rows(view) == ["Two", "One", "Three"]
+        assert self._saved(session, playlist) == ["Two", "One", "Three"]
+        assert view.track_list.currentRow() == 1
+        view._move_selected(to="bottom")
+        assert self._saved(session, playlist) == ["Two", "Three", "One"]
+        view._move_selected(to="top")
+        assert self._saved(session, playlist) == ["One", "Two", "Three"]
+        view._move_selected(by=-1)          # already at the top: nothing
+        assert self._saved(session, playlist) == ["One", "Two", "Three"]
+        assert view.track_list.item(0).data(ROLE_PAYLOAD)["lead"] == "1"
+
+    def test_a_dragged_row_saves_the_new_order(self, ctx, session, qapp):
+        view, playlist = self._open(ctx, session)
+        view.start_reorder()
+        model = view.track_list.model()
+        # drag "One" (row 0) below "Three"
+        assert model.moveRow(QModelIndex(), 0, QModelIndex(), 3)
+        assert self._saved(session, playlist) == ["Two", "Three", "One"]
+        qapp.processEvents()                 # the renumbering reload
+        assert self._rows(view) == ["Two", "Three", "One"]
+        assert view.track_list.currentRow() == 2
+        assert [view.track_list.item(i).data(ROLE_PAYLOAD)["lead"] for i in range(3)] \
+            == ["1", "2", "3"]
+
+    def test_leaving_the_playlist_ends_reorder_mode(self, ctx, session):
+        view, _ = self._open(ctx, session)
+        view.start_reorder()
+        view._on_crumb(0)
+        assert not view._reordering

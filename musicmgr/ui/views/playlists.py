@@ -11,9 +11,10 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QScrollArea,
+    QScroller,
     QSpinBox,
     QStackedWidget,
     QVBoxLayout,
@@ -43,6 +45,7 @@ from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS
 from ..widgets.common import (
+    ROLE_PAYLOAD,
     Breadcrumb,
     EmptyState,
     FolderPickerDialog,
@@ -490,6 +493,11 @@ class PlaylistsView(BaseView):
         self._crumb_actions: list = []
         #: [(folder_id, name), ...] root-first, for the folder showing
         self._chain: list[tuple[int, str]] = []
+        #: the playlist page is in Reorder mode (see start_reorder)
+        self._reordering = False
+        self._can_reorder = False
+        #: the open playlist's kind (Playlist.KIND_*), for which buttons show
+        self._kind: Optional[str] = None
 
         new_btn = TouchButton("New playlist", primary=True)
         new_btn.clicked.connect(self.create_manual)
@@ -580,17 +588,49 @@ class PlaylistsView(BaseView):
         self.remove_btn.clicked.connect(self._remove_selected)
         self.more_btn = TouchButton("More…")
         self.more_btn.clicked.connect(self._on_more_clicked)
-        for b in (self.play_btn, self.shuffle_btn, self.queue_btn, self.edit_btn,
-                  self.add_btn, self.replace_btn, self.remove_btn, self.more_btn):
+        # Reorder mode: tapping a song selects it instead of playing it,
+        # songs can be dragged, and the arrow buttons move the selected one
+        self.reorder_btn = TouchButton("Reorder")
+        self.reorder_btn.clicked.connect(self.start_reorder)
+        self._normal_buttons = (self.play_btn, self.shuffle_btn, self.queue_btn,
+                                self.edit_btn, self.add_btn, self.replace_btn,
+                                self.remove_btn, self.reorder_btn, self.more_btn)
+        for b in self._normal_buttons:
             actions.addWidget(b)
+        self.move_top_btn = TouchButton("Top")
+        self.move_top_btn.setToolTip("Move the selected song to the top")
+        self.move_top_btn.clicked.connect(lambda: self._move_selected(to="top"))
+        self.move_up_btn = TouchButton("▲ Up")
+        self.move_up_btn.setToolTip("Move the selected song up one place")
+        self.move_up_btn.clicked.connect(lambda: self._move_selected(by=-1))
+        self.move_down_btn = TouchButton("▼ Down")
+        self.move_down_btn.setToolTip("Move the selected song down one place")
+        self.move_down_btn.clicked.connect(lambda: self._move_selected(by=1))
+        self.move_bottom_btn = TouchButton("Bottom")
+        self.move_bottom_btn.setToolTip("Move the selected song to the bottom")
+        self.move_bottom_btn.clicked.connect(lambda: self._move_selected(to="bottom"))
+        self.reorder_done_btn = TouchButton("Done", primary=True)
+        self.reorder_done_btn.clicked.connect(self.end_reorder)
+        self._reorder_buttons = (self.move_top_btn, self.move_up_btn, self.move_down_btn,
+                                 self.move_bottom_btn, self.reorder_done_btn)
+        for b in self._reorder_buttons:
+            actions.addWidget(b)
+            b.setVisible(False)
         actions.addStretch(1)
         meta.addSpacing(6)
         meta.addLayout(actions)
+        self.reorder_hint = dim_label(
+            "Drag a song to its new place, or tap one and use the arrows. "
+            "Changes are saved as you go.")
+        self.reorder_hint.setVisible(False)
+        meta.addWidget(self.reorder_hint)
         head.addLayout(meta, 1)
         layout.addLayout(head)
 
         self.track_list = TouchList()
         self.track_list.itemActivatedPayload.connect(self._on_track_tapped)
+        # a drag in Reorder mode lands here once the row has moved
+        self.track_list.model().rowsMoved.connect(self._on_rows_dragged)
         layout.addWidget(self.track_list, 1)
         return page
 
@@ -726,6 +766,7 @@ class PlaylistsView(BaseView):
             self._crumb_actions[index]()
 
     def _go_to_folder(self, folder_id: Optional[int]) -> None:
+        self.end_reorder()
         self._folder_id = folder_id
         self._playlist_id = None
         self.refresh()
@@ -737,6 +778,8 @@ class PlaylistsView(BaseView):
             self._open_playlist(payload.get("id"))
 
     def _open_playlist(self, playlist_id: int) -> None:
+        if playlist_id != self._playlist_id:
+            self.end_reorder()
         self._playlist_id = playlist_id
         self._load_playlist_detail(playlist_id)
         if self._playlist_id is not None:
@@ -781,6 +824,13 @@ class PlaylistsView(BaseView):
                 tracks = pl_svc.playlist_tracks(session, playlist_id)
                 plays_by_track = {}
             self._tracks = list(tracks)
+            # each row's PlaylistItem, for moving it (manual playlists:
+            # playlist_tracks lists the items in position order)
+            item_ids: list = [None] * len(tracks)
+            if playlist.kind == Playlist.KIND_MANUAL:
+                items = list(playlist.items)
+                if [i.track_id for i in items] == [t.id for t in tracks]:
+                    item_ids = [i.id for i in items]
             for idx, track in enumerate(tracks, start=1):
                 total += track.duration_ms or 0
                 mf = track.primary_file
@@ -804,6 +854,7 @@ class PlaylistsView(BaseView):
                     "color": COLORS["text_dim"] if (mf is None or mf.is_missing)
                     else COLORS["text"],
                     "key": track.id,
+                    "item": item_ids[idx - 1],
                 })
             self.detail_meta.setText(
                 f"{len(tracks)} songs · {format_duration(total)} · "
@@ -824,13 +875,14 @@ class PlaylistsView(BaseView):
         self.play_btn.setEnabled(has_tracks)
         self.shuffle_btn.setEnabled(has_tracks)
         self.queue_btn.setEnabled(has_tracks)
-        # only the actions that apply to this kind of playlist are shown at
-        # all, rather than sitting there disabled
-        self.edit_btn.setVisible(kind == Playlist.KIND_SMART)
-        self.remove_btn.setVisible(kind == Playlist.KIND_MANUAL)
-        self.add_btn.setVisible(kind == Playlist.KIND_MANUAL)
-        self.replace_btn.setVisible(kind == Playlist.KIND_MANUAL)
         self.replace_btn.setEnabled(has_tracks)
+        # only the actions that apply to this kind of playlist are shown at
+        # all, rather than sitting there disabled (_sync_reorder_ui)
+        self._kind = kind
+        self._can_reorder = kind == Playlist.KIND_MANUAL and len(self._tracks) > 1
+        if self._reordering and not self._can_reorder:
+            self.end_reorder()
+        self._sync_reorder_ui()
         self._set_breadcrumb(name)
 
     # -- tile / playlist menu ------------------------------------------------
@@ -983,6 +1035,95 @@ class PlaylistsView(BaseView):
                     break
         self._load_playlist_detail(self._playlist_id)
 
+    # -- reordering ----------------------------------------------------------
+    # A manual playlist's songs can be moved two ways in Reorder mode:
+    # dragging a row, or selecting one and using Top / ▲ Up / ▼ Down /
+    # Bottom. Outside Reorder mode a tap plays the song and a drag scrolls
+    # the list, so neither can move a song by accident. Every move is saved
+    # straight away (services/playlists.py: move_item / reorder).
+
+    def start_reorder(self) -> None:
+        if self._reordering or not self._can_reorder:
+            return
+        self._reordering = True
+        # the list's drag-to-scroll would swallow a drag; the scrollbar and
+        # wheel still scroll while reordering
+        QScroller.ungrabGesture(self.track_list.viewport())
+        self.track_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.track_list.setDefaultDropAction(Qt.MoveAction)
+        if self.track_list.currentRow() < 0 and self.track_list.count():
+            self.track_list.setCurrentRow(0)
+        self._sync_reorder_ui()
+
+    def end_reorder(self) -> None:
+        if not self._reordering:
+            return
+        self._reordering = False
+        self.track_list.setDragDropMode(QAbstractItemView.NoDragDrop)
+        QScroller.grabGesture(self.track_list.viewport(), QScroller.LeftMouseButtonGesture)
+        self._sync_reorder_ui()
+
+    def _sync_reorder_ui(self) -> None:
+        """Show the Reorder mode buttons, or the usual ones - only those
+        that apply to this kind of playlist."""
+        on = self._reordering
+        for b in self._reorder_buttons:
+            b.setVisible(on)
+        self.reorder_hint.setVisible(on)
+        manual = self._kind == Playlist.KIND_MANUAL
+        for b in (self.play_btn, self.shuffle_btn, self.queue_btn, self.more_btn):
+            b.setVisible(not on)
+        self.edit_btn.setVisible(not on and self._kind == Playlist.KIND_SMART)
+        for b in (self.add_btn, self.replace_btn, self.remove_btn):
+            b.setVisible(not on and manual)
+        self.reorder_btn.setVisible(not on and self._can_reorder)
+
+    def _move_selected(self, by: int = 0, to: Optional[str] = None) -> None:
+        row = self.track_list.currentRow()
+        payload = self.track_list.current_payload()
+        if self._playlist_id is None or payload is None or payload.get("item") is None:
+            self.ctx.notify("Tap a song first, then move it")
+            return
+        last = self.track_list.count() - 1
+        target = 0 if to == "top" else last if to == "bottom" else row + by
+        target = max(0, min(target, last))
+        if target == row:
+            return
+        with self.ctx.session() as session:
+            new_index = pl_svc.move_item(session, self._playlist_id, payload["item"], target)
+        if new_index is None:
+            self.ctx.notify("Only manual playlists can be reordered")
+            return
+        self._reload_keeping(new_index)
+
+    def _on_rows_dragged(self, _parent, start: int, _end: int, _dest, dest_row: int) -> None:
+        """A row was dropped in a new place: save the list's new order."""
+        if not self._reordering or self._playlist_id is None:
+            return
+        ids = []
+        for i in range(self.track_list.count()):
+            payload = self.track_list.item(i).data(ROLE_PAYLOAD) or {}
+            ids.append(payload.get("item"))
+        if None in ids:
+            self._load_playlist_detail(self._playlist_id)
+            return
+        with self.ctx.session() as session:
+            pl_svc.reorder(session, self._playlist_id, ids)
+        # where the dragged row ended up (dest_row counts the row itself)
+        new_index = dest_row - 1 if dest_row > start else dest_row
+        # renumber the rows after the drop finishes (not inside Qt's move)
+        QTimer.singleShot(0, lambda: self._reload_keeping(new_index))
+
+    def _reload_keeping(self, row: int) -> None:
+        """Reload the page (new numbers, the playing order) with `row`
+        still selected and in view."""
+        if self._playlist_id is None:
+            return
+        self._load_playlist_detail(self._playlist_id)
+        if 0 <= row < self.track_list.count():
+            self.track_list.setCurrentRow(row)
+            self.track_list.scrollToItem(self.track_list.item(row))
+
     #: most songs "Add songs…" takes in one go
     ADD_MAX_PICKS = 25
 
@@ -1077,8 +1218,8 @@ class PlaylistsView(BaseView):
             self.track_list.setCurrentRow(index)
 
     def _on_track_tapped(self, payload: Optional[dict]) -> None:
-        if not payload:
-            return
+        if not payload or self._reordering:
+            return    # in Reorder mode a tap only selects the song
         for idx, track in enumerate(self._tracks):
             if track.id == payload.get("key"):
                 self._play(idx)
