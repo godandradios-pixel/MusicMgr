@@ -32,7 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import config
-from ..db.models import RadioStation
+from ..db.models import RadioStation, Setting
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +68,13 @@ SCALE_MARKS = {"fm": FM_MARKS, "am": AM_MARKS, "sxm": SXM_MARKS}
 BROWSER_BANDS = ("sxm",)
 #: every band a station can be on (anything else counts as FM)
 STATION_BAND_KEYS = ("fm", "am", *BROWSER_BANDS)
+#: Settings › Radio: show the SXM band on the dial (2026-11-08). James:
+#: "a settings option where I can turn off the SiriusXM band of the radio
+#: and it would disappear from the display". Off hides the band's strip and
+#: key on the Radio page and its channels on the phone remote; the channels
+#: themselves stay in the library (and keep USB-syncing), so turning it
+#: back on brings them back as they were.
+SHOW_SXM_KEY = "tuner_show_sxm"
 #: SiriusXM's web player, for finding a channel's link
 SXM_PLAYER_URL = "https://www.siriusxm.com/player"
 _SXM_HOSTS = ("siriusxm.com", "siriusxm.ca")
@@ -407,6 +414,28 @@ def register_click(uuid: str, http=None) -> None:
 # --------------------------------------------------------------------------
 # the dial
 # --------------------------------------------------------------------------
+
+
+def sxm_shown(session: Session) -> bool:
+    """Whether the SXM band is on the dial (Settings › Radio; on unless
+    turned off)."""
+    row = session.get(Setting, SHOW_SXM_KEY)
+    return not (row is not None and row.value == "0")
+
+
+def set_sxm_shown(session: Session, shown: bool) -> None:
+    """Turn the SXM band on or off (the caller commits)."""
+    value = "1" if shown else "0"
+    row = session.get(Setting, SHOW_SXM_KEY)
+    if row is None:
+        session.add(Setting(key=SHOW_SXM_KEY, value=value))
+    else:
+        row.value = value
+
+
+def hidden_bands(session: Session) -> set[str]:
+    """Bands turned off in Settings - left off the dial and the phone remote."""
+    return set() if sxm_shown(session) else {"sxm"}
 
 
 def dial(session: Session) -> list[RadioStation]:

@@ -27,6 +27,7 @@ from ....services import updater
 from ....services import library_backup
 from ....services import library_state
 from ....services import usb_sync
+from ....services import stations
 from ... import skins
 from ...widgets.common import TouchButton, clear_art_cache, dim_label
 from ...widgets.usb_sync import (
@@ -567,6 +568,11 @@ class UsbSection:
                 box.blockSignals(True)
                 box.setCurrentIndex(max(0, box.findData(saved_look[kind])))
                 box.blockSignals(False)
+            with self.ctx.session() as db:
+                shown = stations.sxm_shown(db)
+            self.sxm_band_cb.blockSignals(True)
+            self.sxm_band_cb.setChecked(shown)
+            self.sxm_band_cb.blockSignals(False)
             self._sync_look_status()
         if result is not None and getattr(result, "artwork_changed", False):
             clear_art_cache()

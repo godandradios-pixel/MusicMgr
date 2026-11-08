@@ -674,11 +674,15 @@ class RemoteApi:
         from . import otr, stations
 
         with self.ctx.session() as s:
+            # a band turned off in Settings › Radio (SXM) isn't on the
+            # phone either (2026-11-08)
+            hidden = stations.hidden_bands(s)
             st = [
                 {"id": x.id, "name": x.name, "band": x.band or "fm",
                  "off_air": x.off_air_since is not None,
                  "cover": _art_url("station", x.id, x.favicon_path)}
                 for x in stations.dial(s)
+                if (x.band or "fm") not in hidden
             ]
             shows = [
                 {"id": x.id, "name": x.name, "band": x.band,

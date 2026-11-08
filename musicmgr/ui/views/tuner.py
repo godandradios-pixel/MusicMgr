@@ -700,6 +700,7 @@ class TunerView(BaseView):
                     s.commit()
             except Exception:  # pragma: no cover - never block the page
                 log.exception("couldn't move radio shows to the new band layout")
+        self._apply_hidden_bands()
         self._rebuild()
         self._fetch_missing_logos()
         if not self._initialised:
@@ -709,7 +710,9 @@ class TunerView(BaseView):
             if not kind:
                 kind, ident = self.ctx.tuner.last_tuned()
             if not self._point_at(kind, ident, animate=False):
-                self.radio.set_band(_get_setting(self.ctx, BAND_KEY, START_BAND), animate=False)
+                band = _get_setting(self.ctx, BAND_KEY, START_BAND)
+                self.radio.set_band(band if self.radio.is_shown(band) else START_BAND,
+                                    animate=False)
         self._update_info()
 
     def _fetch_missing_logos(self) -> None:
@@ -726,8 +729,24 @@ class TunerView(BaseView):
             thread.finished.connect(self._update_info)
             thread.start()
 
+    def _apply_hidden_bands(self) -> None:
+        """Settings › Radio can turn the SXM band off (2026-11-08): take it
+        off the set, or put it back. Read every time the page is shown, so
+        a change in Settings shows the next time the Radio page opens."""
+        try:
+            with self.ctx.session() as s:
+                hidden = stations.hidden_bands(s)
+        except Exception:  # pragma: no cover - never block the page
+            log.exception("couldn't read which radio bands are shown")
+            return
+        was = self.radio.band
+        self.radio.set_hidden_bands(hidden)
+        if self.radio.band != was:
+            self.stop_scan()
+            _set_setting(self.ctx, BAND_KEY, self.radio.band)
+
     def set_band(self, band: str) -> None:
-        if band == self.radio.band:
+        if band == self.radio.band or not self.radio.is_shown(band):
             return
         self.stop_scan()
         self.radio.set_band(band)
@@ -754,7 +773,7 @@ class TunerView(BaseView):
 
     def _point_at(self, kind: str, ident: int, animate: bool) -> bool:
         band, idx = self._locate(kind, ident)
-        if idx >= 0:
+        if idx >= 0 and self.radio.is_shown(band):
             self.radio.set_tuned(band, idx, animate=animate)
             return True
         return False
@@ -1390,7 +1409,8 @@ class TunerView(BaseView):
         menu.addAction("Old-time radio folder…").triggered.connect(self.choose_folder)
         menu.addAction("Rescan shows").triggered.connect(self.rescan)
         menu.addAction("Find stations…").triggered.connect(self.find_stations)
-        menu.addAction("Add a SiriusXM channel…").triggered.connect(self.ask_add_sxm)
+        if self.radio.is_shown("sxm"):
+            menu.addAction("Add a SiriusXM channel…").triggered.connect(self.ask_add_sxm)
         menu.exec(global_pos)
 
     def shutdown(self) -> None:

@@ -17,6 +17,9 @@ Bands, top to bottom:
             the bottom and shorter than the others (BAND_HEIGHT), with a
             1-100 channel scale
 Only the selected band's strip is lit; the piano keys below choose it.
+A band can be turned off in Settings › Radio (the SXM band, 2026-11-08):
+its strip and key disappear and the other strips re-space to fill the
+glass (RadioSet.set_hidden_bands).
 
 Below the glass: a 6E5 "magic eye" that closes as a station comes in,
 bakelite VOLUME and TUNING knobs, the band keys and a pilot lamp.
@@ -299,6 +302,9 @@ class RadioSet(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self._band = "am"
+        #: bands turned off in Settings (the SXM band, 2026-11-08): no
+        #: strip on the glass, no key, and the others share its room
+        self._hidden: set[str] = set()
         self._labels: dict[str, list[str]] = {k: [] for k in BAND_KEYS}
         self._positions: dict[str, list[float]] = {k: [] for k in BAND_KEYS}
         #: per band, which names are printed faded (stations off the air)
@@ -374,8 +380,33 @@ class RadioSet(QWidget):
     def labels(self, band: Optional[str] = None) -> list[str]:
         return list(self._labels[band or self._band])
 
+    def visible_bands(self) -> tuple[Band, ...]:
+        """The bands on the set, top to bottom - all but those turned off."""
+        return tuple(b for b in BANDS if b.key not in self._hidden)
+
+    def visible_keys(self) -> tuple[str, ...]:
+        return tuple(b.key for b in self.visible_bands())
+
+    def is_shown(self, band: str) -> bool:
+        return band in BY_KEY and band not in self._hidden
+
+    def set_hidden_bands(self, bands) -> None:
+        """Take bands off the set (Settings › Radio) or put them back; the
+        strips and keys left re-space to fill the glass. Hiding the lit band
+        moves to the first band still shown."""
+        hidden = {b for b in bands if b in BY_KEY}
+        if len(hidden) >= len(BANDS):        # never an empty set
+            hidden = set()
+        if hidden == self._hidden:
+            return
+        self._hidden = hidden
+        if self._band in hidden:
+            self._band = self.visible_keys()[0]
+        self._relayout()
+        self.update()
+
     def set_band(self, band: str, animate: bool = True) -> None:
-        if band not in BY_KEY:
+        if not self.is_shown(band):
             return
         changed = band != self._band
         self._band = band
@@ -399,6 +430,8 @@ class RadioSet(QWidget):
         """Show station `index` of `band` as tuned (switching to that band
         and moving the pointer) without asking for it to be played."""
         self._tuned[band] = index
+        if band in self._hidden:      # remembered, but its band is off
+            return
         self._band = band
         if not animate:
             self._set_reception(1.0)
@@ -507,14 +540,15 @@ class RadioSet(QWidget):
         pad = dial.height() * 0.03
         inner = dial.adjusted(dial.width() * 0.012, pad, -dial.width() * 0.012, -pad)
         gap = inner.height() * 0.018
-        weights = [BAND_HEIGHT.get(band.key, 1.0) for band in BANDS]
-        unit_h = (inner.height() - gap * (len(BANDS) - 1)) / sum(weights)
+        shown = self.visible_bands()
+        weights = [BAND_HEIGHT.get(band.key, 1.0) for band in shown]
+        unit_h = (inner.height() - gap * (len(shown) - 1)) / sum(weights)
         label_w = inner.width() * 0.075
         g["strips"] = {}
         g["scale_left"] = inner.left() + label_w
         g["scale_width"] = inner.width() - 2 * label_w
         top = inner.top()
-        for band, weight in zip(BANDS, weights):
+        for band, weight in zip(shown, weights):
             g["strips"][band.key] = QRectF(inner.left(), top, inner.width(), unit_h * weight)
             top += unit_h * weight + gap
         cy = h - controls_h / 2 - h * 0.02
@@ -525,13 +559,13 @@ class RadioSet(QWidget):
         g["eye"] = (QPointF(w * 0.19, cy), er)
         g["lamp"] = (QPointF(w * 0.81, cy), er * 0.45)
         keys_left, keys_right = w * 0.245, w * 0.755
-        n = len(BANDS)
+        n = len(shown)
         key_gap = 8
         key_w = (keys_right - keys_left - key_gap * (n - 1)) / n
         key_h = controls_h * 0.52
         g["keys"] = {
             band.key: QRectF(keys_left + i * (key_w + key_gap), cy - key_h / 2, key_w, key_h)
-            for i, band in enumerate(BANDS)
+            for i, band in enumerate(shown)
         }
         self._geom = g
 
@@ -815,8 +849,10 @@ class RadioSet(QWidget):
         elif event.key() == Qt.Key_Left:
             self.step(-1)
         elif event.key() in (Qt.Key_Up, Qt.Key_Down):
-            i = BAND_KEYS.index(self._band) + (-1 if event.key() == Qt.Key_Up else 1)
-            self.bandRequested.emit(BAND_KEYS[i % len(BAND_KEYS)])
+            keys = self.visible_keys()
+            i = (keys.index(self._band) if self._band in keys else 0) \
+                + (-1 if event.key() == Qt.Key_Up else 1)
+            self.bandRequested.emit(keys[i % len(keys)])
         else:
             super().keyPressEvent(event)
 
@@ -883,7 +919,7 @@ class RadioSet(QWidget):
         p.fillPath(path, glass)
         p.save()
         p.setClipPath(path)
-        for band in BANDS:
+        for band in self.visible_bands():
             self._paint_strip(p, band)
         # the pointer runs down through every band
         x = self._x_at(self._pos)
@@ -1229,7 +1265,7 @@ class RadioSet(QWidget):
         self._paint_knob(p, c, r, -135 + 270 * self._volume, "VOLUME")
         c, r = g["knob_tune"]
         self._paint_knob(p, c, r, self._pos * 720.0, "TUNING")
-        for band in BANDS:
+        for band in self.visible_bands():
             self._paint_key(p, g["keys"][band.key], band.label, band.key == self._band)
         c, r = g["eye"]
         self._paint_eye(p, c, r)

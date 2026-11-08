@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sys
-from PySide6.QtWidgets import QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox
-from ....services import updater
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+                               QMessageBox)
+from ....services import stations, updater
 from ... import skins
 from ...widgets.common import TouchButton, dim_label
 
@@ -51,8 +52,35 @@ class AppearanceSection:
         look_row.addWidget(self.look_status, 1)
         look_row.addWidget(self.look_restart_btn)
         lgrid.addLayout(look_row, 4, 1)
+        # ---- radio bands (2026-11-08) ----
+        # James: "I would like a settings option where I can turn off the
+        # SiriusXM band of the radio and it would disappear from the
+        # display". Off takes the SXM strip and key off the Radio page (the
+        # other bands spread out to fill the glass) and its channels off the
+        # phone remote; the channels stay saved, so on brings them back.
+        # Applies straight away - no restart (services/stations.py).
+        self.sxm_band_cb = QCheckBox("Show the SiriusXM (SXM) band")
+        self.sxm_band_cb.setToolTip(
+            "Untick to take the SXM band off the radio dial and the phone remote. "
+            "Your SiriusXM channels stay saved; tick it again to bring them back.")
+        with self.ctx.session() as db:
+            self.sxm_band_cb.setChecked(stations.sxm_shown(db))
+        self.sxm_band_cb.toggled.connect(self._save_sxm_band)
+        lgrid.addWidget(QLabel("Radio"), 5, 0)
+        lgrid.addWidget(self.sxm_band_cb, 5, 1)
         lgrid.setColumnStretch(1, 1)
         body.addWidget(look_card)
+        self._sync_look_status()
+
+    def _save_sxm_band(self, on: bool) -> None:
+        try:
+            with self.ctx.session() as db:
+                stations.set_sxm_shown(db, on)
+                db.commit()
+        except Exception as exc:  # pragma: no cover - db trouble
+            self.ctx.notify(f"Couldn't save the radio setting ({exc})")
+            return
+        self.ctx.notify("SXM band shown on the radio" if on else "SXM band hidden from the radio")
         self._sync_look_status()
 
     def _chosen_look(self) -> dict:
@@ -79,6 +107,9 @@ class AppearanceSection:
         names = [self.look_combos[k].currentText() for k in ("skin", "jukebox", "radio", "turntable")]
         text = f"{names[0]}  ·  jukebox {names[1].lower()}  ·  radio {names[2].lower()}  ·  " \
                f"turntable {names[3].lower()}"
+        cb = getattr(self, "sxm_band_cb", None)
+        if cb is not None and not cb.isChecked():
+            text += "  ·  SXM band off"
         return text + ("  ·  restart to apply" if self._chosen_look() != skins.ACTIVE else "")
 
     def _restart_for_look(self) -> None:

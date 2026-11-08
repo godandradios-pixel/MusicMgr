@@ -7,7 +7,8 @@ library_state.py):
 - **Playback & look** (off unless switched on - each PC may well want its
   own, the Mint PC on other speakers say): crossfade, crossfading within an
   album, volume levelling and preamp (services/playback_prefs.py), whether
-  Now Playing shows the record player, and the skin and finishes from
+  Now Playing shows the record player, whether the radio shows its SXM
+  band, and the skin and finishes from
   `data/appearance.json` (ui/skins.py). A new look shows the next time
   MusicMgr starts, as when it's picked by hand.
 - **Tuner**: the band showing, the static-between-stations switch, and
@@ -39,6 +40,7 @@ SETTING_KEYS = (
     playback_prefs.KEY_LEVELLING,
     playback_prefs.KEY_PREAMP,
     "nowplaying_turntable",          # ui/views/nowplaying.py:PREF_TURNTABLE
+    "tuner_show_sxm",                # services/stations.py:SHOW_SXM_KEY
 )
 _SETTING = "setting:"
 _LOOK = "look:"

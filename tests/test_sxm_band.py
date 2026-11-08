@@ -304,3 +304,100 @@ def test_phone_remote_says_where_it_opened(ctx, tuner, db, opened):
     api = RemoteApi(ctx, lambda: "PC1")
     assert api._cmd_tune_station({"id": sid}) == "Opened in the PC's web browser"
     assert opened == [CH7]
+
+
+# -- Settings › Appearance › Radio: turning the SXM band off (2026-11-08) ---
+
+
+def test_sxm_band_is_shown_unless_turned_off(db):
+    with db.session_scope() as s:
+        assert stations.sxm_shown(s) and stations.hidden_bands(s) == set()
+        stations.set_sxm_shown(s, False)
+        s.commit()
+    with db.session_scope() as s:
+        assert not stations.sxm_shown(s)
+        assert stations.hidden_bands(s) == {"sxm"}
+        stations.set_sxm_shown(s, True)
+        s.commit()
+    with db.session_scope() as s:
+        assert stations.sxm_shown(s)
+
+
+def test_a_hidden_band_leaves_the_glass_and_the_keys(qapp):
+    w = radio_dial.RadioSet()
+    w.resize(1100, 560)
+    w._relayout()
+    fm_before = w._geom["strips"]["fm"].height()
+    w.set_hidden_bands({"sxm"})
+    assert "sxm" not in w._geom["strips"] and "sxm" not in w._geom["keys"]
+    assert w.visible_keys() == tuple(k for k in radio_dial.BAND_KEYS if k != "sxm")
+    # the bands left spread out to fill the room
+    assert w._geom["strips"]["fm"].height() > fm_before
+    assert w._geom["strips"]["lw"].bottom() <= w._geom["dial"].bottom()
+    w.set_hidden_bands(set())
+    assert "sxm" in w._geom["strips"] and "sxm" in w._geom["keys"]
+
+
+def test_hiding_the_lit_band_moves_off_it_and_it_cant_be_chosen(qapp):
+    w = _dial(qapp)
+    assert w.band == "sxm"
+    w.set_hidden_bands({"sxm"})
+    assert w.band != "sxm" and w.is_shown(w.band)
+    w.set_band("sxm", animate=False)
+    assert w.band != "sxm"
+    w.set_tuned("sxm", 1, animate=False)        # remembered, not shown
+    assert w.band != "sxm"
+    # up/down through the keys skips it
+    w.set_band("lw", animate=False)
+    asked = []
+    w.bandRequested.connect(asked.append)
+    QTest.keyClick(w, Qt.Key_Down)
+    assert asked == [w.visible_keys()[0]]
+
+
+def test_radio_page_follows_the_setting(ctx, tuner, db):
+    with db.session_scope() as s:
+        stations.add_sxm(s, "70s on 7", CH7)
+        s.commit()
+    view = _view(ctx)
+    view.set_band("sxm")
+    assert view.radio.band == "sxm"
+    with db.session_scope() as s:
+        stations.set_sxm_shown(s, False)
+        s.commit()
+    view.refresh()                                   # the page shown again
+    assert not view.radio.is_shown("sxm") and view.radio.band != "sxm"
+    view.set_band("sxm")
+    assert view.radio.band != "sxm"
+    with db.session_scope() as s:
+        stations.set_sxm_shown(s, True)
+        s.commit()
+    view.refresh()
+    assert view.radio.is_shown("sxm")
+    assert view.radio.labels("sxm") == ["70s on 7"]   # the channel kept
+
+
+def test_phone_remote_leaves_off_a_hidden_band(ctx, tuner, db):
+    from musicmgr.services.web_remote import RemoteApi
+
+    with db.session_scope() as s:
+        stations.add_sxm(s, "70s on 7", CH7)
+        stations.set_sxm_shown(s, False)
+        s.commit()
+    api = RemoteApi(ctx, lambda: "PC1")
+    assert all(x["band"] != "sxm" for x in api.radio()["stations"])
+
+
+def test_settings_checkbox_turns_the_sxm_band_off_and_on(ctx, db):
+    from musicmgr.ui.views.settings import SettingsView
+
+    view = SettingsView(ctx)
+    assert view.sxm_band_cb.isChecked()
+    view.sxm_band_cb.setChecked(False)
+    with db.session_scope() as s:
+        assert not stations.sxm_shown(s)
+    assert "SXM band off" in view._look_summary()
+    view.sxm_band_cb.setChecked(True)
+    with db.session_scope() as s:
+        assert stations.sxm_shown(s)
+    assert "SXM band off" not in view._look_summary()
