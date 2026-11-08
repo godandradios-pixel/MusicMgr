@@ -411,6 +411,8 @@ class AlbumTracksPanel(QWidget):
         self._blocks: list[Block] = []
         self._raw_blocks: list[Block] = []
         self._filter_text: str = ""
+        #: set by load(); fills in TrackEntry.guests on the first search
+        self._fill_guests = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -500,11 +502,19 @@ class AlbumTracksPanel(QWidget):
         self._filter_text = text
         self._apply_filter()
 
+    def _ensure_guests(self) -> None:
+        """Work out every track's `guests` the first time a search needs
+        them after a `load()` - once, then never again until the next load."""
+        fill, self._fill_guests = self._fill_guests, None
+        if fill is not None:
+            fill()
+
     def _apply_filter(self) -> None:
         needle = self._filter_text
         if not needle:
             self.set_blocks(_without_videos(self._raw_blocks))
             return
+        self._ensure_guests()
 
         filtered: list[Block] = []
         pending_artist: Optional[Block] = None
@@ -671,8 +681,24 @@ class AlbumTracksPanel(QWidget):
         )
         from ...services.matching import normalize, split_artists
 
+        # Both are pure but regex-heavy, and the same few thousand names come
+        # up across ~100k tracks - remembering each answer for this one load
+        # took the Tracks page from 2.4 s to well under a second on a
+        # 100k-track library (2026-11-07).
+        key_cache: dict[str, str] = {}
+        split_cache: dict[str, list[str]] = {}
+
         def artist_key(name: str) -> str:
-            return normalize(name) or name.lower()
+            key = key_cache.get(name)
+            if key is None:
+                key = key_cache[name] = normalize(name) or name.lower()
+            return key
+
+        def split_cached(text: str) -> list[str]:
+            names = split_cache.get(text)
+            if names is None:
+                names = split_cache[text] = split_artists(text)
+            return names
 
         blocks: list[Block] = []
         with self.ctx.session() as session:
@@ -719,21 +745,6 @@ class AlbumTracksPanel(QWidget):
                     )
                 )
 
-            # artists credited on each track - kept apart from
-            # the album's own artist below, so only guests become searchable
-            credit_rows = session.execute(
-                select(Credit.track_id, Artist.name, Credit.anv)
-                .join(Artist, Artist.id == Credit.artist_id)
-                .where(Credit.track_id.is_not(None),
-                       Credit.role.in_((Credit.ROLE_MAIN, Credit.ROLE_FEATURING)))
-            )
-            credited: dict[int, list[str]] = {}
-            for tid, name, anv in credit_rows:
-                names = credited.setdefault(tid, [])
-                names.append(name)
-                if anv and anv != name:
-                    names.append(anv)
-
             genre_rows = session.execute(
                 select(release_genres.c.release_id, Genre.name)
                 .join(Genre, Genre.id == release_genres.c.genre_id)
@@ -758,6 +769,11 @@ class AlbumTracksPanel(QWidget):
                 )
                 video_display_name_by_key.setdefault(key, name)
 
+        #: (tracks, album artist, artist key) per album - turned into each
+        #: track's `guests` only when a search first needs them (see
+        #: _ensure_guests), since splitting ~100k artist tags was the
+        #: biggest part of loading this page (2026-11-07)
+        guest_jobs: list[tuple[list[TrackEntry], str, str]] = []
         grouped_by_key: dict[str, list] = {}
         display_name_by_key: dict[str, str] = {}
         for release in releases:
@@ -779,16 +795,7 @@ class AlbumTracksPanel(QWidget):
 
             for release in sorted(grouped_by_key.get(key, []), key=release_key):
                 tracks = by_release.get(release.id, [])
-                own = {artist_key(n) for n in split_artists(release.artist_display or "")}
-                own.add(key)
-                for t in tracks:
-                    names = list(credited.get(t.track_id, ()))
-                    if t.track_id in track_artist:
-                        # split, so the album's own artist in "Usher feat.
-                        # Ludacris" still doesn't make Usher's album a hit
-                        names.extend(split_artists(track_artist[t.track_id]))
-                    guests = list(dict.fromkeys(n for n in names if artist_key(n) not in own))
-                    t.guests = " / ".join(guests).lower()
+                guest_jobs.append((tracks, release.artist_display or "", key))
                 blocks.append(
                     Block(
                         kind=KIND_ALBUM,
@@ -814,5 +821,35 @@ class AlbumTracksPanel(QWidget):
                     )
                 )
         self._raw_blocks = blocks
+
+        def fill_guests() -> None:
+            with self.ctx.session() as session:
+                # artists credited on each track - kept apart from
+                # the album's own artist below, so only guests become searchable
+                credit_rows = session.execute(
+                    select(Credit.track_id, Artist.name, Credit.anv)
+                    .join(Artist, Artist.id == Credit.artist_id)
+                    .where(Credit.track_id.is_not(None),
+                           Credit.role.in_((Credit.ROLE_MAIN, Credit.ROLE_FEATURING)))
+                )
+                credited: dict[int, list[str]] = {}
+                for tid, name, anv in credit_rows:
+                    names = credited.setdefault(tid, [])
+                    names.append(name)
+                    if anv and anv != name:
+                        names.append(anv)
+            for tracks, album_artist, key in guest_jobs:
+                own = {artist_key(n) for n in split_cached(album_artist)}
+                own.add(key)
+                for t in tracks:
+                    names = list(credited.get(t.track_id, ()))
+                    if t.track_id in track_artist:
+                        # split, so the album's own artist in "Usher feat.
+                        # Ludacris" still doesn't make Usher's album a hit
+                        names.extend(split_cached(track_artist[t.track_id]))
+                    guests = list(dict.fromkeys(n for n in names if artist_key(n) not in own))
+                    t.guests = " / ".join(guests).lower()
+
+        self._fill_guests = fill_guests
         self._apply_filter()
         self._resize_items()

@@ -75,3 +75,23 @@ def test_compilation_track_with_only_an_artist_tag_is_found(ctx, session):
     panel = _panel(ctx, session)
     panel.set_filter_text("mya")
     assert _visible(panel) == [("1999 Billboard Top Hits", ["It's All About Me"])]
+
+
+def test_guests_are_worked_out_on_the_first_search_only(ctx, session):
+    """2026-11-07: loading the Tracks page no longer splits every track's
+    artist tag up front - that waits for the first search, and a reload
+    after a new song still finds that song's guest."""
+    _track(session, "Confessions", "Usher", "Yeah!", ["Usher", "Ludacris"])
+    panel = _panel(ctx, session)
+    tracks = [t for b in panel._raw_blocks if b.kind == KIND_ALBUM for t in b.tracks]
+    assert [t.guests for t in tracks] == [""]   # nothing done at load
+    panel.set_filter_text("ludacris")
+    assert _visible(panel) == [("Confessions", ["Yeah!"])]
+    assert panel._fill_guests is None           # done once, not per keystroke
+
+    _track(session, "Confessions", "Usher", "Lovers & Friends", ["Usher", "Lil Jon"])
+    session.commit()
+    panel.load()                                # e.g. after a scan
+    panel.set_filter_text("")
+    panel.set_filter_text("lil jon")
+    assert _visible(panel) == [("Confessions", ["Lovers & Friends"])]

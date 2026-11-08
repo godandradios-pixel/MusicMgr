@@ -697,9 +697,14 @@ def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
         .subquery()
     )
 
+    # Named columns, not the Track entity: building ~100k ORM objects was
+    # most of Title Details' load time on a 100k-track library (2026-11-07).
     stmt = (
         select(
-            Track, Release.id, Release.title, Release.year,
+            Track.id, Track.track_no, Track.position, Track.title,
+            Track.duration_ms, Track.rating, Track.title_key,
+            Track.artist_display, Track.comment,
+            Release.id, Release.title, Release.year,
             Release.artist_display, Artist.name, Release.cover_path,
             MediaFile.path,
         )
@@ -710,30 +715,31 @@ def list_track_details(session: Session, limit: int = 200000) -> list[dict]:
         .limit(limit)
     )
     rows: list[dict] = []
+    genre_text = {rid: " / ".join(names) for rid, names in genres_by_release.items()}
     for (
-        track, release_id, album_title, year, artist_display, album_artist_name,
+        track_id, track_no, position, title, duration_ms, rating, title_key,
+        track_artist, comment,
+        release_id, album_title, year, artist_display, album_artist_name,
         cover_path, path,
     ) in session.execute(stmt):
         rows.append({
-            "track_id": track.id,
-            "genre": " / ".join(genres_by_release.get(release_id, [])),
+            "track_id": track_id,
+            "genre": genre_text.get(release_id, ""),
             "album_artist": album_artist_name or artist_display or "",
             "album": album_title or "",
-            "track_no": track.track_no,
+            "track_no": track_no,
             # "A"/"B" for a 78's sides (services/tracknum.py)
-            "track_label": track_label(track.track_no, track.position),
-            "title": track.title,
-            "duration_ms": track.duration_ms,
+            "track_label": track_label(track_no, position),
+            "title": title,
+            "duration_ms": duration_ms,
             "year": year,
-            "rating": track.rating,
-            "sort_key": track.title_key or track.title.lower(),
-            "artist": track.artist_display or artist_display or "",
+            "rating": rating,
+            "sort_key": title_key or title.lower(),
+            "artist": track_artist or artist_display or "",
             "path": path,
             "cover_path": cover_path,
-            "on_jukebox": track.id in on_jukebox_ids,
-            # Track.comment is already loaded on `track` (no extra join
-            # needed), same as `rating`
-            "comment": track.comment or "",
+            "on_jukebox": track_id in on_jukebox_ids,
+            "comment": comment or "",
         })
     return rows
 

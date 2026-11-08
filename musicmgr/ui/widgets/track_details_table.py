@@ -855,6 +855,8 @@ class TrackDetailsTable(QWidget):
         (`modelReset`/`layoutChanged`) since a stale span would merge the
         wrong cells."""
         self.view.clearSpans()
+        if self.model.group == GROUP_NONE:
+            return  # no headers to span - skip walking every track row
         for row in range(self.model.rowCount()):
             if self.model.header_at(row) is not None:
                 self.view.setSpan(row, 0, 1, len(HEADERS))
