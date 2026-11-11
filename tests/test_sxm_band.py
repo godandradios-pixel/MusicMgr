@@ -229,10 +229,11 @@ def test_empty_sxm_band_explains_how_to_add(ctx, tuner):
     view.set_band("sxm")
     assert view.status.text().startswith("No SiriusXM channels yet")
     assert view.btn_sxm_add.isVisibleTo(view) and view.btn_sxm_site.isVisibleTo(view)
-    assert view.find_btn.text() == "Add a channel…"
+    # one Add a channel… button, not two: the header's steps aside
+    assert view.find_btn.isHidden()
     assert not view.btn_scan.isVisibleTo(view)
     view.set_band("fm")
-    assert view.find_btn.text() == "Find stations…"
+    assert view.find_btn.text() == "Find stations…" and not view.find_btn.isHidden()
 
 
 def test_adding_a_channel(ctx, tuner, db):

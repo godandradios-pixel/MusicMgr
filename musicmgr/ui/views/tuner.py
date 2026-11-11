@@ -954,6 +954,10 @@ class TunerView(BaseView):
             buttons = (self.btn_scan, *buttons)
         for b in self._all_buttons():
             b.setVisible(b in buttons)
+        # an empty PODCAST or SXM band offers its own Find podcasts… / Add a
+        # channel… button; the header's (which says the same then) steps aside
+        self.find_btn.setVisible(self.btn_pod_find not in buttons
+                                 and self.btn_sxm_add not in buttons)
 
     def _pointed(self) -> tuple[str, int, bool]:
         """What the card describes: what's tuned in on the selected band

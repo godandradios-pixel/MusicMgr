@@ -474,7 +474,8 @@ class TestRadioPage:
         view.set_band("pod")
         assert view.radio.band == "pod"
         assert not view.btn_pod_find.isHidden()
-        assert view.find_btn.text() == "Find podcasts…"
+        # one Find podcasts… button, not two (the header's steps aside)
+        assert view.find_btn.isHidden()
         assert "No podcasts yet" in view.status.text()
 
     def test_pointing_at_a_podcast(self, ctx, data_dir, monkeypatch):
@@ -489,6 +490,7 @@ class TestRadioPage:
         for b in (view.btn_listen, view.btn_episodes, view.btn_pod_check, view.btn_remove):
             assert not b.isHidden()
         assert view.btn_band.isHidden()            # podcasts stay on their band
+        assert not view.find_btn.isHidden() and view.find_btn.text() == "Find podcasts…"
         view.remove_podcast(feed_id, ask=False)
         with db_session.session_scope() as s:
             assert podcasts.feeds(s) == []
