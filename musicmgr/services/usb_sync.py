@@ -309,6 +309,11 @@ def on_drive_message(local: str | Path, drive: Drive) -> str:
 #: D:\Music <-> Music.
 RADIO_KIND = "radio"
 RADIO_USB_FOLDER = "Radio"
+#: Downloaded podcast episodes (services/podcasts.py, D:\\Podcast) pair with
+#: a "Podcast" folder on the drive - only while Settings › USB sync ›
+#: Podcasts is ticked (_ensure_podcast_pair)
+PODCAST_KIND = "podcast"
+PODCAST_USB_FOLDER = "Podcast"
 
 
 def is_removed(pair: SyncPair) -> bool:
@@ -370,6 +375,7 @@ def ensure_default_pairs(db: Session, drive: Drive) -> list[SyncPair]:
             pairs.append(pair)
             existing[_fold(local)] = pair
     _ensure_radio_pair(db, drive, pairs, existing)
+    _ensure_podcast_pair(db, drive, pairs, existing)
     db.flush()
     return list(
         db.scalars(select(SyncPair).where(SyncPair.drive_id == drive.drive_id).order_by(SyncPair.id))
@@ -487,6 +493,62 @@ def _ensure_radio_pair(db: Session, drive: Drive, pairs: list[SyncPair], existin
     existing[_fold(local)] = pair
 
 
+def _ensure_podcast_pair(db: Session, drive: Drive, pairs: list[SyncPair], existing: dict) -> None:
+    """Pair the Podcast folder (D:\\Podcast) with <drive>\\Podcast while
+    Settings › USB sync › Podcasts is ticked; unticked, the pair is switched
+    off (kept, so ticking it again carries on where it was).
+
+    * This PC has downloaded episodes: paired, and a Podcast folder made on
+      the drive.
+    * This PC has none but the drive has a Podcast folder: the PC's folder
+      is made (beside its Radio folder) and the episodes come down to it.
+    * Neither: nothing to pair yet - the first download makes the folder,
+      and the next check pairs it.
+    """
+    from . import library_state, podcasts
+
+    try:
+        wanted = library_state.PODCASTS in library_state.enabled_categories(db)
+        local = _norm_local(podcasts.get_root(db))
+    except Exception:  # pragma: no cover - an old library
+        return
+    match = next((p for p in pairs
+                  if p.kind in (PODCAST_KIND, REMOVED_PREFIX + PODCAST_KIND)), None)
+    if match is not None:
+        if is_removed(match):
+            return
+        match.enabled = wanted
+        if (not on_drive(local, drive)
+                and _fold(_norm_local(match.local_path)) != _fold(local)):
+            match.local_path = local
+            _clear_baseline(db, match.id)
+        return
+    if not wanted or on_drive(local, drive) or _fold(local) in existing:
+        return
+    usb_dir = drive.root / PODCAST_USB_FOLDER
+    if not Path(local).is_dir():
+        if not usb_dir.is_dir():
+            return
+        try:
+            Path(local).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            log.warning("couldn't make %s for podcast episodes", local)
+            return
+        if not podcasts.root_is_set(db):
+            podcasts.set_root(db, local)
+    if not usb_dir.is_dir():
+        try:
+            usb_dir.mkdir()
+        except OSError:
+            log.warning("couldn't make %s on the drive", usb_dir)
+            return
+    pair = SyncPair(drive_id=drive.drive_id, local_path=local,
+                    usb_rel_path=PODCAST_USB_FOLDER, kind=PODCAST_KIND)
+    db.add(pair)
+    pairs.append(pair)
+    existing[_fold(local)] = pair
+
+
 def add_pair(db: Session, drive: Drive, local_path: str | Path, usb_rel_path: str) -> SyncPair:
     local = _norm_local(local_path)
     if on_drive(local, drive):
@@ -540,6 +602,10 @@ def update_pair(db: Session, pair_id: int, *, local_path: Optional[str | Path] =
             from . import otr
 
             otr.set_root(db, pair.local_path)
+        elif pair.kind == PODCAST_KIND:
+            from . import podcasts
+
+            podcasts.set_root(db, pair.local_path)
     if usb_rel_path is not None and _norm_rel(usb_rel_path) != pair.usb_rel_path:
         pair.usb_rel_path = _norm_rel(usb_rel_path)
         changed = True
@@ -559,7 +625,7 @@ def remove_pair(db: Session, pair_id: int) -> None:
     if pair is None:
         return
     _clear_baseline(db, pair.id)
-    auto = pair.kind in ("artwork", RADIO_KIND) or db.scalar(
+    auto = pair.kind in ("artwork", RADIO_KIND, PODCAST_KIND) or db.scalar(
         select(WatchedFolder.id).where(WatchedFolder.path == pair.local_path)
     ) is not None
     if auto:
@@ -1487,6 +1553,7 @@ def update_library(
     video = video_scanner.import_video_paths(db, new_paths, should_stop=should_stop)
 
     radio_note = _rescan_radio(db, result, should_stop)
+    _relink_podcasts(db, result)
 
     gone = {str(p) for p in result.removed_local_paths if not p.exists()}
     missing = 0
@@ -1530,6 +1597,27 @@ def update_library(
     if errors:
         parts.append(f"{errors:,} couldn't be read")
     return " · ".join(parts) if parts else "Library already up to date"
+
+
+def _relink_podcasts(db: Session, result: SyncResult) -> None:
+    """Podcast episodes that arrived (or left) with this sync: the episodes
+    play from the copies now in the Podcast folder (or stream again)."""
+    from . import podcasts
+
+    try:
+        base = os.path.normcase(str(Path(podcasts.get_root(db)))).rstrip("\\/")
+    except Exception:  # pragma: no cover - an old library
+        return
+    touched = any(
+        os.path.normcase(str(p)).startswith(base + os.sep)
+        or os.path.normcase(str(p)).startswith(base + "/")
+        for p in list(result.new_local_paths) + list(result.removed_local_paths)
+    )
+    if touched:
+        try:
+            podcasts.link_downloads(db)
+        except Exception:  # pragma: no cover - never fail a sync over this
+            log.warning("couldn't link podcast downloads after sync", exc_info=True)
 
 
 def _rescan_radio(db: Session, result: SyncResult, should_stop: Optional[StopFn]) -> str:

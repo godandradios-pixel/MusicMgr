@@ -433,7 +433,12 @@ def set_sxm_shown(session: Session, shown: bool) -> None:
 
 def hidden_bands(session: Session) -> set[str]:
     """Bands turned off in Settings - left off the dial and the phone remote."""
-    return set() if sxm_shown(session) else {"sxm"}
+    from . import podcasts
+
+    hidden = set() if sxm_shown(session) else {"sxm"}
+    if not podcasts.shown(session):
+        hidden.add(podcasts.BAND)
+    return hidden
 
 
 def dial(session: Session) -> list[RadioStation]:

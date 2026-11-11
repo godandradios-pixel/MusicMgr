@@ -103,9 +103,12 @@ class QueueItem:
     rg_album_gain: Optional[float] = None
     hydrated: bool = False
     #: "track" (the music library), "episode" (an
-    #: old-time radio episode - services/otr.py) or "stream" (an internet
-    #: station; `path` is its URL). Only tracks write play history, have
-    #: lyrics, preload, crossfade or get looked up by path.
+    #: old-time radio episode - services/otr.py), "podcast" (a podcast
+    #: episode - services/podcasts.py; `path` is its downloaded copy or the
+    #: feed's audio link) or "stream" (an internet station; `path` is its
+    #: URL). Only tracks write play history, have lyrics, preload, crossfade
+    #: or get looked up by path. Podcast episodes play at the podcast speed
+    #: (PlayerController.set_podcast_rate).
     kind: str = "track"
     episode_id: Optional[int] = None
     station_id: Optional[int] = None
@@ -127,6 +130,12 @@ class QueueItem:
     @property
     def is_stream(self) -> bool:
         return self.kind == "stream"
+
+    @property
+    def is_remote(self) -> bool:
+        """Played from a web link rather than a file (a station, or a podcast
+        episode that isn't downloaded)."""
+        return self.is_stream or self.path.startswith(("http://", "https://"))
 
     @classmethod
     def from_track(cls, track: Track) -> Optional["QueueItem"]:
@@ -251,7 +260,7 @@ class _Deck:
         self.item = item
         self.cursor = cursor
         self.pending_seek = item.start_ms or 0
-        url = QUrl(item.path) if item.is_stream else QUrl.fromLocalFile(item.path)
+        url = QUrl(item.path) if item.is_remote else QUrl.fromLocalFile(item.path)
         self.player.setSource(url)
 
     def unload(self) -> None:
@@ -292,6 +301,8 @@ class PlayerController(QObject):
     #: a live station's sound as it plays (for the visualizer):
     #: five band levels 0..1 every BUCKET_MS, and whether the bass spiked
     liveBands = Signal(list, bool)
+    #: the podcast speed changed (1.0, 1.25 or 1.5)
+    podcastRateChanged = Signal(float)
 
     #: background measuring of unlevelled tracks; tests switch it off
     auto_measure = True
@@ -309,6 +320,9 @@ class PlayerController(QObject):
         self._current_scrobbled = False
 
         self._volume = 0.8
+        #: the speed podcast episodes play at (services/podcasts.py:SPEEDS);
+        #: everything else always plays at 1x
+        self._podcast_rate = 1.0
         self._prefs = playback_prefs.PlaybackPrefs()
         # The live-radio tap (QAudioBufferOutput) is created before the
         # decks, all three children of this controller. Qt deletes children
@@ -424,7 +438,7 @@ class PlayerController(QObject):
             return
         cursor = self._peek_next_cursor()
         item = self._item_at(cursor)
-        if item is None or item.is_stream or not os.path.exists(item.path):
+        if item is None or item.is_remote or not os.path.exists(item.path):
             if standby.item is not None:
                 standby.unload()
             return
@@ -434,6 +448,7 @@ class PlayerController(QObject):
         standby.unload()
         self._hydrate(item)
         standby.load(item, cursor)
+        self._apply_rate(standby)
         standby.fade = 1.0
         standby.gain = standby.gain_target = self._gain_factor(item, cursor)
         self._apply_volume(standby)
@@ -632,6 +647,7 @@ class PlayerController(QObject):
             or self._prefs.levelling == playback_prefs.LEVELLING_OFF
             or item.rg_track_gain is not None
             or item.is_stream
+            or item.kind == "podcast"
         ):
             return
         if item.kind == "episode":
@@ -859,7 +875,7 @@ class PlayerController(QObject):
             self._set_signal("none")
             self.trackChanged.emit(None)
             return
-        if not item.is_stream and not os.path.exists(item.path):
+        if not item.is_remote and not os.path.exists(item.path):
             self.errorOccurred.emit(f"File missing: {item.path}")
             self.next()
             return
@@ -874,6 +890,7 @@ class PlayerController(QObject):
             deck = self._active
             self._hydrate(item)
             deck.load(item, self._cursor)
+        self._apply_rate(deck)
         self._set_signal("connecting" if item.is_stream else "none")
         # only a station is analysed as it plays - a track's spectrum is
         # worked out up front from its file (services/spectrum.py)
@@ -967,6 +984,39 @@ class PlayerController(QObject):
     @property
     def shuffle(self) -> bool:
         return self._shuffle
+
+    # -- podcast speed ------------------------------------------------------
+
+    @property
+    def podcast_rate(self) -> float:
+        return self._podcast_rate
+
+    def set_podcast_rate(self, rate: float) -> None:
+        """Play podcast episodes at `rate` (the player bar's speed button).
+        A podcast playing now changes speed at once; songs, radio shows
+        and stations are never sped up."""
+        rate = float(rate) if rate and rate > 0 else 1.0
+        if rate == self._podcast_rate:
+            return
+        self._podcast_rate = rate
+        for d in self._decks:
+            self._apply_rate(d)
+        self.podcastRateChanged.emit(rate)
+
+    def _rate_for(self, item: Optional[QueueItem]) -> float:
+        return self._podcast_rate if item is not None and item.kind == "podcast" else 1.0
+
+    def _apply_rate(self, deck) -> None:
+        player = deck.player
+        rate = self._rate_for(deck.item)
+        if abs(player.playbackRate() - rate) > 1e-6:
+            player.setPlaybackRate(rate)
+        # a sped-up voice keeps its pitch (Qt 6.10+, where the backend can)
+        if hasattr(player, "setPitchCompensation"):
+            try:
+                player.setPitchCompensation(rate != 1.0)
+            except Exception:  # pragma: no cover - backend without it
+                pass
 
     def set_shuffle(self, enabled: bool) -> None:
         self._shuffle = bool(enabled)

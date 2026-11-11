@@ -122,6 +122,7 @@ class UsbSection:
             (library_state.TOP_TRACKS, "Top songs"),
             (library_state.SIMILAR, "Similar artists"),
             (library_state.TUNER, "Radio dial"),
+            (library_state.PODCASTS, "Podcasts"),
             (library_state.PREFS, "Playback & look"),
         ):
             cb = QCheckBox(text)
@@ -148,6 +149,11 @@ class UsbSection:
             if cat == library_state.TUNER:
                 cb.setToolTip("Where the Radio page's dial was left: the band, the "
                               "station or show tuned in, and the static switch")
+            if cat == library_state.PODCASTS:
+                cb.setToolTip("The podcasts on the Radio page's PODCAST band, the episodes "
+                              "heard and where one was stopped, and the Podcast folder "
+                              "(D:\\Podcast) of downloaded episodes - paired with a Podcast "
+                              "folder on the drive")
             if cat == library_state.PREFS:
                 cb.setToolTip("Crossfade, volume levelling and preamp, the record player "
                               "on Now Playing, and the skin and finishes (a new look shows "
@@ -572,6 +578,15 @@ class UsbSection:
             self.sxm_band_cb.blockSignals(True)
             self.sxm_band_cb.setChecked(shown)
             self.sxm_band_cb.blockSignals(False)
+            from ....services import podcasts
+
+            with self.ctx.session() as db:
+                pod_shown = podcasts.shown(db)
+                speed = podcasts.speed(db)
+            self.podcast_band_cb.blockSignals(True)
+            self.podcast_band_cb.setChecked(pod_shown)
+            self.podcast_band_cb.blockSignals(False)
+            self.ctx.player.set_podcast_rate(speed)
             self._sync_look_status()
         if result is not None and getattr(result, "artwork_changed", False):
             clear_art_cache()

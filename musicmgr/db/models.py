@@ -994,6 +994,65 @@ class RadioStation(Base):
     off_air_since: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
 
 
+class PodcastFeed(Base):
+    """A podcast subscribed to on the Radio page's PODCAST band
+    (services/podcasts.py). Episodes stream from the feed; one downloaded
+    by hand lives in the Podcast folder (D:\\Podcast\\<title>)."""
+
+    __tablename__ = "podcast_feeds"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    feed_url: Mapped[str] = mapped_column(Text, unique=True)
+    title: Mapped[str] = mapped_column(String(300))
+    author: Mapped[Optional[str]] = mapped_column(String(300))
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    image_url: Mapped[Optional[str]] = mapped_column(Text)
+    #: the cover art saved locally (DATA_DIR/podcasts), shown as its logo
+    image_path: Mapped[Optional[str]] = mapped_column(Text)
+    dial_order: Mapped[int] = mapped_column(Integer, default=0)
+    #: conditional GET: a feed that hasn't changed answers 304
+    etag: Mapped[Optional[str]] = mapped_column(String(300))
+    last_modified: Mapped[Optional[str]] = mapped_column(String(100))
+    last_checked: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
+    #: the last check failed (shown on the info card); cleared on success
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    #: the episode tuning to the podcast resumes at
+    current_episode_id: Mapped[Optional[int]] = mapped_column(Integer)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
+
+    episodes: Mapped[list["PodcastEpisode"]] = relationship(
+        back_populates="feed", cascade="all, delete-orphan"
+    )
+
+
+class PodcastEpisode(Base):
+    __tablename__ = "podcast_episodes"
+    __table_args__ = (UniqueConstraint("feed_id", "guid", name="uq_podcast_episode_guid"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    feed_id: Mapped[int] = mapped_column(
+        ForeignKey("podcast_feeds.id", ondelete="CASCADE"), index=True
+    )
+    #: the feed's own id for the episode (its enclosure link if it has none)
+    guid: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(String(500))
+    #: when it was published, UTC
+    published: Mapped[Optional[dt.datetime]] = mapped_column(DateTime, index=True)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
+    audio_url: Mapped[str] = mapped_column(Text)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    #: a copy downloaded by hand into the Podcast folder - played instead
+    #: of the stream when it's there
+    local_path: Mapped[Optional[str]] = mapped_column(Text)
+    #: first seen by this PC (the "new" mark: newer than the last visit)
+    first_seen: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
+    played: Mapped[bool] = mapped_column(Boolean, default=False)
+    position_ms: Mapped[int] = mapped_column(Integer, default=0)
+    last_played_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime)
+
+    feed: Mapped["PodcastFeed"] = relationship(back_populates="episodes")
+
+
 class Setting(Base):
     __tablename__ = "settings"
 

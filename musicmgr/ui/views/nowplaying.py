@@ -639,6 +639,12 @@ class NowPlayingView(BaseView):
             if kind != "onair":
                 if item.is_stream and item.station_id is not None:
                     kind, ident = "station", item.station_id
+                elif item.kind == "podcast" and item.episode_id is not None:
+                    from ...db.models import PodcastEpisode
+
+                    pod_ep = db.get(PodcastEpisode, item.episode_id)
+                    if pod_ep is not None:
+                        kind, ident = "podcast", pod_ep.feed_id
                 elif item.episode_id is not None:
                     episode = db.get(RadioEpisode, item.episode_id)
                     if episode is not None:

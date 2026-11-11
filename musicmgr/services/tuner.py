@@ -12,7 +12,11 @@ Three kinds of thing sit on the dial:
   two before each and now and then a news bulletin from the same year.
   Endless - topped up like the song radio (services/radio.py). On-Air
   doesn't touch shows' resume points;
-- an **internet station** (services/stations.py).
+- an **internet station** (services/stations.py);
+- a **podcast** on the PODCAST band (services/podcasts.py) - like a show:
+  resumes the episode in progress (or plays the newest unheard one) and
+  carries on through the unheard episodes after it; positions are saved
+  the same way, and it plays at the podcast speed.
 
 Anything else played from elsewhere in the app simply takes over the
 player; the dial stays where it was.
@@ -32,15 +36,16 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from ..db.models import RadioEpisode, RadioShow, RadioStation, Setting
+from ..db.models import PodcastEpisode, PodcastFeed, RadioEpisode, RadioShow, RadioStation, Setting
 from ..db.session import session_scope
-from . import otr, stations
+from . import otr, podcasts, stations
 
 log = logging.getLogger(__name__)
 
 SOURCE_SHOW = "otr:show"
 SOURCE_ONAIR = "otr:onair"
 SOURCE_STATION = "station"
+SOURCE_PODCAST = "podcast"
 
 #: save an episode's position at most this often while it plays
 SAVE_EVERY_MS = 10_000
@@ -78,6 +83,8 @@ class TunerController(QObject):
         self._last_saved_ms = 0
         #: (episode_id, last position, duration) of the episode playing
         self._ep_progress: Optional[list] = None
+        #: which kind of episode that is: "episode" (old-time radio) or "podcast"
+        self._ep_kind = "episode"
         player.trackChanged.connect(self._on_track_changed)
         player.positionChanged.connect(self._on_position)
         player.queueChanged.connect(self._check)
@@ -167,6 +174,27 @@ class TunerController(QObject):
         self._onair = None
         self._play(items, f"{SOURCE_SHOW}:{show_id}", ("show", show_id))
         self._set_tuned("show", show_id)
+        return True
+
+    def tune_podcast(self, feed_id: int, episode_id: Optional[int] = None) -> bool:
+        """A podcast on the PODCAST band: the episode in progress (or
+        `episode_id`) and the unheard episodes after it."""
+        with session_scope() as session:
+            feed = session.get(PodcastFeed, feed_id)
+            if feed is None:
+                return False
+            items = podcasts.queue_for_feed(session, feed_id, start_episode_id=episode_id)
+            if items:
+                ep = session.get(PodcastEpisode, items[0].episode_id)
+                if ep is not None:
+                    podcasts.set_current(session, ep)
+            name = feed.title
+        if not items:
+            self.notified.emit(f"No episodes of {name} yet - try Check for new episodes")
+            return False
+        self._onair = None
+        self._play(items, f"{SOURCE_PODCAST}:{feed_id}", ("podcast", feed_id))
+        self._set_tuned("podcast", feed_id)
         return True
 
     def tune_onair(self) -> bool:
@@ -300,6 +328,7 @@ class TunerController(QObject):
             (kind == "show" and source.startswith(SOURCE_SHOW))
             or (kind == "onair" and source == SOURCE_ONAIR)
             or (kind == "station" and source.startswith(SOURCE_STATION))
+            or (kind == "podcast" and source.startswith(SOURCE_PODCAST))
         )
         if kind and (not still_ours or not self.player.queue):
             self._onair = None
@@ -325,15 +354,25 @@ class TunerController(QObject):
         kind = (self._tuning or self._tuned)[0]
         if item is not None and item.kind == "episode" and kind == "show":
             self._ep_progress = [item.episode_id, item.start_ms or 0, item.duration_ms or 0]
+            self._ep_kind = "episode"
             with session_scope() as session:
                 ep = session.get(RadioEpisode, item.episode_id)
                 if ep is not None:
                     otr.set_current(session, ep)
+        elif item is not None and item.kind == "podcast" and item.episode_id is not None:
+            # a podcast episode keeps its place however it was started
+            # (the dial or the Episodes list)
+            self._ep_progress = [item.episode_id, item.start_ms or 0, item.duration_ms or 0]
+            self._ep_kind = "podcast"
+            with session_scope() as session:
+                ep = session.get(PodcastEpisode, item.episode_id)
+                if ep is not None:
+                    podcasts.set_current(session, ep)
         self._check()
 
     def _on_item_finished(self, item) -> None:
         """Heard to the end: count the whole episode as played."""
-        if self._ep_progress is not None and item.kind == "episode" \
+        if self._ep_progress is not None and item.kind == self._ep_kind \
                 and item.episode_id == self._ep_progress[0]:
             length = self._ep_progress[2] or item.duration_ms or 0
             self._ep_progress[1] = max(self._ep_progress[1], length)
@@ -363,7 +402,15 @@ class TunerController(QObject):
         self._last_saved_ms = position
         try:
             with session_scope() as session:
-                if final:
+                if self._ep_kind == "podcast":
+                    if final:
+                        podcasts.save_position(session, episode_id, position, duration)
+                    else:
+                        ep = session.get(PodcastEpisode, episode_id)
+                        if ep is not None and not ep.played:
+                            ep.position_ms = (position if position >= podcasts.MIN_RESUME_MS
+                                              else 0)
+                elif final:
                     otr.save_position(session, episode_id, position, duration)
                 else:
                     ep = session.get(RadioEpisode, episode_id)

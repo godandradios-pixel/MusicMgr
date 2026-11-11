@@ -129,17 +129,20 @@ SIMILAR = "similar"
 #: prefs_sync.py
 PREFS = "prefs"
 TUNER = "tuner"
+#: podcasts on the PODCAST band and where each episode was left
+#: (podcast_sync.py); the Podcast folder pair rides on it too (usb_sync.py)
+PODCASTS = "podcasts"
 CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, CHARTS, RADIO, PROFILES, TOP_TRACKS,
-              SIMILAR, PREFS, TUNER)
+              SIMILAR, PREFS, TUNER, PODCASTS)
 #: off until switched on: each PC may want its own
 DEFAULT_OFF = frozenset({PREFS})
 #: the ones kept in library-state.json.gz itself
 _STATE_CATEGORIES = (PLAYS, RATINGS, PLAYLISTS, JUKEBOX, RADIO, PROFILES, TOP_TRACKS,
-                     SIMILAR, PREFS, TUNER)
+                     SIMILAR, PREFS, TUNER, PODCASTS)
 #: keyed by artist name_key - see carry_artist_data
 _ARTIST_CATEGORIES = (PROFILES, TOP_TRACKS, SIMILAR)
 #: flat {key: value} dicts that a drive from an older MusicMgr won't have
-_NEWER_CATEGORIES = _ARTIST_CATEGORIES + (PREFS, TUNER)
+_NEWER_CATEGORIES = _ARTIST_CATEGORIES + (PREFS, TUNER, PODCASTS)
 #: what a station carries (keyed by its stream address)
 _STATION_FIELDS = ("name", "band", "dial_order", "homepage", "favicon_url", "country",
                    "tags", "codec", "bitrate", "rb_uuid")
@@ -465,7 +468,14 @@ def read_local(db: Session, idx: TrackIndex) -> dict:
             RADIO: read_stations(db), OTR: _read_otr(db), PROFILES: read_profiles(db),
             PROFILES_CHECKED: read_profiles_checked(db),
             TOP_TRACKS: read_top_tracks(db), SIMILAR: read_similar(db),
-            PREFS: _prefs_sync().read_prefs(db), TUNER: _prefs_sync().read_tuner(db)}
+            PREFS: _prefs_sync().read_prefs(db), TUNER: _prefs_sync().read_tuner(db),
+            PODCASTS: _read_podcasts(db)}
+
+
+def _read_podcasts(db: Session) -> dict:
+    from .podcast_sync import read_podcasts
+
+    return read_podcasts(db)
 
 
 def _prefs_sync():
@@ -854,7 +864,7 @@ def empty_state() -> dict:
     return {"ratings": {}, "playlists": {}, "plays": [], "jukebox": None, "unresolved": [],
             IMAGES: {}, "images_unplaced": [], FOLDERS: {}, RADIO: {}, OTR: {},
             PROFILES: {}, "profiles_unplaced": [], PROFILES_CHECKED: {}, TOP_TRACKS: {}, "top_tracks_unplaced": [],
-            SIMILAR: {}, "similar_unplaced": [], PREFS: {}, TUNER: {}}
+            SIMILAR: {}, "similar_unplaced": [], PREFS: {}, TUNER: {}, PODCASTS: {}}
 
 
 def load_state(path: Path) -> Optional[dict]:
@@ -1001,6 +1011,8 @@ class MergeNotes:
     look_in: bool = False
     tuner_in: int = 0
     tuner_out: int = 0
+    podcasts_in: int = 0
+    podcasts_out: int = 0
 
     def received(self) -> bool:
         """Did anything change in this library? (Views refresh if so.)"""
@@ -1010,7 +1022,7 @@ class MergeNotes:
                     or self.stations_in or self.stations_removed or self.otr_in
                     or self.nested_cleaned or self.profiles_set or self.profiles_cleared
                     or self.top_tracks_set or self.top_tracks_cleared or self.similar_set
-                    or self.prefs_in or self.tuner_in
+                    or self.prefs_in or self.tuner_in or self.podcasts_in
                     or (self.charts is not None
                         and (self.charts.charts_in or self.charts.charts_removed)))
 
@@ -1055,6 +1067,8 @@ class MergeNotes:
             parts.append(f"{n} radio station{'s' if n != 1 else ''} removed")
         if self.otr_in:
             parts.append("radio show progress updated")
+        if self.podcasts_in:
+            parts.append("podcasts updated")
         if self.profiles_set:
             n = self.profiles_set
             parts.append(f"{n:,} artist profile{'s' if n != 1 else ''} updated")
@@ -1115,6 +1129,8 @@ class MergeNotes:
             sent.append(f"{n} radio station{'s' if n != 1 else ''}")
         if self.otr_out:
             sent.append("radio show progress")
+        if self.podcasts_out:
+            sent.append("podcasts")
         if self.profiles_out:
             n = self.profiles_out
             sent.append(f"{n:,} artist profile{'s' if n != 1 else ''}")
@@ -1178,6 +1194,7 @@ def _strip(value, drop: str):
 
 def merge(local: dict, usb: dict, base: dict,
           otr_prefer_usb: Optional[Callable[[str, object, object], bool]] = None,
+          podcast_prefer_usb: Optional[Callable[[str, object, object], bool]] = None,
           ) -> tuple[dict, MergeNotes]:
     notes = MergeNotes()
 
@@ -1310,11 +1327,20 @@ def merge(local: dict, usb: dict, base: dict,
     tuner, _ = _merge_dict(local.get(TUNER) or {}, usb.get(TUNER) or {}, base.get(TUNER) or {})
     notes.tuner_out = _changed(tuner, usb.get(TUNER) or {})
 
+    # podcasts: three-way per key (podcast_sync.py); changed on both -> the
+    # one further along
+    lpod, upod = local.get(PODCASTS) or {}, usb.get(PODCASTS) or {}
+    pods, taken_pod = _merge_dict(
+        lpod, upod, base.get(PODCASTS) or {},
+        newer=(lambda k: podcast_prefer_usb(k, lpod[k], upod[k])) if podcast_prefer_usb else None)
+    notes.podcasts_in = len(taken_pod) + sum(1 for k in lpod if k not in pods)
+    notes.podcasts_out = _changed(pods, upod)
+
     return {"ratings": ratings, "playlists": playlists, "plays": plays, "jukebox": board,
             IMAGES: images, FOLDERS: folders, RADIO: stations, OTR: otr,
             PROFILES: profiles, PROFILES_CHECKED: profiles_checked,
             TOP_TRACKS: top, SIMILAR: similar,
-            PREFS: prefs, TUNER: tuner}, notes
+            PREFS: prefs, TUNER: tuner, PODCASTS: pods}, notes
 
 
 # --------------------------------------------------------------------------
@@ -1765,12 +1791,19 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
     otr_idx = OtrIndex(db)
     if RADIO in include:
         carry_unplaced(local[OTR], base[OTR], otr_idx)
+    from .podcast_sync import PodcastIndex, apply_podcasts
+    from .podcast_sync import carry_unplaced as carry_podcasts
+
+    pod_idx = PodcastIndex(db)
+    if PODCASTS in include:
+        carry_podcasts(local[PODCASTS], base[PODCASTS], pod_idx)
     targets = _image_targets(db)
     carried = carry_images(local, base, targets) if PLAYLISTS in include else set()
     artist_keys = set(db.scalars(select(Artist.name_key)))
     carried_artist = {cat: (carry_artist_data(local, base, artist_keys, cat)
                             if cat in include else set()) for cat in _ARTIST_CATEGORIES}
-    merged, notes = merge(local, usb, base, otr_prefer_usb=otr_idx.prefer_usb)
+    merged, notes = merge(local, usb, base, otr_prefer_usb=otr_idx.prefer_usb,
+                          podcast_prefer_usb=pod_idx.prefer_usb)
     notes.nested_cleaned = nested
     notes.old_build_pc = usb.get(OLD_BUILD)
     if notes.old_build_pc:
@@ -1810,6 +1843,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         notes.prefs_out = 0
     if TUNER not in include:
         notes.tuner_out = 0
+    if PODCASTS not in include:
+        notes.podcasts_in = notes.podcasts_out = 0
     apply_state(db, idx, local, merged, notes, include)
     if RADIO in include:
         apply_stations(db, merged, local, notes)
@@ -1826,6 +1861,8 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         apply_similar(db, merged, notes, carried_artist[SIMILAR])
     if PREFS in include:
         notes.prefs_in, notes.look_in = _prefs_sync().apply_prefs(db, merged[PREFS], local[PREFS])
+    if PODCASTS in include:
+        notes.podcasts_in = apply_podcasts(db, pod_idx, merged[PODCASTS], local[PODCASTS])
     if TUNER in include:
         # after apply_stations, so a station that just arrived can be tuned
         notes.tuner_in = _prefs_sync().apply_tuner(db, merged[TUNER], local[TUNER])
@@ -1869,6 +1906,11 @@ def sync_library_state(db: Session, drive, pc_id: str, pairs: Optional[list[Sync
         else:
             base_copy[unplaced] = base.get(unplaced) or []
     base_copy["unresolved"] = sorted(k for k in _referenced_keys(merged) if not _resolvable(idx, k))
+    if PODCASTS in include:
+        # progress for episodes this PC hasn't read from the feed yet isn't
+        # in its base, so it's taken (not seen as removed here) once they are
+        base_copy[PODCASTS] = {k: v for k, v in (base_copy[PODCASTS] or {}).items()
+                               if pod_idx.placeable(k)}
     save_state(base_state_path(drive), base_copy, pc_id)
     if CHARTS in include:
         # its own files; see chart_sync.py

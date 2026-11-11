@@ -10,6 +10,9 @@ A Radio folder is any of:
   * the Radio page's folder, wherever it's set (Settings key "otr_root"),
   * a folder called Radio at the top of a drive (D:\\Radio),
   * ~/Radio.
+Downloaded podcast episodes (the Podcast folder - D:\\Podcast, ~/Podcast or
+wherever Settings key "podcast_root" points, services/podcasts.py) are left
+out the same way.
 A song or album that only has "Radio" in its name (Queen's "Radio Ga Ga",
 a "Radio" album folder inside D:\\Music) is not one.
 """
@@ -20,7 +23,7 @@ import re
 from pathlib import Path
 from typing import Sequence
 
-_DRIVE_RADIO = re.compile(r"^[a-z]:/radio/")
+_DRIVE_RADIO = re.compile(r"^[a-z]:/(radio|podcast)/")
 
 
 def _norm(path: str) -> str:
@@ -39,6 +42,13 @@ def roots(session) -> list[str]:
         otr_root = None
     if otr_root:
         out.append(_norm(otr_root))
+    out.append(_norm(str(Path.home() / "Podcast")))
+    try:
+        from .podcasts import get_root as podcast_root
+
+        out.append(_norm(podcast_root(session)))
+    except Exception:  # pragma: no cover - never let this break a scan
+        pass
     return out
 
 

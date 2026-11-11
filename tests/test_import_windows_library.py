@@ -157,3 +157,162 @@ def test_map_path_helpers():
     assert tool.map_path("d:\\MUSIC\\a\\b.mp3", maps) == Path("/home/j/Music/a/b.mp3")
     assert tool.map_path("E:\\Music\\a.mp3", maps) is None
     assert tool.root_of("D:\\Music\\a\\b.mp3") == "D:\\Music"
+
+
+# -- 2026-10-26: drive snapshots, newer tables, sync identity ---------------------
+
+
+@pytest.fixture
+def snapshot(tmp_path, qapp):
+    """A library copy as "Save a copy of the library on the drive" writes it:
+    USB/MusicMgr/data-20261026 holds library.db, stations/ and video_thumbs/,
+    while covers and artist pictures live in USB/MusicMgr/artwork and
+    /artists. The database belongs to a PC that has synced (sync id, pairs,
+    sync records) and has radio shows, station logos, video thumbnails and
+    a playlist-folder tile in a subfolder."""
+    usb_mm = tmp_path / "USB" / "MusicMgr"
+    data = usb_mm / "data-20261026"
+    (usb_mm / "artwork" / "Folders").mkdir(parents=True)
+    (usb_mm / "artists").mkdir()
+    (usb_mm / "artwork" / "Boston - Boston.jpg").write_bytes(b"cover")
+    (usb_mm / "artwork" / "Folders" / "rock.jpg").write_bytes(b"tile")
+    (usb_mm / "artists" / "Boston.jpg").write_bytes(b"portrait")
+    (data / "stations").mkdir(parents=True)
+    (data / "video_thumbs").mkdir()
+    (data / "stations" / "2.png").write_bytes(b"logo")
+    (data / "video_thumbs" / "abc.jpg").write_bytes(b"thumb")
+
+    db_session.init_engine(db_path=data / "library.db")
+    with db_session.session_scope() as s:
+        boston = Artist(name="Boston", name_key="boston", image_path="D:\\MusicMgr\\data\\artists\\Boston.jpg")
+        s.add(boston)
+        s.flush()
+        rel = Release(title="Boston", title_key="boston", album_artist_id=boston.id,
+                      cover_path="D:\\MusicMgr\\data\\artwork\\Boston - Boston.jpg")
+        s.add(rel)
+        s.flush()
+        t = Track(release_id=rel.id, title="Smokin", title_key="smokin")
+        s.add(t)
+        s.flush()
+        s.add(MediaFile(track_id=t.id, path="D:\\MusicFLAC\\Boston\\Boston\\06 Smokin.flac"))
+        s.add(WatchedFolder(path="D:\\MusicFLAC"))
+    db_session.get_engine().dispose()
+
+    db = sqlite3.connect(data / "library.db")
+    now = "2026-10-26 12:00:00"
+    db.executescript(f"""
+        INSERT INTO settings (key, value) VALUES ('sync_pc_id', '6bd7433e53dd462ea993a824bbf64a10');
+        INSERT INTO settings (key, value) VALUES ('otr_root', 'D:/Radio');
+        INSERT INTO settings (key, value) VALUES ('usb_sync_auto_check', '0');
+        INSERT INTO sync_pairs (id, drive_id, local_path, usb_rel_path, kind, enabled)
+            VALUES (1, 'drive1', 'D:\\MusicFLAC', 'MusicFLAC', 'media', 1);
+        INSERT INTO sync_baseline (pair_id, rel_path, size, mtime_ns)
+            VALUES (1, 'Boston/Boston/06 Smokin.flac', 1, 1);
+        INSERT INTO radio_shows (id, name, folder, kind, cover_path, band, is_missing)
+            VALUES (1, 'Dragnet', 'D:\\Radio\\Dragnet', 'series', 'D:\\Radio\\Dragnet\\cover.jpg', 'am', 0);
+        INSERT INTO radio_episodes (id, show_id, path, title, sort_key, played, position_ms, rg_failed, is_missing)
+            VALUES (1, 1, 'D:\\Radio\\Dragnet\\Dragnet 1949-06-03.mp3', 'Dragnet', 'a', 0, 0, 0, 0);
+        INSERT INTO radio_stations (id, name, stream_url, favicon_path, dial_order, band, created_at)
+            VALUES (1, 'WGYY', 'https://x', 'D:\\MusicMgr\\data\\stations\\2.png', 1, 'fm', '{now}');
+        INSERT INTO playlist_folders (id, name, created_at, cover_path)
+            VALUES (1, 'Rock', '{now}', 'D:\\MusicMgr\\data\\artwork\\Folders\\rock.jpg');
+        INSERT INTO videos (id, title, title_key, path, thumbnail_path, is_missing, play_count,
+                            added_at, last_seen_at)
+            VALUES (1, 'Amanda', 'amanda', 'D:\\Videos\\Boston - Amanda.mp4',
+                    'D:\\MusicMgr\\data\\video_thumbs\\abc.jpg', 0, 0, '{now}', '{now}');
+    """)
+    db.commit()
+    db.close()
+
+    media = tmp_path / "data"
+    (media / "MusicFLAC" / "Boston" / "Boston").mkdir(parents=True)
+    (media / "MusicFLAC" / "Boston" / "Boston" / "06 Smokin.flac").write_bytes(b"x")
+    (media / "Radio" / "Dragnet").mkdir(parents=True)
+    (media / "Radio" / "Dragnet" / "Dragnet 1949-06-03.mp3").write_bytes(b"x")
+    (media / "Radio" / "Dragnet" / "cover.jpg").write_bytes(b"x")
+    (media / "Videos").mkdir()
+    (media / "Videos" / "Boston - Amanda.mp4").write_bytes(b"x")
+    target = tmp_path / "home" / "MusicMgr" / "data"
+    return data, target, media
+
+
+def run_snapshot(data, target, media, *extra):
+    maps = []
+    for name in ("MusicFLAC", "Videos", "Movies", "Radio"):
+        maps += ["--map", f"D:\\{name}={media / name}"]
+    return tool.main(["--source", str(data), "--target", str(target),
+                      "--music", str(media / "Music"), *maps, *extra])
+
+
+def one(db_path, sql):
+    db = sqlite3.connect(db_path)
+    try:
+        row = db.execute(sql).fetchone()
+        return row[0] if row else None
+    finally:
+        db.close()
+
+
+def test_snapshot_pictures_come_from_the_drive_folders(snapshot):
+    data, target, media = snapshot
+    assert run_snapshot(data, target, media) == 0
+    db = target / "library.db"
+    assert one(db, "SELECT cover_path FROM releases") == str(target / "artwork" / "Boston - Boston.jpg")
+    assert one(db, "SELECT image_path FROM artists") == str(target / "artists" / "Boston.jpg")
+    assert one(db, "SELECT cover_path FROM playlist_folders") == str(target / "artwork" / "Folders" / "rock.jpg")
+    assert one(db, "SELECT favicon_path FROM radio_stations") == str(target / "stations" / "2.png")
+    assert one(db, "SELECT thumbnail_path FROM videos") == str(target / "video_thumbs" / "abc.jpg")
+    for rel in ("artwork/Boston - Boston.jpg", "artwork/Folders/rock.jpg", "artists/Boston.jpg",
+                "stations/2.png", "video_thumbs/abc.jpg"):
+        assert (target / rel).is_file(), rel
+
+
+def test_media_radio_and_path_settings_are_repointed(snapshot):
+    data, target, media = snapshot
+    run_snapshot(data, target, media)
+    db = target / "library.db"
+    assert one(db, "SELECT path FROM media_files") == str(media / "MusicFLAC/Boston/Boston/06 Smokin.flac")
+    assert one(db, "SELECT path FROM watched_folders") == str(media / "MusicFLAC")
+    assert one(db, "SELECT path FROM videos") == str(media / "Videos/Boston - Amanda.mp4")
+    assert one(db, "SELECT folder FROM radio_shows") == str(media / "Radio/Dragnet")
+    assert one(db, "SELECT cover_path FROM radio_shows") == str(media / "Radio/Dragnet/cover.jpg")
+    assert one(db, "SELECT path FROM radio_episodes") == str(media / "Radio/Dragnet/Dragnet 1949-06-03.mp3")
+    assert one(db, "SELECT value FROM settings WHERE key = 'otr_root'") == str(media / "Radio")
+    assert one(db, "SELECT value FROM settings WHERE key = 'usb_sync_auto_check'") == "0"
+
+
+def test_sync_identity_is_cleared_for_a_new_pc(snapshot):
+    data, target, media = snapshot
+    before = (data / "library.db").read_bytes()
+    run_snapshot(data, target, media)
+    db = target / "library.db"
+    assert one(db, "SELECT value FROM settings WHERE key = 'sync_pc_id'") is None
+    assert one(db, "SELECT COUNT(*) FROM sync_pairs") == 0
+    assert one(db, "SELECT COUNT(*) FROM sync_baseline") == 0
+    assert (data / "library.db").read_bytes() == before  # the drive's copy keeps it
+
+
+def test_keep_sync_identity(snapshot):
+    data, target, media = snapshot
+    run_snapshot(data, target, media, "--keep-sync-identity")
+    db = target / "library.db"
+    assert one(db, "SELECT value FROM settings WHERE key = 'sync_pc_id'") == "6bd7433e53dd462ea993a824bbf64a10"
+    assert one(db, "SELECT COUNT(*) FROM sync_pairs") == 1
+
+
+def test_app_gives_the_imported_library_a_new_sync_id(snapshot):
+    data, target, media = snapshot
+    run_snapshot(data, target, media)
+    from musicmgr.services import usb_sync
+
+    db_session.init_engine(db_path=target / "library.db")
+    with db_session.session_scope() as s:
+        new_id = usb_sync.get_pc_id(s)
+    db_session.get_engine().dispose()
+    assert new_id and new_id != "6bd7433e53dd462ea993a824bbf64a10"
+
+
+def test_image_rel():
+    assert tool.image_rel("D:\\MusicMgr\\data\\artwork\\Folders\\x.jpg", "artwork") == Path("Folders/x.jpg")
+    assert tool.image_rel("D:\\MusicMgr\\data\\artwork\\x.jpg", "artwork") == Path("x.jpg")
+    assert tool.image_rel("C:\\elsewhere\\x.jpg", "artwork") == Path("x.jpg")

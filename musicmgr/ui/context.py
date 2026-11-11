@@ -101,6 +101,15 @@ class AppContext(QObject):
 
         self.tuner = TunerController(player, self)
         self.tuner.notified.connect(self.notify)
+        # podcast episodes play at the speed last chosen (services/podcasts.py)
+        try:
+            from ..db.session import session_scope
+            from ..services import podcasts
+
+            with session_scope() as s:
+                player.set_podcast_rate(podcasts.speed(s))
+        except Exception:  # pragma: no cover - no library yet
+            pass
         #: phone remote - services/web_remote.py. Created here (not
         #: started): MainWindow starts it at launch when Settings › Phone
         #: remote is on, and Settings turns it on and off.

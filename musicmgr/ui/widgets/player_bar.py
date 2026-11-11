@@ -183,6 +183,12 @@ class PlayerBar(QFrame):
         self.next_btn = self._transport("▶▶", "Next")
         self.fwd_btn = self._transport("+30s", "Forward 30 seconds", wide=True)
         self.repeat_btn = self._transport("↻", "Repeat off")
+        # a podcast episode's speed (1x / 1.25x / 1.5x - services/podcasts.py);
+        # only shown while one plays
+        self.speed_btn = self._transport("1×", "Podcast speed", wide=True)
+        self.speed_btn.setVisible(False)
+        self.speed_btn.clicked.connect(self._cycle_speed)
+        player.podcastRateChanged.connect(lambda _r: self._sync_speed())
         for b in (
             self.shuffle_btn,
             self.back_btn,
@@ -190,6 +196,7 @@ class PlayerBar(QFrame):
             self.play_btn,
             self.next_btn,
             self.fwd_btn,
+            self.speed_btn,
             self.repeat_btn,
         ):
             buttons.addWidget(b)
@@ -321,6 +328,31 @@ class PlayerBar(QFrame):
         self.prev_btn.setToolTip("Previous station" if live else "Previous")
         self.next_btn.setToolTip("Next station" if live else "Next")
 
+    def _sync_speed(self) -> None:
+        item = self.player.current
+        podcast = item is not None and item.kind == "podcast" and self._video is None
+        self.speed_btn.setVisible(podcast)
+        from ...services import podcasts
+
+        rate = self.player.podcast_rate
+        self.speed_btn.setText(podcasts.speed_label(rate))
+        self.speed_btn.setToolTip(f"Podcast speed: {podcasts.speed_label(rate)} - "
+                                  "tap for " + podcasts.speed_label(podcasts.next_speed(rate)))
+
+    def _cycle_speed(self) -> None:
+        """1x -> 1.25x -> 1.5x -> 1x, kept for next time (Settings key
+        podcast_speed)."""
+        from ...db.session import session_scope
+        from ...services import podcasts
+
+        rate = podcasts.next_speed(self.player.podcast_rate)
+        self.player.set_podcast_rate(rate)
+        try:
+            with session_scope() as session:
+                podcasts.set_speed(session, rate)
+        except Exception:  # pragma: no cover - db trouble; the speed still changed
+            log.debug("couldn't save the podcast speed", exc_info=True)
+
     def _cycle_repeat(self) -> None:
         mode = self.player.cycle_repeat()
         glyph = {"off": "↻", REPEAT_ALL: "↻", REPEAT_ONE: "↻¹"}[mode]
@@ -373,6 +405,7 @@ class PlayerBar(QFrame):
         self._start_spectrum(None)
         self._set_live(False)
         self.quality_badge.setVisible(False)
+        self.speed_btn.setVisible(False)
         self.visualizer.set_live(False)
         self.visualizer.setVisible(False)
         already_bound = self._video is controller
@@ -442,7 +475,7 @@ class PlayerBar(QFrame):
     def _show_quality(self, item: Optional[QueueItem]) -> None:
         """The quality pill - files only (not a station, not a video)."""
         quality = None
-        if item is not None and not item.is_stream and self._video is None:
+        if item is not None and not item.is_remote and self._video is None:
             quality = audio_quality.describe(item.path)
         if quality is None:
             self.quality_badge.setVisible(False)
@@ -458,6 +491,7 @@ class PlayerBar(QFrame):
     def on_track_changed(self, item: Optional[QueueItem]) -> None:
         self._set_live(item is not None and item.is_stream and self._video is None)
         self._show_quality(item)
+        self._sync_speed()
         if item is None:
             self.visualizer.set_live(False)
             self.title.setText("Nothing playing")
@@ -476,7 +510,7 @@ class PlayerBar(QFrame):
         self.cover.set_source(item.cover_path, item.album or item.artist)
         # an internet station never ends - nothing to decode up front; its
         # bars come from the sound as it plays instead (PlayerController.liveBands)
-        self._start_spectrum(None if item.is_stream else item.path)
+        self._start_spectrum(None if item.is_remote else item.path)
         self.visualizer.set_live(item.is_stream and self._video is None)
 
     def on_position(self, ms: int) -> None:

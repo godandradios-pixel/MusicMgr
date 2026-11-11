@@ -13,11 +13,14 @@ Bands, top to bottom:
     SW1     drama and comedy
     SW2     crime and mystery
     LW      speeches, Paul Harvey, commercials
+    PODCAST podcasts (services/podcasts.py), episodes streamed from
+            their feeds
     SXM     SiriusXM channels, played in the web browser - at
             the bottom and shorter than the others (BAND_HEIGHT), with a
             1-100 channel scale
 Only the selected band's strip is lit; the piano keys below choose it.
-A band can be turned off in Settings › Appearance › Radio (the SXM band):
+A band can be turned off in Settings › Appearance › Radio (the PODCAST and
+SXM bands):
 its strip and key disappear and the other strips re-space to fill the
 glass (RadioSet.set_hidden_bands).
 
@@ -107,6 +110,8 @@ BANDS: tuple[Band, ...] = (
     Band("sw2", "SW2", "Mc", ("11", "12", "13", "15", "17", "19", "21", "22"),
          ("25m", "19m", "16m", "13m")),
     Band("lw", "LW", "kc", ("150", "175", "200", "225", "250", "275", "300", "350")),
+    # podcasts: a made-up high shortwave scale, like the other program bands
+    Band("pod", "PODCAST", "Mc", ("23", "24", "25", "26", "27", "28", "29", "30"), ("11m",)),
     # SiriusXM channels: channel numbers 1-100; a channel with
     # its number in its name ("56 - The Highway") sits at it
     # (services/stations.py:frequency)
@@ -302,7 +307,7 @@ class RadioSet(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self._band = "am"
-        #: bands turned off in Settings (the SXM band): no
+        #: bands turned off in Settings (PODCAST, SXM): no
         #: strip on the glass, no key, and the others share its room
         self._hidden: set[str] = set()
         self._labels: dict[str, list[str]] = {k: [] for k in BAND_KEYS}

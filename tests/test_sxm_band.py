@@ -347,8 +347,9 @@ def test_hiding_the_lit_band_moves_off_it_and_it_cant_be_chosen(qapp):
     assert w.band != "sxm"
     w.set_tuned("sxm", 1, animate=False)        # remembered, not shown
     assert w.band != "sxm"
-    # up/down through the keys skips it
-    w.set_band("lw", animate=False)
+    # up/down through the keys skips it: down from the bottom band shown
+    # (PODCAST, now that SXM is off) wraps to the top
+    w.set_band(w.visible_keys()[-1], animate=False)
     asked = []
     w.bandRequested.connect(asked.append)
     QTest.keyClick(w, Qt.Key_Down)

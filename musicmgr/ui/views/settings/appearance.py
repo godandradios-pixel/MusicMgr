@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QMessageBox)
-from ....services import stations, updater
+from ....services import podcasts, stations, updater
 from ... import skins
 from ...widgets.common import TouchButton, dim_label
 
@@ -61,8 +61,22 @@ class AppearanceSection:
         with self.ctx.session() as db:
             self.sxm_band_cb.setChecked(stations.sxm_shown(db))
         self.sxm_band_cb.toggled.connect(self._save_sxm_band)
+        # the PODCAST band, the same way (services/podcasts.py)
+        self.podcast_band_cb = QCheckBox("Show the PODCAST band")
+        self.podcast_band_cb.setToolTip(
+            "Untick to take the PODCAST band off the radio dial. Your podcasts, "
+            "where you are in each episode and any downloads stay saved; tick it "
+            "again to bring them back.")
+        with self.ctx.session() as db:
+            self.podcast_band_cb.setChecked(podcasts.shown(db))
+        self.podcast_band_cb.toggled.connect(self._save_podcast_band)
+        radio_row = QHBoxLayout()
+        radio_row.setSpacing(24)
+        radio_row.addWidget(self.podcast_band_cb)
+        radio_row.addWidget(self.sxm_band_cb)
+        radio_row.addStretch(1)
         lgrid.addWidget(QLabel("Radio"), 5, 0)
-        lgrid.addWidget(self.sxm_band_cb, 5, 1)
+        lgrid.addLayout(radio_row, 5, 1)
         lgrid.setColumnStretch(1, 1)
         body.addWidget(look_card)
         self._sync_look_status()
@@ -76,6 +90,18 @@ class AppearanceSection:
             self.ctx.notify(f"Couldn't save the radio setting ({exc})")
             return
         self.ctx.notify("SXM band shown on the radio" if on else "SXM band hidden from the radio")
+        self._sync_look_status()
+
+    def _save_podcast_band(self, on: bool) -> None:
+        try:
+            with self.ctx.session() as db:
+                podcasts.set_shown(db, on)
+                db.commit()
+        except Exception as exc:  # pragma: no cover - db trouble
+            self.ctx.notify(f"Couldn't save the radio setting ({exc})")
+            return
+        self.ctx.notify("PODCAST band shown on the radio" if on
+                        else "PODCAST band hidden from the radio")
         self._sync_look_status()
 
     def _chosen_look(self) -> dict:
@@ -105,6 +131,9 @@ class AppearanceSection:
         cb = getattr(self, "sxm_band_cb", None)
         if cb is not None and not cb.isChecked():
             text += "  ·  SXM band off"
+        cb = getattr(self, "podcast_band_cb", None)
+        if cb is not None and not cb.isChecked():
+            text += "  ·  PODCAST band off"
         return text + ("  ·  restart to apply" if self._chosen_look() != skins.ACTIVE else "")
 
     def _restart_for_look(self) -> None:

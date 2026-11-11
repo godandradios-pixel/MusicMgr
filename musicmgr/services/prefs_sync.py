@@ -41,6 +41,8 @@ SETTING_KEYS = (
     playback_prefs.KEY_PREAMP,
     "nowplaying_turntable",          # ui/views/nowplaying.py:PREF_TURNTABLE
     "tuner_show_sxm",                # services/stations.py:SHOW_SXM_KEY
+    "tuner_show_podcast",            # services/podcasts.py:SHOW_KEY
+    "podcast_speed",                 # services/podcasts.py:SPEED_KEY
 )
 _SETTING = "setting:"
 _LOOK = "look:"
@@ -162,6 +164,11 @@ def _portable_last(db: Session, raw: Optional[str]) -> Optional[str]:
     if kind == "show":
         show = db.get(RadioShow, ident_id)
         return f"show|{Path(show.folder).name}" if show is not None else None
+    if kind == "podcast":
+        from ..db.models import PodcastFeed
+
+        feed = db.get(PodcastFeed, ident_id)
+        return f"podcast|{feed.feed_url}" if feed is not None else None
     return None
 
 
@@ -180,6 +187,12 @@ def _local_last(db: Session, portable: Optional[str]) -> Optional[str]:
         for show in db.scalars(select(RadioShow)):
             if Path(show.folder).name == ident:
                 return f"show|{show.id}"
+    if kind == "podcast":
+        from ..db.models import PodcastFeed
+
+        feed = db.scalar(select(PodcastFeed).where(PodcastFeed.feed_url == ident))
+        if feed is not None:
+            return f"podcast|{feed.id}"
     return None
 
 

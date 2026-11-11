@@ -29,6 +29,14 @@ point at one (RadioSet.last_tune_was_tap), so browsing the band never
 opens a tab per channel - "Play in browser ▶" opens the one pointed at.
 The band isn't scanned, and SXM channels and other stations don't move
 between bands (an FM stream can't open in a browser, nor the reverse).
+
+The PODCAST band holds podcasts (services/podcasts.py; the dialogs are
+ui/views/podcast_dialogs.py): Find podcasts… searches Apple's free
+directory or takes a pasted link. Episodes stream; tuning in resumes the
+one in progress or plays the newest unheard one. New episodes are looked
+for in the background when the page opens (at most every few hours) and
+with "Check for new episodes". Podcasts don't move to other bands, nor
+shows and stations onto this one.
 """
 
 from __future__ import annotations
@@ -51,9 +59,9 @@ from PySide6.QtWidgets import (
 )
 
 from ... import config
-from ...db.models import RadioEpisode, RadioShow, RadioStation, Setting
+from ...db.models import PodcastFeed, RadioEpisode, RadioShow, RadioStation, Setting
 from ...db.session import new_session
-from ...services import otr, stations
+from ...services import otr, podcasts, stations
 from ...services.library import format_duration
 from ..context import AppContext
 from ..theme import COLORS, make_compact
@@ -61,6 +69,7 @@ from ..widgets.common import ChipButton, SearchBar, TouchButton, TouchList, dim_
 from ..widgets.player_bar import ElidingLabel
 from ..widgets.radio_dial import BAND_KEYS, BANDS, BY_KEY, SIGNAL_NONE, STATIC_FILE, RadioSet
 from .base import BaseView
+from .podcast_dialogs import PodcastCheckThread, PodcastEpisodesDialog, PodcastSearchDialog
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +90,7 @@ BAND_BLURBS = {
     "sw1": "Drama and comedy",
     "sw2": "Crime and mystery",
     "lw": "Speeches, Paul Harvey and commercials",
+    "pod": "Podcasts, streamed from their feeds",
 }
 #: the band the page opens on when nothing has been tuned yet
 START_BAND = "police"
@@ -126,6 +136,9 @@ def dial_entries(session) -> tuple[dict[str, list[tuple[str, int, str]]], set[in
         entries[band].append(("station", st.id, st.name))
         if st.off_air_since:
             off_air.add(st.id)
+    if podcasts.BAND in entries:
+        for feed in podcasts.feeds(session):
+            entries[podcasts.BAND].append(("podcast", feed.id, otr.dial_label(feed.title)))
     return entries, off_air
 
 
@@ -675,6 +688,16 @@ class TunerView(BaseView):
         self.btn_sxm_link.clicked.connect(self._ask_sxm_link)
         #: the SXM channel last opened in the browser, to say so on the page
         self._browser_station: Optional[int] = None
+        # the PODCAST band
+        self.btn_pod_find = make_compact(TouchButton("Find podcasts…", primary=True))
+        self.btn_pod_find.setToolTip("Search Apple's free podcast directory, or paste a "
+                                     "podcast's link")
+        self.btn_pod_find.clicked.connect(self.find_podcasts)
+        self.btn_pod_check = make_compact(TouchButton("Check for new"))
+        self.btn_pod_check.setToolTip("Look for new episodes of every podcast now (it's done "
+                                      "by itself when the Radio page opens, every few hours)")
+        self.btn_pod_check.clicked.connect(lambda: self.check_podcasts(only_due=False))
+        self._pod_thread: Optional[PodcastCheckThread] = None
         for b in self._all_buttons():
             self.actions.addWidget(b)
             b.setVisible(False)
@@ -703,6 +726,9 @@ class TunerView(BaseView):
         self._apply_hidden_bands()
         self._rebuild()
         self._fetch_missing_logos()
+        # new podcast episodes, in the background, at most every few hours
+        if self.radio.is_shown(podcasts.BAND) and self._entries.get(podcasts.BAND):
+            self.check_podcasts(only_due=True)
         if not self._initialised:
             self._initialised = True
             self.radio.set_static_enabled(_get_setting(self.ctx, STATIC_KEY, "1") == "1")
@@ -730,7 +756,7 @@ class TunerView(BaseView):
             thread.start()
 
     def _apply_hidden_bands(self) -> None:
-        """Settings › Appearance › Radio can turn the SXM band off: take it
+        """Settings › Appearance › Radio can turn the PODCAST and SXM bands off: take it
         off the set, or put it back. Read every time the page is shown, so
         a change in Settings shows the next time the Radio page opens."""
         try:
@@ -802,6 +828,8 @@ class TunerView(BaseView):
         elif kind == "station":
             self._stream_title = ""
             self.ctx.tuner.tune_station(ident)
+        elif kind == "podcast":
+            self.ctx.tuner.tune_podcast(ident)
 
     def _on_tuned(self, kind: str, ident: int) -> None:
         if self._scanning and (kind, ident) != self._scan_expect:
@@ -919,7 +947,7 @@ class TunerView(BaseView):
                 self.btn_prev, self.btn_next, self.btn_new_evening, self.btn_band, self.btn_rename,
                 self.btn_move_left, self.btn_move_right, self.btn_sxm_link, self.btn_remove,
                 self.btn_relink, self.btn_folder, self.btn_starters, self.btn_sxm_add,
-                self.btn_sxm_site)
+                self.btn_sxm_site, self.btn_pod_find, self.btn_pod_check)
 
     def _show_buttons(self, *buttons) -> None:
         if self._scanning or self.can_scan():
@@ -962,7 +990,10 @@ class TunerView(BaseView):
         self._live = live
         band = self.radio.band
         self.find_btn.setText("Add a channel…" if band in stations.BROWSER_BANDS
+                              else "Find podcasts…" if band == podcasts.BAND
                               else "Find stations…")
+        # old-time radio shows aren't on the PODCAST band: room for its own buttons
+        self.rescan_btn.setVisible(band != podcasts.BAND)
         if not self._entries.get(band):
             self._empty_band(band)
         elif kind == "show":
@@ -971,6 +1002,8 @@ class TunerView(BaseView):
             self._info_onair()
         elif kind == "station":
             self._info_station(ident)
+        elif kind == "podcast":
+            self._info_podcast(ident)
         else:
             self._set_status(f"{BY_KEY[band].label} band — tap a name on the lit band, drag the "
                              "pointer, or turn the TUNING knob")
@@ -990,6 +1023,14 @@ class TunerView(BaseView):
                                  "choose Copy link (the address bar shows the list you're in, not "
                                  "the channel), then paste it into Add a channel.")
             self._show_buttons(self.btn_sxm_add, self.btn_sxm_site)
+            return
+        if band == podcasts.BAND:
+            self._set_status("No podcasts yet",
+                             "find some in Apple's free podcast directory, or paste a link",
+                             tip="Search by name or subject, or paste a podcast's RSS feed link "
+                                 "or its Apple Podcasts page link. Episodes stream; Download "
+                                 "keeps one in the Podcast folder.")
+            self._show_buttons(self.btn_pod_find)
             return
         if band in otr.STATION_BANDS:
             self._set_status(f"No stations on the {label} band yet",
@@ -1043,6 +1084,73 @@ class TunerView(BaseView):
             self._show_buttons(self.btn_episodes, self.btn_prev, self.btn_next, self.btn_band)
         else:
             self._show_buttons(self.btn_listen, self.btn_episodes, self.btn_band)
+
+    def _info_podcast(self, feed_id: int) -> None:
+        item = self.ctx.player.current
+        with self.ctx.session() as s:
+            feed = s.get(PodcastFeed, feed_id)
+            if feed is None:
+                return
+            ep = None
+            if self._live and item is not None and item.kind == "podcast" and item.episode_id:
+                ep = s.get(podcasts.PodcastEpisode, item.episode_id)
+            if ep is None:
+                ep = podcasts.current_episode(s, feed)
+            new = podcasts.new_count(s, feed_id)
+            bits = []
+            if ep is not None and ep.published:
+                bits.append(ep.published.strftime("%b %d, %Y").replace(" 0", " "))
+            if ep is not None and ep.local_path:
+                bits.append("downloaded")
+            if new:
+                bits.append(f"{new} new episode{'s' if new != 1 else ''}")
+            if not self._live and ep is not None and ep.position_ms and not ep.played:
+                bits.append(f"picks up at {format_duration(ep.position_ms)}")
+            error = feed.last_error
+            title = feed.title
+            tip = "\n".join(x for x in (title, feed.author or "", error or "") if x)
+        checking = self._pod_thread is not None and self._pod_thread.isRunning()
+        if checking:
+            bits.append("checking for new episodes…")
+        if error and not self._live:
+            self._set_status(title, "couldn't check for new episodes", *bits, tip=tip, warn=True)
+        else:
+            self._set_status("" if self._live else title,
+                             ep.title if (ep is not None and not self._live) else "",
+                             *bits, tip=tip)
+        self.btn_pod_check.setEnabled(not checking)
+        if self._live:
+            self._show_buttons(self.btn_episodes, self.btn_next, self.btn_pod_check)
+        else:
+            self._show_buttons(self.btn_listen, self.btn_episodes, self.btn_pod_check,
+                               self.btn_move_left, self.btn_move_right, self.btn_remove)
+
+    def find_podcasts(self) -> None:  # pragma: no cover - dialog
+        dialog = PodcastSearchDialog(self.ctx, self)
+        dialog.changed.connect(self._changed)
+        dialog.listenRequested.connect(self._listen_podcast)
+        dialog.exec()
+
+    def _listen_podcast(self, feed_id: int) -> None:
+        self._changed()
+        self.ctx.tuner.tune_podcast(feed_id)
+
+    def check_podcasts(self, only_due: bool = False) -> None:
+        """Look for new episodes in the background (only_due: just the
+        podcasts not checked for a few hours - the page opening)."""
+        if self._pod_thread is not None and self._pod_thread.isRunning():
+            return
+        self._pod_thread = PodcastCheckThread(only_due=only_due, parent=self)
+        self._pod_thread.finished_with.connect(
+            lambda result, quiet=only_due: self._on_podcasts_checked(result, quiet))
+        self._pod_thread.start()
+        self._update_info()
+
+    def _on_podcasts_checked(self, result, quiet: bool) -> None:
+        if result is not None and (result.new or not quiet):
+            if result.checked or not quiet:
+                self.ctx.notify(f"Podcasts: {result.summary()}")
+        self._changed()
 
     def _info_onair(self) -> None:
         year = self.ctx.tuner.onair_year
@@ -1236,6 +1344,9 @@ class TunerView(BaseView):
         self._update_info()
 
     def find_stations(self) -> None:  # pragma: no cover - dialog
+        if self.radio.band == podcasts.BAND:
+            self.find_podcasts()
+            return
         if self.radio.band in stations.BROWSER_BANDS:
             self.ask_add_sxm()
             return
@@ -1273,6 +1384,13 @@ class TunerView(BaseView):
 
     def _open_episodes(self) -> None:  # pragma: no cover - dialog
         kind, ident, _ = self._pointed()
+        if kind == "podcast":
+            pod = PodcastEpisodesDialog(self.ctx, ident, self)
+            pod.episodeChosen.connect(
+                lambda ep: self.ctx.tuner.tune_podcast(ident, episode_id=ep))
+            pod.exec()
+            self._update_info()
+            return
         if kind != "show":
             return
         dialog = EpisodesDialog(self.ctx, ident, self)
@@ -1315,8 +1433,9 @@ class TunerView(BaseView):
     def _band_menu(self) -> None:  # pragma: no cover - menu
         menu = QMenu(self)
         for band in BANDS:
-            if band.key in stations.BROWSER_BANDS:
-                continue    # only SiriusXM links belong there (SXM channels have no Band…)
+            if band.key in stations.BROWSER_BANDS or band.key == podcasts.BAND:
+                # only SiriusXM links belong on SXM, and only podcasts on PODCAST
+                continue
             action = menu.addAction(f"{band.label} — {BAND_BLURBS.get(band.key, '')}")
             action.setCheckable(True)
             action.setChecked(band.key == self.radio.band)
@@ -1327,6 +1446,12 @@ class TunerView(BaseView):
         """Swap places with the next internet-only station along the band -
         the ones with a frequency stay at their frequency."""
         kind, ident, _ = self._pointed()
+        if kind == "podcast":
+            with self.ctx.session() as s:
+                podcasts.move(s, ident, delta)
+                s.commit()
+            self._changed()
+            return
         if kind != "station":
             return
         with self.ctx.session() as s:
@@ -1382,6 +1507,9 @@ class TunerView(BaseView):
 
     def _remove_station(self) -> None:
         kind, ident, live = self._pointed()
+        if kind == "podcast":
+            self.remove_podcast(ident, live)
+            return
         if kind != "station":
             return
         with self.ctx.session() as s:
@@ -1392,6 +1520,30 @@ class TunerView(BaseView):
         if live:
             self.ctx.player.stop()
         self.ctx.notify(f"Took {name} off the dial")
+        self._changed()
+
+    def remove_podcast(self, feed_id: int, live: bool = False, ask: bool = True) -> None:
+        """Unsubscribe (downloaded episodes stay in the Podcast folder)."""
+        with self.ctx.session() as s:
+            feed = s.get(PodcastFeed, feed_id)
+            if feed is None:
+                return
+            title = feed.title
+        if ask:  # pragma: no cover - dialog
+            from PySide6.QtWidgets import QMessageBox
+
+            answer = QMessageBox.question(
+                self, "Unsubscribe",
+                f"Take {title} off the PODCAST band?\n\nWhere you are in its episodes is "
+                "forgotten. Downloaded episodes stay in the Podcast folder.")
+            if answer != QMessageBox.Yes:
+                return
+        with self.ctx.session() as s:
+            podcasts.remove_feed(s, feed_id)
+            s.commit()
+        if live:
+            self.ctx.player.stop()
+        self.ctx.notify(f"Unsubscribed from {title}")
         self._changed()
 
     def _dial_menu(self, global_pos) -> None:  # pragma: no cover - menu
@@ -1411,10 +1563,29 @@ class TunerView(BaseView):
         menu.addAction("Find stations…").triggered.connect(self.find_stations)
         if self.radio.is_shown("sxm"):
             menu.addAction("Add a SiriusXM channel…").triggered.connect(self.ask_add_sxm)
+        if self.radio.is_shown(podcasts.BAND):
+            menu.addAction("Find podcasts…").triggered.connect(self.find_podcasts)
+            menu.addAction("Check for new episodes").triggered.connect(
+                lambda: self.check_podcasts(only_due=False))
+            menu.addAction("Podcast folder…").triggered.connect(self.choose_podcast_folder)
         menu.exec(global_pos)
+
+    def choose_podcast_folder(self) -> None:  # pragma: no cover - file dialog
+        with self.ctx.session() as s:
+            current = podcasts.get_root(s)
+        folder = QFileDialog.getExistingDirectory(self, "Folder for downloaded podcast episodes",
+                                                  current)
+        if folder:
+            with self.ctx.session() as s:
+                podcasts.set_root(s, folder)
+                s.commit()
+            self.ctx.notify(f"Podcast downloads go to {folder}")
 
     def shutdown(self) -> None:
         self.stop_scan()
+        if self._pod_thread is not None and self._pod_thread.isRunning():
+            self._pod_thread.requestInterruption()
+            self._pod_thread.wait(5000)
         if self._scan_thread is not None and self._scan_thread.isRunning():
             self._scan_thread.requestInterruption()
             self._scan_thread.wait(5000)
