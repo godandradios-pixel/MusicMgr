@@ -4,22 +4,30 @@
 2026-09-23 - James, on the Linux Mint PC: "I wanted to use the library.db
 from the USB MusicMgr\\data directory." That database is the whole Windows
 library - tracks, ratings, play counts, playlists, charts, Jukebox cards,
-artist bios - but every file path in it is a Windows one ("D:\\Music\\Boston\\
-...\\01 More Than a Feeling.mp3"), and the music now lives at ~/Music (copied
-from USB/Music with rsync). Opened as-is, every track would show as missing.
+artist bios, radio shows - but every file path in it is a Windows one
+("D:\\Music\\Boston\\...\\01 More Than a Feeling.mp3"). Opened as-is on
+Linux, every track would show as missing.
 
 This tool installs a copy of it as the Linux library and repoints the paths:
 
-* media files and videos: a Windows folder prefix -> a Linux folder, e.g.
+* files and folders under a Windows media folder (songs, videos, watched /
+  library / video folders, radio shows and episodes, the Radio page's folder
+  and other path settings): a Windows folder prefix -> a Linux folder, e.g.
   D:\\Music -> ~/Music, with \\ turned into /. If the exact result isn't on
   disk, a case-insensitive lookup fixes names whose capitalisation differs
   (Windows didn't care, Linux does).
-* album covers / artist pictures / label / playlist images: copied from the
-  source data folder's artwork/ and artists/ into the new data folder and
-  repointed by file name (the same by-name rule MusicMgr's own
-  "Move data" repair uses).
-* watched folders: repointed with the same prefix mapping, so "Scan now"
-  rescans ~/Music and recognises every file as already known (no duplicates).
+* pictures in the data folder (album covers, playlist and playlist-folder
+  tiles, artist pictures, label images, radio station logos, video
+  thumbnails): copied into the new data folder and repointed to the same
+  place under it (artwork\\Folders\\x.jpg stays in a Folders subfolder). They
+  are taken from the source data folder and, for library copies made by
+  "Save a copy of the library on the drive", which leave covers and artist
+  pictures out, from the drive's MusicMgr\\artwork and \\artists (--images).
+* this PC's USB sync identity is cleared (2026-10-26): the copy carries the
+  sync id, folder pairs and sync records of the PC that saved it, and a
+  second PC using them would sync as that PC. MusicMgr makes a new id and
+  pairs the folders again on the first "Check USB now".
+  --keep-sync-identity skips this (only for restoring a PC's own library).
 
 Anything it can't map is left exactly as it was and listed at the end.
 
@@ -32,9 +40,9 @@ Mint's own python3 runs it. CLOSE MUSICMGR FIRST.
     python3 import_windows_library.py                    # do it
 
 Defaults: source /media/$USER/USB/MusicMgr/data, target ~/MusicMgr/data, and
-every Windows folder literally named "Music" (e.g. D:\\Music) maps to ~/Music.
-Add more mappings with --map, e.g.
-    --map 'D:\\MusicMP3=/home/jrs58/MusicMP3'
+every Windows folder literally named "Music" (e.g. D:\\Music) maps to --music
+(~/Music). Add more mappings with --map, e.g.
+    --map 'D:\\MusicFLAC=/data/MusicFLAC'
 """
 
 from __future__ import annotations
@@ -51,13 +59,37 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
+#: pictures kept in the data folder: (table, column, data subfolder)
 IMAGE_COLUMNS = [
-    # (table, column, subfolder of the data dir the files live in)
     ("releases", "cover_path", "artwork"),
     ("playlists", "cover_path", "artwork"),
+    ("playlist_folders", "cover_path", "artwork"),
     ("artists", "image_path", "artists"),
     ("labels", "image_path", "artists"),
+    ("radio_stations", "favicon_path", "stations"),
+    ("videos", "thumbnail_path", "video_thumbs"),
 ]
+
+#: data subfolders copied to the new data folder
+IMAGE_FOLDERS = ("artwork", "artists", "stations", "video_thumbs")
+
+#: files and folders under the media folders: (table, column, report label)
+PATH_COLUMNS = [
+    ("media_files", "path", "Music files"),
+    ("videos", "path", "Videos"),
+    ("watched_folders", "path", "Watched folders"),
+    ("library_folders", "path", "Library folders"),
+    ("video_folders", "path", "Video folders"),
+    ("radio_shows", "folder", "Radio shows"),
+    ("radio_shows", "cover_path", "Radio show pictures"),
+    ("radio_episodes", "path", "Radio episodes"),
+]
+
+#: settings whose value names this PC's sync identity; the folder pairs and
+#: their records (sync_pairs / sync_baseline) are cleared with it
+SYNC_ID_KEY = "sync_pc_id"
+
+WINDOWS_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def default_source() -> Path:
@@ -139,12 +171,30 @@ def copy_source_db(source_db: Path, workdir: Path) -> Path:
     return workdir / "library.db"
 
 
-def copy_images(src_data: Path, dst_data: Path, dry_run: bool) -> dict[str, int]:
+def image_sources(src_data: Path, images: Optional[Path]) -> list[Path]:
+    """Folders holding artwork/ and artists/, searched in order: the source
+    data folder, then --images (default: the folder above it, which on the
+    USB is MusicMgr\\ with the drive's artwork and artists)."""
+    extra = images if images is not None else src_data.parent
+    out = [src_data]
+    if extra.resolve() != src_data.resolve():
+        out.append(extra)
+    return out
+
+
+def find_image(sources: list[Path], sub: str, rel: Path) -> bool:
+    return any((src / sub / rel).is_file() for src in sources)
+
+
+def copy_images(sources: list[Path], dst_data: Path, dry_run: bool) -> dict[str, int]:
     counts = {}
-    for sub in ("artwork", "artists"):
-        src, dst = src_data / sub, dst_data / sub
+    for sub in IMAGE_FOLDERS:
         n = 0
-        if src.is_dir():
+        for root in sources:
+            src = root / sub
+            if not src.is_dir():
+                continue
+            dst = dst_data / sub
             for path in src.rglob("*"):
                 if not path.is_file():
                     continue
@@ -159,68 +209,112 @@ def copy_images(src_data: Path, dst_data: Path, dry_run: bool) -> dict[str, int]
     return counts
 
 
-def rewrite(db: sqlite3.Connection, src_data: Path, dst_data: Path, mappings, report: dict) -> None:
+def image_rel(old: str, sub: str) -> Path:
+    """'D:\\MusicMgr\\data\\artwork\\Folders\\x.jpg' -> Folders/x.jpg (the part
+    after the last `sub` folder); just the file name if `sub` isn't in it."""
+    parts = split_parts(old)
+    low = [p.lower() for p in parts]
+    if sub in low[:-1]:
+        i = len(low) - 1 - low[::-1].index(sub)
+        if i < len(parts) - 1:
+            return Path(*parts[i + 1:])
+    return Path(parts[-1]) if parts else Path()
+
+
+def table_exists(db: sqlite3.Connection, table: str, column: str) -> bool:
+    cols = [r[1] for r in db.execute(f"PRAGMA table_info('{table}')")]
+    return column in cols
+
+
+def clear_sync_identity(db: sqlite3.Connection, report: dict) -> None:
+    """Forget the USB sync identity of the PC that saved this library."""
+    stats = {}
+    stats["sync id"] = db.execute("DELETE FROM settings WHERE key = ?", (SYNC_ID_KEY,)).rowcount \
+        if table_exists(db, "settings", "key") else 0
+    for table in ("sync_baseline", "sync_pairs"):
+        try:
+            stats[table] = db.execute(f"DELETE FROM {table}").rowcount
+        except sqlite3.OperationalError:
+            stats[table] = 0  # older database without USB sync
+    report["USB sync identity cleared"] = stats
+
+
+def rewrite(db: sqlite3.Connection, sources: list[Path], dst_data: Path, mappings, report: dict) -> None:
     cases = CaseIndex()
 
+    def remap(old: str):
+        """(new path string, status) for one Windows path."""
+        new = map_path(old, mappings)
+        if new is None:
+            return None, "no mapping"
+        lowered = [x.lower() for x in split_parts(old)]
+        root = next(r for p, r in mappings if lowered[: len(p)] == p)
+        found = cases.resolve(new, root)
+        if found is None and new.is_dir():
+            found = new
+        return str(found or new), ("found on disk" if found else "mapped, file not on disk")
+
     def relocate(table: str, column: str, key: str) -> None:
-        rows = db.execute(f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL").fetchall()
+        if not table_exists(db, table, column):
+            return
+        rows = db.execute(f"SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL").fetchall()
         stats = Counter()
         unmapped = Counter()
         for row_id, old in rows:
-            if not re.match(r"^[A-Za-z]:[\\/]", old or ""):
+            if not WINDOWS_PATH.match(old or ""):
                 stats["already Linux"] += 1
                 continue
-            new = map_path(old, mappings)
-            if new is None:
-                stats["no mapping"] += 1
+            final, status = remap(old)
+            if final is None:
+                stats[status] += 1
                 unmapped[root_of(old)] += 1
                 continue
-            root = next(r for p, r in mappings if [x.lower() for x in split_parts(old)][: len(p)] == p)
-            found = cases.resolve(new, root)
-            final = found or new
-            stats["found on disk" if found else "mapped, file not on disk"] += 1
+            stats[status] += 1
             try:
-                db.execute(f"UPDATE {table} SET {column} = ? WHERE id = ?", (str(final), row_id))
+                db.execute(f"UPDATE {table} SET {column} = ? WHERE rowid = ?", (final, row_id))
             except sqlite3.IntegrityError:
                 stats["duplicate after mapping (left as is)"] += 1
-        report[key] = dict(stats)
+        if rows:
+            report[key] = dict(stats)
         if unmapped:
             report[key + " unmapped roots"] = dict(unmapped)
 
-    relocate("media_files", "path", "Music files")
-    relocate("videos", "path", "Videos")
-    relocate("watched_folders", "path", "Watched folders")
+    for table, column, key in PATH_COLUMNS:
+        relocate(table, column, key)
+
+    # settings holding a Windows path (the Radio page's folder, last browse
+    # folders); the sync id is handled by clear_sync_identity
+    if table_exists(db, "settings", "value"):
+        changed = 0
+        for key, old in db.execute("SELECT key, value FROM settings WHERE value IS NOT NULL").fetchall():
+            if not WINDOWS_PATH.match(old or ""):
+                continue
+            final, _status = remap(old)
+            if final is not None:
+                db.execute("UPDATE settings SET value = ? WHERE key = ?", (final, key))
+                changed += 1
+        report["Path settings"] = {"repointed": changed}
 
     for table, column, sub in IMAGE_COLUMNS:
+        if not table_exists(db, table, column):
+            continue
         folder = dst_data / sub
         changed = missing = 0
-        try:
-            rows = db.execute(f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL").fetchall()
-        except sqlite3.OperationalError:
-            continue  # older database without this column
+        rows = db.execute(f"SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL").fetchall()
         for row_id, old in rows:
-            name = split_parts(old)[-1] if old else ""
-            candidate = folder / name
-            # the image is either already in the target, or about to be copied there
-            if name and (candidate.is_file() or (src_data / sub / name).is_file()):
+            if not old:
+                continue
+            rel = image_rel(old, sub)
+            candidate = folder / rel
+            # already in the target, or about to be copied there
+            if str(rel) and (candidate.is_file() or find_image(sources, sub, rel)):
                 if str(candidate) != old:
-                    db.execute(f"UPDATE {table} SET {column} = ? WHERE id = ?", (str(candidate), row_id))
+                    db.execute(f"UPDATE {table} SET {column} = ? WHERE rowid = ?", (str(candidate), row_id))
                     changed += 1
             else:
                 missing += 1
-        report[f"{table}.{column}"] = {"repointed": changed, "image not found": missing}
-
-    # video thumbnails live wherever the app generated them - repoint by name too
-    try:
-        for row_id, old in db.execute("SELECT id, thumbnail_path FROM videos WHERE thumbnail_path IS NOT NULL").fetchall():
-            name = split_parts(old)[-1]
-            for sub in ("artwork", "thumbnails", "video_thumbs"):
-                cand = dst_data / sub / name
-                if cand.is_file() or (src_data / sub / name).is_file():
-                    db.execute("UPDATE videos SET thumbnail_path = ? WHERE id = ?", (str(cand), row_id))
-                    break
-    except sqlite3.OperationalError:
-        pass
+        if rows:
+            report[f"{table}.{column}"] = {"repointed": changed, "image not found": missing}
 
 
 def roots_summary(db_path: Path) -> Counter:
@@ -241,6 +335,12 @@ def main(argv=None) -> int:
                         help="where the music lives here (default ~/Music)")
     parser.add_argument("--map", type=parse_map, action="append", default=[],
                         help=r"extra 'OLD=NEW' folder mapping, e.g. 'D:\MusicMP3=/home/you/MusicMP3'")
+    parser.add_argument("--images", type=Path, default=None,
+                        help="another folder holding artwork/ and artists/ (default: the folder above "
+                             "--source, i.e. the USB's MusicMgr folder)")
+    parser.add_argument("--keep-sync-identity", action="store_true",
+                        help="keep the source PC's USB sync id, folder pairs and sync records "
+                             "(only when restoring a PC's own library onto the same PC)")
     parser.add_argument("--dry-run", action="store_true", help="report only; change nothing")
     args = parser.parse_args(argv)
 
@@ -271,14 +371,17 @@ def main(argv=None) -> int:
             where = f"-> {target.parent}" if target else "-> (not mapped; add --map to include)"
             print(f"  {n:>7}  {root}  {where}")
 
+        sources = image_sources(src_data, args.images.expanduser() if args.images else None)
         report: dict = {}
         db = sqlite3.connect(work_db)
         try:
-            rewrite(db, src_data, dst_data, mappings, report)
+            rewrite(db, sources, dst_data, mappings, report)
+            if not args.keep_sync_identity:
+                clear_sync_identity(db, report)
             db.commit()
         finally:
             db.close()
-        images = copy_images(src_data, dst_data, dry_run=True)
+        images = copy_images(sources, dst_data, dry_run=True)
 
         print("\nResult" + (" (dry run - nothing changed)" if args.dry_run else "") + ":")
         for key, value in report.items():
@@ -308,7 +411,7 @@ def main(argv=None) -> int:
                 side = Path(str(target_db) + suffix)
                 if side.exists():
                     side.unlink()
-        copied = copy_images(src_data, dst_data, dry_run=False)
+        copied = copy_images(sources, dst_data, dry_run=False)
         db = sqlite3.connect(work_db)
         try:
             out = sqlite3.connect(target_db)
@@ -320,7 +423,9 @@ def main(argv=None) -> int:
             db.close()
         print(f"Copied images: {copied}")
         print(f"Installed {target_db}")
-        print("\nNow open MusicMgr. Settings > Scan now picks up anything new in ~/Music.")
+        print(f"\nNow open MusicMgr. Settings > Scan now picks up anything new in {args.music}.")
+        if not args.keep_sync_identity:
+            print("Settings > USB sync > Check USB now pairs the folders with the drive as a new PC.")
     return 0
 
 
